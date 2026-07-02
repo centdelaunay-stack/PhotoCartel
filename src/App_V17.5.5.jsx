@@ -1,0 +1,2982 @@
+import { useState, useRef } from "react";
+import Tesseract from "tesseract.js";
+import cv from "@techstark/opencv-js";
+
+function App() {
+  console.log("APP PRINCIPALE");
+
+  const API_BASE = `http://${window.location.hostname}:3001`;
+
+  const [oeuvreFileName, setOeuvreFileName] = useState("");
+  const [oeuvreImageUrl, setOeuvreImageUrl] = useState("");
+
+  const [cartelImageUrl, setCartelImageUrl] = useState("");
+  const [cartelText, setCartelText] = useState("");
+  const [cartelRecadreUrl, setCartelRecadreUrl] = useState("");
+
+  const [oeuvreFile, setOeuvreFile] = useState(null);
+  const [cartelFile, setCartelFile] = useState(null);
+
+  const [analyseMusee, setAnalyseMusee] = useState(null);
+  const [nomEdite, setNomEdite] = useState("");
+  const [nomFinal, setNomFinal] = useState("");
+
+  const [voyage, setVoyage] = useState(
+  localStorage.getItem("photoCartelVoyageActif") || ""
+);
+
+const [villeVisite, setVilleVisite] = useState(
+  localStorage.getItem("photoCartelVilleActive") || ""
+);
+
+const [lieuVisite, setLieuVisite] = useState(
+  localStorage.getItem("photoCartelLieuActif") || ""
+);
+
+
+  const [dossierRacine, setDossierRacine] = useState("C:\\Voyages");
+
+
+  const [modeCreationVoyage, setModeCreationVoyage] = useState(false);
+const [modeGestionVoyage, setModeGestionVoyage] = useState(false);
+const [nomNouveauVoyage, setNomNouveauVoyage] = useState("");
+
+
+const [typeVisite, setTypeVisite] = useState(
+  localStorage.getItem("photoCartelTypeVisiteActif") || ""
+);
+const [typeNouvelleVisite, setTypeNouvelleVisite] = useState("Musée");
+
+const [visiteActive, setVisiteActive] = useState(null);
+const [modeCreationVisite, setModeCreationVisite] = useState(false);
+const [modeAucuneVisite, setModeAucuneVisite] = useState(false);
+
+const [villeNouvelleVisite, setVilleNouvelleVisite] = useState("");
+const [lieuNouvelleVisite, setLieuNouvelleVisite] = useState("");
+
+const [statutVisite, setStatutVisite] = useState(
+  localStorage.getItem("photoCartelStatutVisite") || "EN_COURS"
+);
+const [dateFinVisite, setDateFinVisite] = useState(null);
+const [dossierTampon, setDossierTampon] = useState(
+  localStorage.getItem("photoCartelDossierTamponActif") || ""
+);
+const [cheminTamponActif, setCheminTamponActif] = useState(
+  localStorage.getItem("photoCartelCheminTamponActif") || ""
+);
+ 
+
+
+  const [derniereActionVisite, setDerniereActionVisite] = useState("");
+  const [photosCollectees, setPhotosCollectees] = useState(0);
+
+  const [dossierImport, setDossierImport] = useState("");
+  const [fichiersImport, setFichiersImport] = useState([]);
+  const [nombrePhotos, setNombrePhotos] = useState(0);
+  const [classificationEnCours, setClassificationEnCours] = useState(false);
+  const [resultatClassification, setResultatClassification] = useState(null);
+  const [messageImport, setMessageImport] = useState("");
+
+
+  const [dossierRenommage, setDossierRenommage] = useState("");
+const [fichiersRenommage, setFichiersRenommage] = useState([]);
+const [nombrePhotosRenommage, setNombrePhotosRenommage] = useState(0);
+const [messageRenommage, setMessageRenommage] = useState("");
+
+const [cheminRenommagePrepare, setCheminRenommagePrepare] = useState("");
+
+const [renommagePret, setRenommagePret] = useState(false);
+
+
+const [dashboardRenommage, setDashboardRenommage] = useState(null);
+const [renommageFinalEnCours, setRenommageFinalEnCours] = useState(false);
+const [renommageFinalTermine, setRenommageFinalTermine] = useState(false);
+
+
+const cheminRenommagePrepareRef = useRef("");
+const inputPrendrePhotosRef = useRef(null);
+const inputActualiserPhotosRef = useRef(null);
+const inputAnalyserPhotoRef = useRef(null);
+
+const [analysePhotoFile, setAnalysePhotoFile] = useState(null);
+const [analysePhotoUrl, setAnalysePhotoUrl] = useState("");
+const [analysePhotoResultat, setAnalysePhotoResultat] = useState(null);
+const [analysePhotoEnCours, setAnalysePhotoEnCours] = useState(false);
+const [modeAnalysePhoto, setModeAnalysePhoto] = useState(false);
+const [photoPleinEcranUrl, setPhotoPleinEcranUrl] = useState("");
+const [messageAnalysePhoto, setMessageAnalysePhoto] = useState("");
+const [analysePhotoSauvegardeEnCours, setAnalysePhotoSauvegardeEnCours] = useState(false);
+
+const [modeGalerieAnalyses, setModeGalerieAnalyses] = useState(false);
+const [galerieAnalyses, setGalerieAnalyses] = useState([]);
+const [galerieIndex, setGalerieIndex] = useState(0);
+const [galerieChargement, setGalerieChargement] = useState(false);
+const [messageGalerieAnalyses, setMessageGalerieAnalyses] = useState("");
+const galerieTouchStartXRef = useRef(null);
+const galerieTouchStartYRef = useRef(null);
+
+const [actualisationEnCours, setActualisationEnCours] = useState(false);
+const [messageActualisation, setMessageActualisation] = useState("");
+const [derniereActualisation, setDerniereActualisation] = useState(null);
+
+  const cheminCible =
+    voyage && villeVisite && lieuVisite
+      ? `${dossierRacine}\\${voyage}\\${villeVisite}\\${lieuVisite}`
+      : "";
+
+  const cheminCollecteActif =
+    statutVisite === "TERMINEE" && cheminTamponActif
+      ? cheminTamponActif
+      : cheminCible;
+
+  const debutVisiteMs = Number(localStorage.getItem("photoCartelDebutVisiteMs") || 0);
+
+  function formaterDate(date) {
+    return date.toLocaleString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function timestampDossier(date) {
+    return (
+      date.getFullYear() +
+      pad2(date.getMonth() + 1) +
+      pad2(date.getDate()) +
+      "_" +
+      pad2(date.getHours()) +
+      pad2(date.getMinutes())
+    );
+  }
+
+  function formaterDuree(ms) {
+    const secondesTotales = Math.round(ms / 1000);
+    const minutes = Math.floor(secondesTotales / 60);
+    const secondes = secondesTotales % 60;
+
+    if (minutes > 0) {
+      return `${minutes} min ${secondes} s`;
+    }
+
+    return `${secondes} secondes`;
+  }
+
+function formaterSecondes(secondes) {
+  const total = Number(secondes || 0);
+  const minutes = Math.floor(total / 60);
+  const reste = total % 60;
+
+  if (minutes > 0) {
+    return `${minutes} min ${reste} s`;
+  }
+
+  return `${reste} secondes`;
+}
+
+async function ouvrirDossierResultat(chemin) {
+  try {
+    const response = await fetch(API_BASE + "/ouvrir-dossier", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chemin }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      alert(data.error || "Impossible d'ouvrir le dossier");
+    }
+  } catch (error) {
+    console.error(error);
+    alert("Erreur ouverture dossier : " + error.message);
+  }
+}
+
+function retourAccueil() {
+  setResultatClassification(null);
+  setDashboardRenommage(null);
+
+  setMessageImport("");
+  setMessageRenommage("");
+
+  setDossierImport("");
+  setDossierRenommage("");
+
+  setFichiersImport([]);
+  setFichiersRenommage([]);
+
+  setNombrePhotos(0);
+  setNombrePhotosRenommage(0);
+
+  cheminRenommagePrepareRef.current = "";
+  setCheminRenommagePrepare("");
+  setRenommagePret(false);
+  setRenommageFinalTermine(false);
+}
+
+function finDuVoyage() {
+  const voyageEnCours = voyage || "Aucun voyage actif";
+
+  setVoyage("");
+  setVilleVisite("");
+  setLieuVisite("");
+  setTypeVisite("");
+  setTypeNouvelleVisite("Musée");
+
+  setVisiteActive(null);
+  setStatutVisite("EN_COURS");
+  setDateFinVisite(null);
+  setDossierTampon("");
+  setCheminTamponActif("");
+  setDerniereActionVisite("Voyage terminé le " + formaterDate(new Date()));
+  setPhotosCollectees(0);
+  setMessageActualisation("");
+  setDerniereActualisation(null);
+
+  setResultatClassification(null);
+  setDashboardRenommage(null);
+  setMessageImport("");
+  setMessageRenommage("");
+  setDossierImport("");
+  setDossierRenommage("");
+  setFichiersImport([]);
+  setFichiersRenommage([]);
+  setNombrePhotos(0);
+  setNombrePhotosRenommage(0);
+
+  cheminRenommagePrepareRef.current = "";
+  setCheminRenommagePrepare("");
+  setRenommagePret(false);
+  setRenommageFinalTermine(false);
+
+localStorage.setItem("photoCartelVoyageActif", "");
+localStorage.setItem("photoCartelVilleActive", "");
+localStorage.setItem("photoCartelLieuActif", "");
+localStorage.setItem("photoCartelTypeVisiteActif", "");
+localStorage.setItem("photoCartelStatutVisite", "EN_COURS");
+localStorage.setItem("photoCartelDossierTamponActif", "");
+localStorage.setItem("photoCartelCheminTamponActif", "");
+localStorage.setItem("photoCartelDebutVisiteMs", "");
+
+alert(`Voyage "${voyageEnCours}" terminé.`);
+
+setModeGestionVoyage(false);
+}
+
+
+function estAndroid() {
+  return /Android/i.test(navigator.userAgent || "");
+}
+
+function ouvrirAppareilPhoto() {
+  // v17.3.7 : retour volontaire à la méthode stable v17.3.5.
+  // Elle ouvre bien la caméra du téléphone, même si elle revient encore
+  // dans PhotoCartel après validation de chaque photo.
+  const input = inputPrendrePhotosRef.current;
+
+  if (input) {
+    input.value = null;
+    input.click();
+  }
+}
+
+function handlePrendreDesPhotos() {
+  if (!voyage) {
+    alert("Crée d'abord un voyage.");
+    return;
+  }
+
+  if (!lieuVisite || !cheminCollecteActif) {
+    setModeAucuneVisite(true);
+    return;
+  }
+
+  if (!localStorage.getItem("photoCartelDebutVisiteMs")) {
+    localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
+  }
+
+  setDerniereActionVisite("Appareil photo ouvert le " + formaterDate(new Date()));
+  ouvrirAppareilPhoto();
+}
+
+function handleAnalyserUnePhoto() {
+  const input = inputAnalyserPhotoRef.current;
+
+  if (input) {
+    input.value = null;
+    input.click();
+  }
+}
+
+async function handlePhotoAnalyseSelection(event) {
+  const fichier = event.target.files?.[0];
+
+  if (!fichier) {
+    return;
+  }
+
+  const imageLocaleUrl = URL.createObjectURL(fichier);
+
+  setAnalysePhotoFile(fichier);
+  setAnalysePhotoUrl(imageLocaleUrl);
+  setAnalysePhotoResultat(null);
+  setModeAnalysePhoto(true);
+  setAnalysePhotoEnCours(true);
+  setMessageAnalysePhoto("Analyse IA en cours...");
+
+  try {
+    const formData = new FormData();
+    formData.append("photo", fichier, fichier.name || "photo.jpg");
+
+    const response = await fetch(API_BASE + "/analyser-photo-one-shot", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Erreur analyse IA");
+    }
+
+    setAnalysePhotoResultat(data.result);
+    setMessageAnalysePhoto("");
+  } catch (error) {
+    console.error(error);
+    setAnalysePhotoResultat(null);
+    setMessageAnalysePhoto("Erreur analyse photo : " + error.message + " — vérifie que le serveur API est lancé sur le port 3001.");
+  } finally {
+    setAnalysePhotoEnCours(false);
+  }
+}
+
+function fermerAnalysePhoto() {
+  setModeAnalysePhoto(false);
+  setAnalysePhotoFile(null);
+  setAnalysePhotoUrl("");
+  setAnalysePhotoResultat(null);
+  setAnalysePhotoEnCours(false);
+  setPhotoPleinEcranUrl("");
+  setMessageAnalysePhoto("");
+  setAnalysePhotoSauvegardeEnCours(false);
+}
+
+function reprendreAnalysePhoto() {
+  setAnalysePhotoResultat(null);
+  setMessageAnalysePhoto("");
+  handleAnalyserUnePhoto();
+}
+
+async function enregistrerAnalysePhoto() {
+  if (!analysePhotoFile || !analysePhotoResultat) {
+    alert("Aucune analyse à enregistrer.");
+    return;
+  }
+
+  try {
+    setAnalysePhotoSauvegardeEnCours(true);
+
+    const formData = new FormData();
+    formData.append("photo", analysePhotoFile, analysePhotoFile.name || "photo.jpeg");
+    formData.append("analyse", JSON.stringify(analysePhotoResultat));
+    formData.append("dossierRacine", dossierRacine);
+
+    const response = await fetch(API_BASE + "/sauvegarder-analyse-photo", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Erreur sauvegarde analyse");
+    }
+
+    alert(
+      "Analyse sauvegardée.\n\n" +
+        "Photo : " +
+        data.nomPhoto +
+        "\nJSON : " +
+        data.nomJson +
+        "\n\nDossier :\n" +
+        (data.cheminDestination || data.dossierDestination || "Dossier non retourné")
+    );
+  } catch (error) {
+    console.error(error);
+    alert("Erreur sauvegarde analyse : " + error.message);
+  } finally {
+    setAnalysePhotoSauvegardeEnCours(false);
+  }
+}
+
+function valeurAnalyse(valeur) {
+  if (Array.isArray(valeur)) {
+    return valeur.filter(Boolean).join(", ");
+  }
+
+  return valeur || "";
+}
+
+function afficherChampAnalyse(label, valeur) {
+  const texte = valeurAnalyse(valeur);
+
+  if (!texte) {
+    return null;
+  }
+
+  return (
+    <div style={styles.analyseLigne}>
+      <div style={styles.analyseLabel}>{label}</div>
+      <div style={styles.analyseValeur}>{texte}</div>
+    </div>
+  );
+}
+
+function afficherFicheAnalyse(analyse) {
+  if (!analyse) return null;
+
+  return (
+    <>
+      <div style={styles.analyseType}>
+        {analyse.type_detecte || analyse.objet_principal || "Type non identifié"}
+      </div>
+      {afficherChampAnalyse("Objet", analyse.objet_principal)}
+      {afficherChampAnalyse("Titre FR", analyse.titre_fr)}
+      {afficherChampAnalyse("Titre EN", analyse.titre_en)}
+      {afficherChampAnalyse("Auteur / créateur", analyse.auteur_ou_createur)}
+      {afficherChampAnalyse("Date / période", analyse.date_ou_periode)}
+      {afficherChampAnalyse("Catégorie", analyse.categorie)}
+      {afficherChampAnalyse("Sous-type", analyse.sous_type)}
+      {afficherChampAnalyse("Style", analyse.style_ou_mouvement)}
+      {afficherChampAnalyse("Technique", analyse.technique)}
+      {afficherChampAnalyse("Support", analyse.support)}
+      {afficherChampAnalyse("Matériaux", analyse.materiaux)}
+      {afficherChampAnalyse("Dimensions", analyse.dimensions)}
+      {afficherChampAnalyse("Lieu probable", analyse.lieu_probable)}
+      {afficherChampAnalyse("Ville", analyse.ville)}
+      {afficherChampAnalyse("Pays", analyse.pays)}
+      {afficherChampAnalyse("Institution", analyse.musee_ou_institution)}
+      {afficherChampAnalyse("Description", analyse.description)}
+      {afficherChampAnalyse("Éléments visibles", analyse.elements_visibles)}
+      {afficherChampAnalyse("Mots-clés", analyse.mots_cles)}
+      {afficherChampAnalyse("Notes", analyse.notes)}
+      {afficherChampAnalyse(
+        "Confiance",
+        analyse.confidence !== undefined
+          ? `${Math.round(Number(analyse.confidence || 0) * 100)} %`
+          : ""
+      )}
+    </>
+  );
+}
+
+async function ouvrirGaleriePhotosAnalysees() {
+  try {
+    setModeGalerieAnalyses(true);
+    setGalerieChargement(true);
+    setMessageGalerieAnalyses("Chargement de la galerie...");
+    setGalerieAnalyses([]);
+    setGalerieIndex(0);
+
+    const response = await fetch(API_BASE + "/photos-analysees");
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Erreur chargement galerie");
+    }
+
+    setGalerieAnalyses(data.photos || []);
+    setGalerieIndex(0);
+    setMessageGalerieAnalyses(
+      data.photos?.length
+        ? ""
+        : "Aucune photo analysée sauvegardée pour l'instant."
+    );
+  } catch (error) {
+    console.error(error);
+    setMessageGalerieAnalyses("Erreur galerie : " + error.message);
+  } finally {
+    setGalerieChargement(false);
+  }
+}
+
+function fermerGaleriePhotosAnalysees() {
+  setModeGalerieAnalyses(false);
+  setGalerieAnalyses([]);
+  setGalerieIndex(0);
+  setGalerieChargement(false);
+  setMessageGalerieAnalyses("");
+}
+
+function galeriePrecedente() {
+  setGalerieIndex((ancien) =>
+    galerieAnalyses.length ? (ancien - 1 + galerieAnalyses.length) % galerieAnalyses.length : 0
+  );
+}
+
+function galerieSuivante() {
+  setGalerieIndex((ancien) =>
+    galerieAnalyses.length ? (ancien + 1) % galerieAnalyses.length : 0
+  );
+}
+
+function handleGalerieTouchStart(event) {
+  const touch = event.touches?.[0];
+
+  if (!touch) {
+    return;
+  }
+
+  galerieTouchStartXRef.current = touch.clientX;
+  galerieTouchStartYRef.current = touch.clientY;
+}
+
+function handleGalerieTouchEnd(event) {
+  const touch = event.changedTouches?.[0];
+  const departX = galerieTouchStartXRef.current;
+  const departY = galerieTouchStartYRef.current;
+
+  galerieTouchStartXRef.current = null;
+  galerieTouchStartYRef.current = null;
+
+  if (!touch || departX === null || departY === null || galerieAnalyses.length <= 1) {
+    return;
+  }
+
+  const deltaX = touch.clientX - departX;
+  const deltaY = touch.clientY - departY;
+
+  // Swipe horizontal seulement : on ignore les gestes verticaux de scroll.
+  if (Math.abs(deltaX) < 50 || Math.abs(deltaX) < Math.abs(deltaY) * 1.3) {
+    return;
+  }
+
+  if (deltaX < 0) {
+    galerieSuivante();
+  } else {
+    galeriePrecedente();
+  }
+}
+
+async function supprimerFicheGalerie() {
+  const fiche = galerieAnalyses[galerieIndex];
+
+  if (!fiche) {
+    alert("Aucune fiche à supprimer.");
+    return;
+  }
+
+  const confirmation = window.confirm(
+    "Supprimer définitivement cette fiche résultat ?\n\n" +
+      "Photo : " + (fiche.nomPhoto || "non renseignée") + "\n" +
+      "JSON : " + (fiche.nomJson || "non renseigné")
+  );
+
+  if (!confirmation) {
+    return;
+  }
+
+  try {
+    setGalerieChargement(true);
+    setMessageGalerieAnalyses("Suppression en cours...");
+
+    const response = await fetch(API_BASE + "/photo-analysee", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        nomPhoto: fiche.nomPhoto,
+        nomJson: fiche.nomJson,
+        dossierRacine,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || "Erreur suppression fiche");
+    }
+
+    setGalerieAnalyses((ancienneGalerie) => {
+      const nouvelleGalerie = ancienneGalerie.filter((_, index) => index !== galerieIndex);
+
+      setGalerieIndex((ancienIndex) => {
+        if (nouvelleGalerie.length === 0) {
+          return 0;
+        }
+
+        return Math.min(ancienIndex, nouvelleGalerie.length - 1);
+      });
+
+      setMessageGalerieAnalyses(
+        nouvelleGalerie.length
+          ? "Fiche supprimée."
+          : "Aucune photo analysée sauvegardée pour l'instant."
+      );
+
+      return nouvelleGalerie;
+    });
+  } catch (error) {
+    console.error(error);
+    alert("Erreur suppression fiche : " + error.message);
+  } finally {
+    setGalerieChargement(false);
+  }
+}
+
+function ouvrirSelectionActualisationPhotos() {
+  if (!voyage) {
+    alert("Aucun voyage actif.");
+    return;
+  }
+
+  if (!cheminCollecteActif) {
+    alert("Aucun dossier de visite actif.");
+    return;
+  }
+
+  const input = inputActualiserPhotosRef.current;
+
+  if (input) {
+    input.value = null;
+    input.click();
+  }
+}
+
+async function handleActualiserPhotos(event) {
+  const fichiersSelectionnes = Array.from(event.target.files || []);
+
+  if (fichiersSelectionnes.length === 0) {
+    return;
+  }
+
+  if (!cheminCollecteActif) {
+    alert("Aucun dossier de visite actif.");
+    return;
+  }
+
+  const debutMs = Number(localStorage.getItem("photoCartelDebutVisiteMs") || 0);
+
+  const fichiersDepuisDebut = debutMs
+    ? fichiersSelectionnes.filter((fichier) => fichier.lastModified >= debutMs - 60000)
+    : fichiersSelectionnes;
+
+  if (fichiersDepuisDebut.length === 0) {
+    setMessageActualisation(
+      "Aucune photo sélectionnée ne semble avoir été prise depuis le début de la visite."
+    );
+    return;
+  }
+
+  try {
+    setActualisationEnCours(true);
+    setMessageActualisation(
+      `Actualisation en cours : ${fichiersDepuisDebut.length} photo(s) à copier.`
+    );
+
+    const formData = new FormData();
+    formData.append("cheminDestination", cheminCollecteActif);
+
+    for (const fichier of fichiersDepuisDebut) {
+      formData.append("photos", fichier, fichier.name);
+    }
+
+    const response = await fetch(API_BASE + "/actualiser-photos-visite", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      setMessageActualisation("Erreur actualisation : " + data.error);
+      alert("Erreur actualisation : " + data.error);
+      return;
+    }
+
+    setPhotosCollectees(data.totalDestination || data.copies || 0);
+    setDerniereActualisation(data);
+    setMessageActualisation(
+      `Actualisation terminée : ${data.copies} photo(s) copiée(s), ${data.ignores} déjà présente(s).`
+    );
+    setDerniereActionVisite("Photos actualisées le " + formaterDate(new Date()));
+  } catch (error) {
+    console.error(error);
+    setMessageActualisation("Erreur actualisation : " + error.message);
+    alert("Erreur actualisation : " + error.message);
+  } finally {
+    setActualisationEnCours(false);
+  }
+}
+
+async function creerTamponCollecteLibreEtOuvrirCamera() {
+  if (!voyage) {
+    alert("Aucun voyage actif");
+    return;
+  }
+
+  const maintenant = new Date();
+  const nomTampon = `A_EN_COURS_${timestampDossier(maintenant)}`;
+  const cheminTampon = villeVisite
+    ? `${dossierRacine}\\${voyage}\\${villeVisite}\\${nomTampon}`
+    : `${dossierRacine}\\${voyage}\\${nomTampon}`;
+
+  try {
+    const response = await fetch(API_BASE + "/creer-dossier", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chemin: cheminTampon,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      alert("Erreur création dossier tampon : " + data.error);
+      return;
+    }
+
+    setStatutVisite("EN_COURS");
+    setDateFinVisite(null);
+    setDossierTampon(nomTampon);
+    setCheminTamponActif(cheminTampon);
+    setLieuVisite(nomTampon);
+    setTypeVisite("Autre");
+    setModeAucuneVisite(false);
+    setDerniereActionVisite("Collecte libre créée le " + formaterDate(maintenant));
+
+    localStorage.setItem("photoCartelStatutVisite", "EN_COURS");
+    localStorage.setItem("photoCartelLieuActif", nomTampon);
+    localStorage.setItem("photoCartelTypeVisiteActif", "Autre");
+    localStorage.setItem("photoCartelDossierTamponActif", nomTampon);
+    localStorage.setItem("photoCartelCheminTamponActif", cheminTampon);
+    localStorage.setItem("photoCartelDebutVisiteMs", String(maintenant.getTime()));
+
+    setTimeout(() => {
+      ouvrirAppareilPhoto();
+    }, 0);
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de la création du dossier tampon");
+  }
+}
+
+function handlePhotosPrises(event) {
+  const fichiers = Array.from(event.target.files || []);
+
+  if (fichiers.length === 0) {
+    return;
+  }
+
+  // Fallback PC / navigateur non Android uniquement.
+  setPhotosCollectees((ancien) => ancien + fichiers.length);
+  setDerniereActionVisite(
+    `${fichiers.length} photo(s) sélectionnée(s) le ${formaterDate(new Date())}`
+  );
+}
+
+
+
+  function statutLisible() {
+    if (statutVisite === "TERMINEE") return "TERMINÉE";
+    if (resultatClassification) return "CLASSIFIÉE";
+    return "EN COURS";
+  }
+
+  async function finDeVisite() {
+    if (!voyage) {
+      alert("Aucun voyage actif");
+      return;
+    }
+
+    const maintenant = new Date();
+    const nomTampon = `A_EN_COURS_${timestampDossier(maintenant)}`;
+    const estTamponActif = (lieuVisite || "").startsWith("A_EN_COURS");
+
+    let cheminParentTampon = "";
+
+    if (estTamponActif && cheminCollecteActif) {
+      const morceaux = cheminCollecteActif.split("\\").filter(Boolean);
+      morceaux.pop();
+      cheminParentTampon = morceaux.join("\\");
+    } else if (villeVisite) {
+      cheminParentTampon = `${dossierRacine}\\${voyage}\\${villeVisite}`;
+    } else {
+      cheminParentTampon = `${dossierRacine}\\${voyage}`;
+    }
+
+    const cheminTampon = `${cheminParentTampon}\\${nomTampon}`;
+
+    try {
+      const response = await fetch(API_BASE + "/creer-dossier", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          chemin: cheminTampon,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!data.success) {
+        alert("Erreur création dossier tampon : " + data.error);
+        return;
+      }
+
+      setStatutVisite("EN_COURS");
+      setDateFinVisite(null);
+      setDossierTampon(nomTampon);
+      setCheminTamponActif(cheminTampon);
+      setLieuVisite(nomTampon);
+      setTypeVisite("Autre");
+      setDerniereActionVisite(
+        `${estTamponActif ? "Dossier tampon clôturé" : "Visite clôturée"} le ${formaterDate(maintenant)}. Nouveau dossier tampon actif : ${nomTampon}`
+      );
+      setPhotosCollectees(0);
+      setMessageActualisation("");
+      setDerniereActualisation(null);
+
+      localStorage.setItem("photoCartelStatutVisite", "EN_COURS");
+      localStorage.setItem("photoCartelLieuActif", nomTampon);
+      localStorage.setItem("photoCartelTypeVisiteActif", "Autre");
+      localStorage.setItem("photoCartelDossierTamponActif", nomTampon);
+      localStorage.setItem("photoCartelCheminTamponActif", cheminTampon);
+      localStorage.setItem("photoCartelDebutVisiteMs", String(maintenant.getTime()));
+
+      alert(
+        (estTamponActif
+          ? "Dossier tampon clôturé.\n\n"
+          : "Visite clôturée.\n\n") +
+          "Nouveau dossier tampon actif :\n\n" +
+          nomTampon +
+          "\n\nChemin :\n" +
+          cheminTampon
+      );
+    } catch (error) {
+      console.error(error);
+      alert("Erreur lors de la fin de visite");
+    }
+  }
+
+  function construireTableauClassification(data, dateDebut, dateFin) {
+    const stats = {
+      Oeuvres: 0,
+      Cartels: 0,
+      Architecture: 0,
+      Jardins: 0,
+      A_verifier_classification: 0,
+    };
+
+    if (data.resultats) {
+      for (const ligne of data.resultats) {
+        if (stats[ligne.categorie] !== undefined) {
+          stats[ligne.categorie] += 1;
+        } else {
+          stats.A_verifier_classification += 1;
+        }
+      }
+    }
+
+    return {
+      fichierTraite: dossierImport || "Dossier sélectionné",
+      dateTraitement: formaterDate(dateFin),
+      dureeTraitement: formaterDuree(dateFin.getTime() - dateDebut.getTime()),
+      stats,
+      total: data.total ?? data.resultats?.length ?? 0,
+      destination: data.cheminDestination || cheminCible,
+    };
+  }
+
+  function handleSelectionDossier(event) {
+    const fichiers = Array.from(event.target.files || []);
+
+    const photos = fichiers.filter((fichier) => {
+      const nom = fichier.name.toLowerCase();
+      return (
+        nom.endsWith(".jpg") ||
+        nom.endsWith(".jpeg") ||
+        nom.endsWith(".png") ||
+        nom.endsWith(".webp")
+      );
+    });
+
+    if (photos.length === 0) {
+      alert("Aucune photo trouvée dans ce dossier");
+      setFichiersImport([]);
+      setDossierImport("");
+      setNombrePhotos(0);
+      setMessageImport("");
+      setResultatClassification(null);
+      return;
+    }
+
+    const premierChemin =
+      photos[0].webkitRelativePath || photos[0].name || "Dossier sélectionné";
+
+    const nomDossier = premierChemin.includes("/")
+      ? premierChemin.split("/")[0]
+      : "Dossier sélectionné";
+
+    setFichiersImport(photos);
+    setDossierImport(nomDossier);
+    setNombrePhotos(photos.length);
+    setResultatClassification(null);
+    setMessageImport(`${photos.length} photos sélectionnées`);
+  }
+
+
+
+function handleSelectionDossierRenommage(event) {
+  const fichiers = Array.from(event.target.files || []);
+
+  cheminRenommagePrepareRef.current = "";
+  setCheminRenommagePrepare("");
+  setRenommagePret(false);
+
+  if (fichiers.length === 0) {
+    setFichiersRenommage([]);
+    setDossierRenommage("");
+    setNombrePhotosRenommage(0);
+    setMessageRenommage("Aucun fichier sélectionné pour renommage");
+    return;
+  }
+
+  const photos = fichiers.filter((fichier) => {
+    const nom = fichier.name.toLowerCase();
+    return (
+      nom.endsWith(".jpg") ||
+      nom.endsWith(".jpeg") ||
+      nom.endsWith(".png") ||
+      nom.endsWith(".webp")
+    );
+  });
+
+  const premierChemin =
+    photos[0]?.webkitRelativePath || fichiers[0]?.webkitRelativePath || fichiers[0]?.name;
+
+  const nomDossier = premierChemin?.includes("/")
+    ? premierChemin.split("/")[0]
+    : "Dossier sélectionné";
+
+  setFichiersRenommage(photos);
+  setDossierRenommage(nomDossier);
+  setNombrePhotosRenommage(photos.length);
+  setMessageRenommage(`${photos.length} fichiers sélectionnés pour renommage`);
+}
+
+
+
+
+  async function classifierDossierTest(fichiersAUtiliser = fichiersImport) {
+    try {
+      const listeFichiers = Array.from(fichiersAUtiliser || []);
+      const photos = listeFichiers.filter((fichier) => {
+        const nom = fichier.name.toLowerCase();
+        return (
+          nom.endsWith(".jpg") ||
+          nom.endsWith(".jpeg") ||
+          nom.endsWith(".png") ||
+          nom.endsWith(".webp")
+        );
+      });
+
+      if (photos.length === 0) {
+        alert("Aucune photo trouvée dans ce dossier");
+        setFichiersImport([]);
+        setDossierImport("");
+        setNombrePhotos(0);
+        setMessageImport("");
+        setResultatClassification(null);
+        return;
+      }
+
+      if (!cheminCible) {
+        alert("Chemin de destination manquant");
+        return;
+      }
+
+      const premierChemin =
+        photos[0].webkitRelativePath || photos[0].name || "Dossier sélectionné";
+
+      const nomDossierLocal = premierChemin.includes("/")
+        ? premierChemin.split("/")[0]
+        : dossierImport || "Dossier sélectionné";
+
+      setFichiersImport(photos);
+      setDossierImport(nomDossierLocal);
+      setNombrePhotos(photos.length);
+      setResultatClassification(null);
+
+      // v16.5 : un seul tableau de bord visible à la fois.
+      // Une nouvelle classification remplace automatiquement le dernier résultat affiché.
+      setDashboardRenommage(null);
+      setMessageRenommage("");
+      setDossierRenommage("");
+      setNombrePhotosRenommage(0);
+      cheminRenommagePrepareRef.current = "";
+      setCheminRenommagePrepare("");
+      setRenommagePret(false);
+      setRenommageFinalTermine(false);
+
+      const dateDebut = new Date();
+
+      setClassificationEnCours(true);
+      setMessageImport(
+        `Classification en cours du dossier "${nomDossierLocal}" : ${photos.length} photos à traiter.`
+      );
+
+      const formData = new FormData();
+
+      for (const fichier of photos) {
+        formData.append("photos", fichier, fichier.name);
+      }
+
+      const timestampClassification = new Date()
+        .toISOString()
+        .replace(/:/g, "-")
+        .replace("T", "_")
+        .slice(0, 16);
+
+      const nomDossierSortie =
+        `${nomDossierLocal}_classifié_${timestampClassification}Z`;
+
+      const cheminDestinationClassification =
+        `${dossierRacine}\\Classifications\\${nomDossierSortie}`;
+
+      formData.append("cheminDestination", cheminDestinationClassification);
+
+      const response = await fetch(API_BASE + "/classifier-fichiers", {
+        method: "POST",
+        body: formData,
+      });
+
+      const texteReponse = await response.text();
+
+      let data;
+      try {
+        data = JSON.parse(texteReponse);
+      } catch (e) {
+        throw new Error(
+          "Réponse serveur non JSON : " + texteReponse.slice(0, 200)
+        );
+      }
+
+      const dateFin = new Date();
+
+      if (data.success) {
+        data.cheminDestination = cheminDestinationClassification;
+
+        const tableau = construireTableauClassification(data, dateDebut, dateFin);
+        tableau.fichierTraite = nomDossierLocal;
+        tableau.destination = cheminDestinationClassification;
+
+        setResultatClassification(tableau);
+        setMessageImport("Classification terminée");
+        setDerniereActionVisite(
+          `Classification terminée le ${formaterDate(dateFin)}`
+        );
+      } else {
+        setMessageImport("Erreur classification");
+        alert(data.error || "Erreur classification");
+      }
+    } catch (error) {
+      console.error(error);
+      setMessageImport("Erreur classification : " + error.message);
+      alert(error.message);
+    } finally {
+      setClassificationEnCours(false);
+    }
+  }
+
+
+async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
+  try {
+    const listeFichiers = Array.from(fichiersAUtiliser || []).filter((fichier) => {
+      const nom = fichier.name.toLowerCase();
+      return (
+        nom.endsWith(".jpg") ||
+        nom.endsWith(".jpeg") ||
+        nom.endsWith(".png") ||
+        nom.endsWith(".webp")
+      );
+    });
+
+    cheminRenommagePrepareRef.current = "";
+    setCheminRenommagePrepare("");
+    setRenommagePret(false);
+    setDashboardRenommage(null);
+    setRenommageFinalTermine(false);
+
+    // v16.5 : un seul tableau de bord visible à la fois.
+    // Un nouveau renommage remplace automatiquement le dernier résultat affiché.
+    setResultatClassification(null);
+    setMessageImport("");
+    setDossierImport("");
+    setNombrePhotos(0);
+
+    if (listeFichiers.length === 0) {
+      setMessageRenommage("Aucune photo trouvée pour le renommage.");
+      setRenommageFinalEnCours(false);
+      return;
+    }
+
+    const cheminRelatif = listeFichiers[0]?.webkitRelativePath || "";
+    const nomDossierSource = cheminRelatif
+      ? cheminRelatif.split("/")[0]
+      : dossierRenommage || "Dossier_selectionne";
+
+    setDossierRenommage(nomDossierSource);
+    setNombrePhotosRenommage(listeFichiers.length);
+    setRenommageFinalEnCours(true);
+    setMessageRenommage(
+      `Renommage en cours du dossier "${nomDossierSource}" : ${listeFichiers.length} photos à traiter.`
+    );
+
+    const formData = new FormData();
+
+    for (const fichier of listeFichiers) {
+      formData.append("oeuvres", fichier, fichier.name);
+    }
+
+    formData.append("dossierSource", nomDossierSource);
+    formData.append("dossierRacine", dossierRacine);
+    formData.append("nomDossierSource", nomDossierSource);
+
+    const response = await fetch(API_BASE + "/renommer-oeuvres-fichiers", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+    console.log("DATA BRUTE RENOMMAGE =", data);
+
+    if (!response.ok || !data.success) {
+      const message = data.error || "Erreur pendant la préparation du renommage";
+      setRenommageFinalEnCours(false);
+      setMessageRenommage("Erreur renommage : " + message);
+      return;
+    }
+
+    const cheminPrepare = data.cheminDestination || "";
+
+    if (!cheminPrepare) {
+      console.error("AUCUN CHEMIN RETOURNE PAR LE SERVEUR =", data);
+      setRenommageFinalEnCours(false);
+      setMessageRenommage(
+        "Renommage impossible : le serveur n'a pas retourné le chemin complet du dossier de renommage."
+      );
+      return;
+    }
+
+    console.log("DATA PREPARATION =", data);
+    console.log("CHEMIN PREPARE =", cheminPrepare);
+
+    cheminRenommagePrepareRef.current = cheminPrepare;
+    setCheminRenommagePrepare(cheminPrepare);
+
+    await lancerRenommageFinal(cheminPrepare, nomDossierSource);
+  } catch (error) {
+    console.error(error);
+    setRenommageFinalEnCours(false);
+    setMessageRenommage("Erreur renommage : " + error.message);
+  }
+}
+
+
+async function lancerRenommageFinal(cheminForce = "", dossierForce = "") {
+  try {
+
+setDashboardRenommage(null);
+setRenommageFinalEnCours(true);
+setRenommageFinalTermine(false);
+
+    const cheminFinal =
+      cheminForce ||
+      cheminRenommagePrepareRef.current ||
+      cheminRenommagePrepare ||
+      document.querySelector("[data-chemin-renommage]")?.dataset.cheminRenommage ||
+      "";
+
+    console.log("REF =", cheminRenommagePrepareRef.current);
+    console.log("STATE =", cheminRenommagePrepare);
+    console.log("CHEMIN FINAL UTILISÉ =", cheminFinal);
+
+    if (!cheminFinal) {
+      console.error("CHEMIN RENOMMAGE VIDE AU LANCEMENT", {
+        ref: cheminRenommagePrepareRef.current,
+        state: cheminRenommagePrepare,
+        dossierRenommage,
+      });
+
+      setMessageRenommage(
+        "Renommage impossible : clique d'abord sur « Renommer des œuvres » et attends la fin de la préparation."
+      );
+
+      return;
+    }
+
+    setMessageRenommage(
+      `Renommage en cours du dossier "${dossierForce || dossierRenommage}"...`
+    );
+
+    console.log("APPEL /renommer-oeuvres");
+    console.log("CHEMIN ENVOYE =", cheminFinal);
+
+    const response = await fetch(API_BASE + "/renommer-oeuvres", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        cheminVisite: cheminFinal,
+      }),
+    });
+
+    const data = await response.json();
+    console.log("RESULTAT RENOMMAGE FINAL =", data);
+
+   if (data.success) {
+
+  setDashboardRenommage(data.dashboardRenommage);
+
+  setRenommageFinalTermine(true);
+  setRenommageFinalEnCours(false);
+
+  setMessageRenommage(
+    `Renommage terminé : ${data.renommes} œuvres renommées, ${data.aVerifier} à vérifier.`
+  );
+
+  setDerniereActionVisite(
+    `Renommage terminé le ${formaterDate(new Date())}`
+  );
+
+} else {
+
+  setRenommageFinalEnCours(false);
+
+  setMessageRenommage(
+    "Erreur renommage final : " + data.error
+  );
+}
+
+
+
+
+ } catch (error) {
+  console.error(error);
+
+  setRenommageFinalEnCours(false);
+
+  setMessageRenommage(
+    "Erreur renommage final : " + error.message
+  );
+}
+}
+
+
+  const nomCartel =
+    nomFinal.length > 4 ? nomFinal.replace(".jpg", "_CARTEL.jpg") : "";
+
+  function genererNomPropose(analyse, timestamp) {
+    if (!analyse) return "";
+
+    const artiste = analyse.artist?.trim() || "artiste inconnu";
+    const titre =
+      analyse.title_fr?.trim() || analyse.title_en?.trim() || "titre inconnu";
+    const date = analyse.date?.trim();
+
+    let nom = `${timestamp}, ${artiste}, '${titre}'`;
+
+    if (date) {
+      nom += `, ${date}`;
+    }
+
+    nom += ".jpg";
+
+    nom = nom.replace(/[<>:"/\\|?*]/g, "").replace(/\s+/g, " ").trim();
+
+    return nom;
+  }
+
+  const creerDossier = async () => {
+    try {
+      const response = await fetch(API_BASE + "/creer-dossier", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          chemin: cheminCible,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        alert("Dossier créé avec succès");
+      } else {
+        alert("Erreur : " + data.error);
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Impossible de contacter le serveur");
+    }
+  };
+
+  const creerCategoriesMusee = async (afficherAlerte = true) => {
+    try {
+      const response = await fetch(
+        API_BASE + "/creer-categories-musee",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            chemin: cheminCible,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        if (afficherAlerte) {
+          alert("Catégories créées :\n\n" + data.categories.join("\n"));
+        }
+      } else {
+        alert(data.error);
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Erreur serveur");
+    }
+  };
+
+const validerNouveauVoyage = async () => {
+  const nomVoyage = nomNouveauVoyage.trim();
+
+  if (voyage) {
+    alert(
+      "Impossible de créer un nouveau voyage tant que le voyage en cours n'est pas clos."
+    );
+    return;
+  }
+
+  if (!nomVoyage) {
+    alert("Nom de voyage manquant");
+    return;
+  }
+
+  const cheminVoyage = `${dossierRacine}\\${nomVoyage}`;
+
+  try {
+    const response = await fetch(API_BASE + "/creer-dossier", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chemin: cheminVoyage,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      alert("Erreur création voyage : " + data.error);
+      return;
+    }
+
+    setVoyage(nomVoyage);
+    setVilleVisite("");
+    setLieuVisite("");
+
+localStorage.setItem("photoCartelVoyageActif", nomVoyage);
+localStorage.setItem("photoCartelVilleActive", "");
+localStorage.setItem("photoCartelLieuActif", "");
+
+
+setTypeVisite("");
+setTypeNouvelleVisite("Musée");
+
+    setVisiteActive(null);
+    setStatutVisite("EN_COURS");
+    setDateFinVisite(null);
+    setDossierTampon("");
+    setCheminTamponActif("");
+    setDerniereActionVisite("Nouveau voyage créé le " + formaterDate(new Date()));
+    setPhotosCollectees(0);
+    setMessageActualisation("");
+    setDerniereActualisation(null);
+    setResultatClassification(null);
+    setDashboardRenommage(null);
+    setMessageImport("");
+    setMessageRenommage("");
+
+    setNomNouveauVoyage("");
+    setModeCreationVoyage(false);
+    setModeGestionVoyage(false);
+
+    alert("Voyage créé :\n\n" + nomVoyage);
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de la création du voyage");
+  }
+};
+
+const validerNouvelleVisite = async () => {
+  const ville = villeNouvelleVisite.trim();
+  const lieu = lieuNouvelleVisite.trim();
+
+  if (!voyage) {
+    alert("Aucun voyage actif");
+    return;
+  }
+
+  if (!ville) {
+    alert("Ville manquante");
+    return;
+  }
+
+  if (!lieu) {
+    alert("Lieu manquant");
+    return;
+  }
+
+  const nouveauChemin = `${dossierRacine}\\${voyage}\\${ville}\\${lieu}`;
+
+  try {
+    const response = await fetch(API_BASE + "/creer-dossier", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chemin: nouveauChemin,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      alert("Erreur création dossier : " + data.error);
+      return;
+    }
+
+    if (typeNouvelleVisite === "Musée") {
+      const responseCategories = await fetch(
+        API_BASE + "/creer-categories-musee",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            chemin: nouveauChemin,
+          }),
+        }
+      );
+
+      const dataCategories = await responseCategories.json();
+
+      if (!dataCategories.success) {
+        alert("Erreur catégories musée : " + dataCategories.error);
+        return;
+      }
+    }
+
+    setVilleVisite(ville);
+    setLieuVisite(lieu);
+    setTypeVisite(typeNouvelleVisite);
+
+
+    localStorage.setItem("photoCartelVilleActive", ville);
+localStorage.setItem("photoCartelLieuActif", lieu);
+localStorage.setItem("photoCartelTypeVisiteActif", typeNouvelleVisite);
+localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
+
+    setVisiteActive({
+      ville,
+      lieu,
+      type: typeNouvelleVisite,
+      chemin: nouveauChemin,
+    });
+
+    setStatutVisite("EN_COURS");
+    setDateFinVisite(null);
+    setDossierTampon("");
+    setCheminTamponActif("");
+    setDerniereActionVisite("Nouvelle visite créée le " + formaterDate(new Date()));
+    setPhotosCollectees(0);
+    setMessageActualisation("");
+    setDerniereActualisation(null);
+    setResultatClassification(null);
+    setDashboardRenommage(null);
+    setMessageImport("");
+    setMessageRenommage("");
+
+    setVilleNouvelleVisite("");
+    setLieuNouvelleVisite("");
+    setModeCreationVisite(false);
+
+    alert(
+      "Visite créée :\n\n" +
+        ville +
+        "\n" +
+        lieu +
+        "\n\nType : " +
+        typeNouvelleVisite +
+        (typeNouvelleVisite === "Musée"
+          ? "\n\nCatégories musée créées automatiquement."
+          : "")
+    );
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de la création de la visite");
+  }
+};
+
+
+
+  const handleOeuvreChange = (event) => {
+    const file = event.target.files[0];
+
+    if (!file) return;
+
+    setOeuvreFile(file);
+    setOeuvreFileName(file.name);
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      setOeuvreImageUrl(reader.result);
+    };
+
+    reader.readAsDataURL(file);
+  };
+
+  async function detecterEtRecadrerCartel(imageSrc) {
+    return new Promise((resolve) => {
+      const img = new Image();
+
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        canvas.width = img.width;
+        canvas.height = img.height;
+
+        ctx.drawImage(img, 0, 0);
+
+        try {
+          const src = cv.imread(canvas);
+
+          const gray = new cv.Mat();
+          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+          const blurred = new cv.Mat();
+          cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+          const edges = new cv.Mat();
+          cv.Canny(blurred, edges, 50, 150);
+
+          const contours = new cv.MatVector();
+          const hierarchy = new cv.Mat();
+
+          cv.findContours(
+            edges,
+            contours,
+            hierarchy,
+            cv.RETR_EXTERNAL,
+            cv.CHAIN_APPROX_SIMPLE
+          );
+
+          let meilleurRect = null;
+          let meilleureSurface = 0;
+
+          for (let i = 0; i < contours.size(); i++) {
+            const contour = contours.get(i);
+            const rect = cv.boundingRect(contour);
+            const surface = rect.width * rect.height;
+
+            if (surface > meilleureSurface) {
+              meilleureSurface = surface;
+              meilleurRect = rect;
+            }
+          }
+
+          if (!meilleurRect) {
+            resolve(imageSrc);
+            return;
+          }
+
+          const recadreCanvas = document.createElement("canvas");
+
+          recadreCanvas.width = meilleurRect.width;
+          recadreCanvas.height = meilleurRect.height;
+
+          const recadreCtx = recadreCanvas.getContext("2d");
+
+          recadreCtx.drawImage(
+            img,
+            meilleurRect.x,
+            meilleurRect.y,
+            meilleurRect.width,
+            meilleurRect.height,
+            0,
+            0,
+            meilleurRect.width,
+            meilleurRect.height
+          );
+
+          const imageRecadree = recadreCanvas.toDataURL("image/jpeg");
+
+          src.delete();
+          gray.delete();
+          blurred.delete();
+          edges.delete();
+          contours.delete();
+          hierarchy.delete();
+
+          resolve(imageRecadree);
+        } catch (err) {
+          console.error(err);
+          resolve(imageSrc);
+        }
+      };
+
+      img.src = imageSrc;
+    });
+  }
+
+  async function ameliorerImage(imageSrc) {
+    return new Promise((resolve) => {
+      const img = new Image();
+
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        canvas.width = img.width * 2;
+        canvas.height = img.height * 2;
+
+        ctx.filter = "grayscale(100%) contrast(250%) brightness(120%)";
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const imageAmelioree = canvas.toDataURL("image/jpeg");
+        console.log("Image améliorée créée");
+        resolve(imageAmelioree);
+      };
+
+      img.src = imageSrc;
+    });
+  }
+
+  const handleCartelChange = async (event) => {
+    const file = event.target.files[0];
+    alert("FICHIER SELECTIONNE");
+
+    if (!file) return;
+
+    setCartelFile(file);
+
+    const reader = new FileReader();
+
+    reader.onload = async () => {
+      try {
+        console.log("XXXXXXXXXXXXXXXX ETAPE 1 XXXXXXXXXXXXXXXX");
+        const imageDataOriginal = reader.result;
+
+        const imageRecadree = await detecterEtRecadrerCartel(imageDataOriginal);
+
+        console.log("ETAPE 2");
+
+        setCartelRecadreUrl(imageRecadree);
+
+        const imageDataAmelioree = await ameliorerImage(imageRecadree);
+
+        console.log("ETAPE 3");
+
+        setCartelImageUrl(imageDataAmelioree);
+
+        setCartelText("OCR en cours...");
+        setAnalyseMusee(null);
+
+        console.log("ETAPE 4");
+
+        const resultatOriginal = await Tesseract.recognize(
+          imageDataOriginal,
+          "eng+kor"
+        );
+
+        console.log("ETAPE 5");
+
+        const scoreOriginal = resultatOriginal.data.confidence;
+
+        const resultAmeliore = await Tesseract.recognize(
+          imageDataAmelioree,
+          "eng+kor"
+        );
+
+        const scoreAmeliore = resultAmeliore.data.confidence;
+
+        console.log("OCR ORIGINAL COMPLET");
+        console.log(resultatOriginal.data.text);
+
+        console.log("OCR AMELIORE COMPLET");
+        console.log(resultAmeliore.data.text);
+
+        console.log("Score original :", scoreOriginal);
+        console.log("Score amélioré :", scoreAmeliore);
+
+        let texte;
+
+        if (scoreAmeliore > scoreOriginal) {
+          console.log("OCR amélioré retenu");
+          texte = resultAmeliore.data.text;
+        } else {
+          console.log("OCR original retenu");
+          texte = resultatOriginal.data.text;
+        }
+
+        setCartelText(texte);
+
+        const response = await fetch(API_BASE + "/analyse-cartel", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            texte,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          setAnalyseMusee(data.result);
+
+          console.log("RESULTAT IA =", data.result);
+
+          const nomGenere = genererNomPropose(data.result, timestamp);
+
+          console.log("TIMESTAMP =", timestamp);
+          console.log("RESULT IA =", data.result);
+          console.log("NOM GENERE =", nomGenere);
+
+          setNomEdite(nomGenere);
+        } else {
+          console.error(data.error);
+        }
+      } catch (error) {
+        console.error(error);
+        setCartelText("Erreur OCR");
+      }
+    };
+
+    reader.readAsDataURL(file);
+  };
+
+  const timestampBrut = oeuvreFileName
+    ? oeuvreFileName.replace(/\.[^.]+$/, "").replace(/^IMG/i, "")
+    : "";
+
+  const timestamp = (() => {
+    if (/^\d{8}_\d{6}$/.test(timestampBrut)) {
+      return timestampBrut;
+    }
+
+    const match = timestampBrut.match(
+      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/
+    );
+
+    if (match) {
+      return `${match[1]}${match[2]}${match[3]}_${match[4]}${match[5]}${match[6]}`;
+    }
+
+    return timestampBrut;
+  })();
+
+  const confidence = analyseMusee?.confidence || 0;
+
+  const afficherLigne = (label, valeur) => {
+    if (!valeur) return null;
+
+    return (
+      <tr>
+        <td>
+          <strong>{label}</strong>
+        </td>
+        <td>{valeur}</td>
+      </tr>
+    );
+  };
+
+  const nomPropose = (() => {
+    if (!oeuvreFileName) return "";
+
+    const confidence = analyseMusee?.confidence ?? 0;
+
+    if (confidence < 0.5) {
+      return `${timestamp}, A_CLASSIFIER.jpg`;
+    }
+
+    const artiste = analyseMusee?.artist || "";
+
+    const titre =
+      analyseMusee?.title_fr || analyseMusee?.title_en || "A_CLASSIFIER";
+
+    const date = analyseMusee?.date || "";
+
+    let morceaux = [];
+
+    if (timestamp) morceaux.push(timestamp);
+    if (artiste) morceaux.push(artiste);
+
+    morceaux.push(`'${titre}'`);
+
+    if (date) morceaux.push(date);
+
+    return morceaux.join(", ") + ".jpg";
+  })();
+
+  const estCollecteLibre = (lieuVisite || "").startsWith("A_EN_COURS");
+
+  const typeVisiteAffiche = estCollecteLibre
+    ? "Autre"
+    : typeVisite || "Non défini";
+
+  const valeurOuVide = (valeur, secours) => valeur || secours;
+
+  const styles = {
+    page: {
+      minHeight: "100vh",
+      backgroundColor: "#f4f6fb",
+      fontFamily: "Arial, sans-serif",
+      padding: "18px",
+      color: "#0b1b35",
+    },
+    telephone: {
+      width: "100%",
+      maxWidth: "430px",
+      margin: "0 auto",
+      backgroundColor: "#eaf3ff",
+      border: "2px solid #7aa7c7",
+      borderRadius: "28px",
+      padding: "22px 18px 26px",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+    },
+    titre: {
+      textAlign: "center",
+      fontSize: "26px",
+      margin: "0 0 22px",
+      fontWeight: "800",
+    },
+    libelle: {
+      textAlign: "left",
+      fontSize: "15px",
+      fontWeight: "700",
+      margin: "14px 0 6px",
+    },
+    champ: {
+      backgroundColor: "#fff4ec",
+      border: "1px solid #c8a78e",
+      borderRadius: "9px",
+      padding: "9px 12px",
+      fontSize: "16px",
+      fontWeight: "700",
+      textAlign: "center",
+      minHeight: "20px",
+      wordBreak: "break-word",
+    },
+    champSecondaire: {
+      marginTop: "5px",
+      color: "#9a4a00",
+      fontWeight: "700",
+    },
+    boutonPrincipal: {
+      display: "block",
+      width: "72%",
+      margin: "22px auto 18px",
+      padding: "11px 14px",
+      borderRadius: "8px",
+      border: "1px solid #1f4f9f",
+      backgroundColor: "#2166d4",
+      color: "white",
+      fontSize: "16px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    ligneActionsPhoto: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "10px",
+      margin: "22px 0 18px",
+    },
+    boutonActionPhoto: {
+      display: "block",
+      width: "100%",
+      padding: "11px 10px",
+      borderRadius: "8px",
+      border: "1px solid #1f4f9f",
+      backgroundColor: "#2166d4",
+      color: "white",
+      fontSize: "14px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    ligneCompteur: {
+      display: "grid",
+      gridTemplateColumns: "1fr 110px",
+      gap: "16px",
+      alignItems: "center",
+      marginBottom: "18px",
+    },
+    compteurLabel: {
+      backgroundColor: "#fff4ec",
+      border: "1px solid #c8a78e",
+      borderRadius: "4px",
+      padding: "9px 8px",
+      textAlign: "center",
+      fontWeight: "700",
+    },
+    compteurValeur: {
+      backgroundColor: "#dff1d4",
+      border: "1px solid #7da46d",
+      borderRadius: "4px",
+      padding: "9px 8px",
+      textAlign: "center",
+      fontWeight: "800",
+    },
+    separateur: {
+      border: 0,
+      borderTop: "2px solid #0b1b35",
+      margin: "18px 0",
+    },
+    bouton: {
+      display: "block",
+      width: "78%",
+      margin: "9px auto",
+      padding: "10px 12px",
+      borderRadius: "7px",
+      border: "1px solid #1f4f9f",
+      backgroundColor: "#2b6fcf",
+      color: "white",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    boutonTraitement: {
+      display: "block",
+      width: "88%",
+      margin: "9px auto",
+      padding: "10px 12px",
+      borderRadius: "7px",
+      border: "1px solid #2f7b36",
+      backgroundColor: "#f7fff7",
+      color: "#176c22",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+      textAlign: "center",
+    },
+    boutonBas: {
+      display: "block",
+      width: "88%",
+      margin: "9px auto",
+      padding: "10px 12px",
+      borderRadius: "7px",
+      border: "1px solid #6842b8",
+      backgroundColor: "#fbf8ff",
+      color: "#5b31a6",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+      textAlign: "center",
+    },
+    panneauInfo: {
+      marginTop: "16px",
+      padding: "12px",
+      border: "1px solid #cfd7e6",
+      borderRadius: "10px",
+      backgroundColor: "white",
+      fontSize: "14px",
+      lineHeight: "1.5",
+      textAlign: "left",
+      wordBreak: "break-word",
+    },
+    modalOverlay: {
+      position: "fixed",
+      zIndex: 9998,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: "rgba(0,0,0,0.45)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "20px",
+    },
+    modal: {
+      backgroundColor: "white",
+      width: "100%",
+      maxWidth: "420px",
+      borderRadius: "16px",
+      padding: "20px",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.3)",
+    },
+    input: {
+      width: "100%",
+      boxSizing: "border-box",
+      padding: "10px",
+      marginTop: "6px",
+      marginBottom: "12px",
+      borderRadius: "8px",
+      border: "1px solid #aaa",
+      fontSize: "15px",
+    },
+    analyseEcran: {
+      position: "fixed",
+      zIndex: 9997,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: "#f4f6fb",
+      overflowY: "auto",
+      padding: "18px",
+      color: "#0b1b35",
+      fontFamily: "Arial, sans-serif",
+    },
+    analyseTelephone: {
+      width: "100%",
+      maxWidth: "430px",
+      margin: "0 auto",
+      backgroundColor: "#eaf3ff",
+      border: "2px solid #7aa7c7",
+      borderRadius: "28px",
+      padding: "20px 16px 26px",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+    },
+    analyseMiniature: {
+      display: "block",
+      width: "72%",
+      maxHeight: "230px",
+      objectFit: "contain",
+      margin: "10px auto 18px",
+      borderRadius: "14px",
+      border: "2px solid #d1b08f",
+      backgroundColor: "white",
+      cursor: "pointer",
+      boxShadow: "0 5px 14px rgba(0,0,0,0.2)",
+    },
+    analyseCarte: {
+      backgroundColor: "white",
+      border: "1px solid #cfd7e6",
+      borderRadius: "16px",
+      padding: "16px",
+      boxShadow: "0 5px 16px rgba(0,0,0,0.12)",
+      textAlign: "left",
+    },
+    analyseType: {
+      textAlign: "center",
+      fontSize: "21px",
+      fontWeight: "900",
+      margin: "4px 0 14px",
+      color: "#5b31a6",
+    },
+    analyseLigne: {
+      display: "grid",
+      gridTemplateColumns: "118px 1fr",
+      gap: "10px",
+      padding: "8px 0",
+      borderBottom: "1px solid #eef1f6",
+      fontSize: "14px",
+      lineHeight: "1.35",
+    },
+    analyseLabel: {
+      fontWeight: "800",
+      color: "#263a5f",
+    },
+    analyseValeur: {
+      color: "#111827",
+      wordBreak: "break-word",
+    },
+    analyseBoutons: {
+      marginTop: "16px",
+      display: "grid",
+      gap: "10px",
+    },
+    galerieAideSwipe: {
+      margin: "12px 0 0",
+      textAlign: "center",
+      fontSize: "13px",
+      color: "#41516c",
+      fontWeight: "700",
+    },
+    boutonAnalyseSauver: {
+      width: "100%",
+      padding: "11px 12px",
+      borderRadius: "9px",
+      border: "1px solid #2f7b36",
+      backgroundColor: "#1f8f3a",
+      color: "white",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    boutonAnalyseSecondaire: {
+      width: "100%",
+      padding: "11px 12px",
+      borderRadius: "9px",
+      border: "1px solid #1f4f9f",
+      backgroundColor: "#2166d4",
+      color: "white",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    boutonAnalyseFermer: {
+      width: "100%",
+      padding: "11px 12px",
+      borderRadius: "9px",
+      border: "1px solid #9a3412",
+      backgroundColor: "#fff7ed",
+      color: "#9a3412",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    pleinEcranPhoto: {
+      position: "fixed",
+      zIndex: 10000,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: "black",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "0",
+    },
+    pleinEcranImage: {
+      maxWidth: "100%",
+      maxHeight: "100%",
+      objectFit: "contain",
+      touchAction: "pinch-zoom",
+    },
+  };
+
+  return (
+    <div style={styles.page}>
+      {photoPleinEcranUrl && (
+        <div
+          style={styles.pleinEcranPhoto}
+          onClick={() => setPhotoPleinEcranUrl("")}
+        >
+          <img
+            src={photoPleinEcranUrl}
+            alt="Photo originale"
+            style={styles.pleinEcranImage}
+          />
+        </div>
+      )}
+
+      {modeAnalysePhoto && (
+        <div style={styles.analyseEcran}>
+          <main style={styles.analyseTelephone}>
+            <h1 style={styles.titre}>Analyse d'une photo</h1>
+
+            {analysePhotoUrl && (
+              <img
+                src={analysePhotoUrl}
+                alt="Photo analysée"
+                style={styles.analyseMiniature}
+                onClick={() => setPhotoPleinEcranUrl(analysePhotoUrl)}
+              />
+            )}
+
+            <div style={styles.analyseCarte}>
+              {analysePhotoEnCours && (
+                <>
+                  <h2 style={styles.analyseType}>Analyse IA en cours...</h2>
+                  <p>PhotoCartel analyse la photo. Merci de patienter.</p>
+                </>
+              )}
+
+              {!analysePhotoEnCours && messageAnalysePhoto && (
+                <>
+                  <h2 style={styles.analyseType}>Analyse impossible</h2>
+                  <p>{messageAnalysePhoto}</p>
+                </>
+              )}
+
+              {!analysePhotoEnCours && analysePhotoResultat && (
+                <>
+                  <div style={styles.analyseType}>
+                    {analysePhotoResultat.type_detecte ||
+                      analysePhotoResultat.objet_principal ||
+                      "Type non identifié"}
+                  </div>
+
+                  {afficherChampAnalyse("Objet", analysePhotoResultat.objet_principal)}
+                  {afficherChampAnalyse("Titre FR", analysePhotoResultat.titre_fr)}
+                  {afficherChampAnalyse("Titre EN", analysePhotoResultat.titre_en)}
+                  {afficherChampAnalyse(
+                    "Auteur",
+                    analysePhotoResultat.auteur_ou_createur
+                  )}
+                  {afficherChampAnalyse(
+                    "Date / période",
+                    analysePhotoResultat.date_ou_periode
+                  )}
+                  {afficherChampAnalyse("Catégorie", analysePhotoResultat.categorie)}
+                  {afficherChampAnalyse("Sous-type", analysePhotoResultat.sous_type)}
+                  {afficherChampAnalyse(
+                    "Style",
+                    analysePhotoResultat.style_ou_mouvement
+                  )}
+                  {afficherChampAnalyse("Technique", analysePhotoResultat.technique)}
+                  {afficherChampAnalyse("Support", analysePhotoResultat.support)}
+                  {afficherChampAnalyse("Matériaux", analysePhotoResultat.materiaux)}
+                  {afficherChampAnalyse("Dimensions", analysePhotoResultat.dimensions)}
+                  {afficherChampAnalyse(
+                    "Lieu probable",
+                    analysePhotoResultat.lieu_probable
+                  )}
+                  {afficherChampAnalyse("Ville", analysePhotoResultat.ville)}
+                  {afficherChampAnalyse("Pays", analysePhotoResultat.pays)}
+                  {afficherChampAnalyse(
+                    "Institution",
+                    analysePhotoResultat.musee_ou_institution
+                  )}
+                  {afficherChampAnalyse("Description", analysePhotoResultat.description)}
+                  {afficherChampAnalyse(
+                    "Éléments visibles",
+                    analysePhotoResultat.elements_visibles
+                  )}
+                  {afficherChampAnalyse("Mots-clés", analysePhotoResultat.mots_cles)}
+                  {afficherChampAnalyse("Notes", analysePhotoResultat.notes)}
+                  {afficherChampAnalyse(
+                    "Confiance",
+                    analysePhotoResultat.confidence !== undefined
+                      ? `${Math.round(Number(analysePhotoResultat.confidence || 0) * 100)} %`
+                      : ""
+                  )}
+                </>
+              )}
+            </div>
+
+            <div style={styles.analyseBoutons}>
+              <button
+                type="button"
+                onClick={enregistrerAnalysePhoto}
+                disabled={
+                  analysePhotoEnCours ||
+                  analysePhotoSauvegardeEnCours ||
+                  !analysePhotoResultat
+                }
+                style={{
+                  ...styles.boutonAnalyseSauver,
+                  opacity:
+                    analysePhotoEnCours ||
+                    analysePhotoSauvegardeEnCours ||
+                    !analysePhotoResultat
+                      ? 0.45
+                      : 1,
+                  cursor:
+                    analysePhotoEnCours ||
+                    analysePhotoSauvegardeEnCours ||
+                    !analysePhotoResultat
+                      ? "not-allowed"
+                      : "pointer",
+                }}
+              >
+                {analysePhotoSauvegardeEnCours
+                  ? "Sauvegarde en cours..."
+                  : "Enregistrer l'analyse"}
+              </button>
+
+              <button
+                type="button"
+                onClick={reprendreAnalysePhoto}
+                disabled={analysePhotoEnCours}
+                style={{
+                  ...styles.boutonAnalyseSecondaire,
+                  opacity: analysePhotoEnCours ? 0.45 : 1,
+                  cursor: analysePhotoEnCours ? "not-allowed" : "pointer",
+                }}
+              >
+                Reprendre une photo
+              </button>
+
+              <button
+                type="button"
+                onClick={fermerAnalysePhoto}
+                style={styles.boutonAnalyseFermer}
+              >
+                Fermer sans enregistrer
+              </button>
+            </div>
+          </main>
+        </div>
+      )}
+
+      {modeGalerieAnalyses && (
+        <div style={styles.analyseEcran}>
+          <main style={styles.analyseTelephone}>
+            <h1 style={styles.titre}>Galerie des photos analysées</h1>
+
+            {galerieChargement && (
+              <div style={styles.analyseCarte}>
+                <h2 style={styles.analyseType}>Chargement...</h2>
+                <p>PhotoCartel charge les analyses sauvegardées.</p>
+              </div>
+            )}
+
+            {!galerieChargement && messageGalerieAnalyses && (
+              <div style={styles.analyseCarte}>
+                <h2 style={styles.analyseType}>Galerie</h2>
+                <p>{messageGalerieAnalyses}</p>
+              </div>
+            )}
+
+            {!galerieChargement && galerieAnalyses.length > 0 && (() => {
+              const fiche = galerieAnalyses[galerieIndex] || {};
+              const analyse = fiche.analyse || {};
+
+              return (
+                <>
+                  <p style={styles.galerieCompteur}>
+                    Fiche {galerieIndex + 1} / {galerieAnalyses.length}
+                  </p>
+
+                  {fiche.imageUrl && (
+                    <img
+                      src={API_BASE + fiche.imageUrl}
+                      alt={fiche.nomPhoto || "Photo analysée"}
+                      style={styles.analyseMiniature}
+                      onClick={() => setPhotoPleinEcranUrl(API_BASE + fiche.imageUrl)}
+                    />
+                  )}
+
+                  <div
+                    style={styles.analyseCarte}
+                    onTouchStart={handleGalerieTouchStart}
+                    onTouchEnd={handleGalerieTouchEnd}
+                  >
+                    {afficherFicheAnalyse(analyse)}
+                    {afficherChampAnalyse("Photo", fiche.nomPhoto)}
+                    {afficherChampAnalyse("JSON", fiche.nomJson)}
+                    {afficherChampAnalyse("Date", fiche.dateAnalyseLocale)}
+                  </div>
+
+                  <p style={styles.galerieAideSwipe}>
+                    Balaye la fiche vers la gauche ou la droite pour passer à une autre analyse.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={supprimerFicheGalerie}
+                    disabled={galerieChargement}
+                    style={{
+                      ...styles.boutonAnalyseFermer,
+                      marginTop: 16,
+                      opacity: galerieChargement ? 0.45 : 1,
+                      cursor: galerieChargement ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    Supprimer cette fiche
+                  </button>
+                </>
+              );
+            })()}
+
+            <div style={styles.analyseBoutons}>
+              <button
+                type="button"
+                onClick={ouvrirGaleriePhotosAnalysees}
+                disabled={galerieChargement}
+                style={styles.boutonAnalyseSecondaire}
+              >
+                Actualiser la galerie
+              </button>
+              <button
+                type="button"
+                onClick={fermerGaleriePhotosAnalysees}
+                style={styles.boutonAnalyseFermer}
+              >
+                Retour
+              </button>
+            </div>
+          </main>
+        </div>
+      )}
+
+      {classificationEnCours && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h2>Classification en cours</h2>
+            <p>Dossier : {dossierImport}</p>
+            <p>Photos à traiter : {nombrePhotos}</p>
+            <p>Merci de patienter.</p>
+          </div>
+        </div>
+      )}
+
+      {renommageFinalEnCours && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h2>Renommage en cours</h2>
+            <p>Dossier : {dossierRenommage}</p>
+            <p>Photos à traiter : {nombrePhotosRenommage}</p>
+            <p>Merci de patienter.</p>
+          </div>
+        </div>
+      )}
+
+      {actualisationEnCours && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h2>Actualisation en cours</h2>
+            <p>Copie des photos vers le dossier de visite.</p>
+            <p>Merci de patienter.</p>
+          </div>
+        </div>
+      )}
+
+      {modeGestionVoyage && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h3>Gestion du voyage</h3>
+            <p>
+              Voyage en cours : <strong>{voyage || "Aucun voyage actif"}</strong>
+            </p>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (voyage) {
+                  alert(
+                    "Impossible de créer un nouveau voyage tant que le voyage en cours n'est pas clos."
+                  );
+                  return;
+                }
+
+                setModeGestionVoyage(false);
+                setModeCreationVoyage(true);
+              }}
+              style={styles.bouton}
+            >
+              Créer un voyage
+            </button>
+
+            <button
+              type="button"
+              onClick={finDuVoyage}
+              disabled={!voyage}
+              style={{
+                ...styles.boutonTraitement,
+                opacity: voyage ? 1 : 0.45,
+                cursor: voyage ? "pointer" : "not-allowed",
+              }}
+            >
+              Fin du voyage
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setModeGestionVoyage(false)}
+              style={styles.boutonBas}
+            >
+              Fermer
+            </button>
+          </div>
+        </div>
+      )}
+
+      {modeCreationVoyage && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h3>Nouveau voyage</h3>
+            <label>
+              <strong>Nom du voyage</strong>
+              <input
+                type="text"
+                value={nomNouveauVoyage}
+                onChange={(e) => setNomNouveauVoyage(e.target.value)}
+                placeholder="Ex : Afrique du Sud - novembre 2030"
+                style={styles.input}
+              />
+            </label>
+            <button onClick={validerNouveauVoyage} style={styles.bouton}>
+              Valider
+            </button>
+            <button
+              onClick={() => {
+                setNomNouveauVoyage("");
+                setModeCreationVoyage(false);
+              }}
+              style={styles.boutonBas}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {modeCreationVisite && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h3>Nouvelle visite</h3>
+
+            <label>
+              <strong>Ville</strong>
+              <input
+                type="text"
+                value={villeNouvelleVisite}
+                onChange={(e) => setVilleNouvelleVisite(e.target.value)}
+                placeholder="Ex : Lima"
+                style={styles.input}
+              />
+            </label>
+
+            <label>
+              <strong>Lieu</strong>
+              <input
+                type="text"
+                value={lieuNouvelleVisite}
+                onChange={(e) => setLieuNouvelleVisite(e.target.value)}
+                placeholder="Ex : Musée Larco"
+                style={styles.input}
+              />
+            </label>
+
+            <label>
+              <strong>Type de visite</strong>
+              <select
+                value={typeNouvelleVisite}
+                onChange={(e) => setTypeNouvelleVisite(e.target.value)}
+                style={styles.input}
+              >
+                <option value="Musée">Musée</option>
+                <option value="Autre">Autre</option>
+              </select>
+            </label>
+
+            <button onClick={validerNouvelleVisite} style={styles.bouton}>
+              Valider
+            </button>
+            <button
+              onClick={() => setModeCreationVisite(false)}
+              style={styles.boutonBas}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {modeAucuneVisite && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <h3>Aucune visite en cours</h3>
+            <p>
+              Aucun dossier de visite n'est actif pour le voyage en cours.
+            </p>
+            <p>
+              Tu peux créer une visite maintenant, ou continuer quand même :
+              PhotoCartel créera un dossier tampon de collecte libre.
+            </p>
+
+            <button
+              type="button"
+              onClick={creerTamponCollecteLibreEtOuvrirCamera}
+              style={styles.bouton}
+            >
+              Continuer quand même
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setModeAucuneVisite(false);
+                setModeCreationVisite(true);
+              }}
+              style={styles.boutonTraitement}
+            >
+              Créer une visite
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setModeAucuneVisite(false)}
+              style={styles.boutonBas}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      <main style={styles.telephone}>
+        <h1 style={styles.titre}>PhotoCartel v17.5.2</h1>
+
+        <div style={styles.libelle}>Voyage en cours</div>
+        <div style={styles.champ}>{valeurOuVide(voyage, "Aucun voyage actif")}</div>
+
+        <div style={styles.libelle}>Ville</div>
+        <div style={styles.champ}>{valeurOuVide(villeVisite, "Aucune ville")}</div>
+
+        <div style={styles.libelle}>Visite en cours</div>
+        <div style={styles.champ}>
+          <div>{valeurOuVide(lieuVisite, "Aucune visite")}</div>
+          {estCollecteLibre && (
+            <div style={styles.champSecondaire}>📦 Collecte libre</div>
+          )}
+        </div>
+
+        <div style={styles.libelle}>Type de visite</div>
+        <div style={styles.champ}>{typeVisiteAffiche}</div>
+
+        <div style={styles.ligneActionsPhoto}>
+          <button
+            type="button"
+            onClick={handlePrendreDesPhotos}
+            disabled={!voyage}
+            title={!voyage ? "Crée d'abord un voyage" : "Ouvrir l'appareil photo"}
+            style={{
+              ...styles.boutonActionPhoto,
+              opacity: voyage ? 1 : 0.45,
+              cursor: voyage ? "pointer" : "not-allowed",
+            }}
+          >
+            📷 Prendre des photos
+          </button>
+
+          <button
+            type="button"
+            onClick={handleAnalyserUnePhoto}
+            title="Analyse one-shot d'une photo"
+            style={{
+              ...styles.boutonActionPhoto,
+              backgroundColor: "#5b31a6",
+              border: "1px solid #6842b8",
+            }}
+          >
+            🔍 Analyser une photo
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={ouvrirGaleriePhotosAnalysees}
+          style={styles.boutonTraitement}
+        >
+          🖼️ Galerie des photos analysées
+        </button>
+
+        <input
+          ref={inputPrendrePhotosRef}
+          id="prise-photo-mobile"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          multiple
+          onChange={handlePhotosPrises}
+          style={{ display: "none" }}
+        />
+
+        <input
+          ref={inputAnalyserPhotoRef}
+          id="analyse-photo-one-shot"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handlePhotoAnalyseSelection}
+          style={{ display: "none" }}
+        />
+
+        <div style={styles.ligneCompteur}>
+          <div style={styles.compteurLabel}>Nombre de photos</div>
+          <div style={styles.compteurValeur}>{photosCollectees}</div>
+        </div>
+
+        <button
+          type="button"
+          onClick={ouvrirSelectionActualisationPhotos}
+          disabled={!voyage || !cheminCollecteActif || actualisationEnCours}
+          title={
+            !voyage
+              ? "Crée d'abord un voyage"
+              : !cheminCollecteActif
+              ? "Crée d'abord une visite"
+              : "Sélectionner les photos prises pendant la visite"
+          }
+          style={{
+            ...styles.boutonTraitement,
+            opacity: voyage && cheminCollecteActif && !actualisationEnCours ? 1 : 0.45,
+            cursor:
+              voyage && cheminCollecteActif && !actualisationEnCours
+                ? "pointer"
+                : "not-allowed",
+          }}
+        >
+          {actualisationEnCours
+            ? "🔄 Actualisation en cours..."
+            : "🔄 Actualiser les photos"}
+        </button>
+
+        <input
+          ref={inputActualiserPhotosRef}
+          id="actualisation-photos-visite"
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleActualiserPhotos}
+          style={{ display: "none" }}
+        />
+
+        {messageActualisation && (
+          <div style={styles.panneauInfo}>
+            <strong>{messageActualisation}</strong>
+            {derniereActualisation && (
+              <>
+                <p>
+                  <strong>Dossier de visite :</strong>
+                  <br />
+                  {derniereActualisation.cheminDestination}
+                </p>
+                <p>Photos reçues : {derniereActualisation.recus}</p>
+                <p>Photos copiées : {derniereActualisation.copies}</p>
+                <p>Déjà présentes / ignorées : {derniereActualisation.ignores}</p>
+                <p>Total dans le dossier : {derniereActualisation.totalDestination}</p>
+              </>
+            )}
+          </div>
+        )}
+
+        <hr style={styles.separateur} />
+
+        <button
+          type="button"
+          onClick={() => setModeCreationVisite(true)}
+          style={styles.bouton}
+        >
+          Nouvelle visite
+        </button>
+
+        <button type="button" onClick={finDeVisite} style={styles.bouton}>
+          Fin de visite
+        </button>
+
+        <hr style={styles.separateur} />
+
+        <button
+          type="button"
+          onClick={() => document.getElementById("selection-dossier-import")?.click()}
+          style={styles.boutonTraitement}
+        >
+          📁 Classifier des photos
+        </button>
+
+        <button
+          type="button"
+          onClick={() => document.getElementById("selection-dossier-renommage")?.click()}
+          style={styles.boutonTraitement}
+        >
+          ✏️ Renommer des œuvres
+        </button>
+
+        <input
+          id="selection-dossier-import"
+          type="file"
+          webkitdirectory="true"
+          directory="true"
+          multiple
+          onClick={(event) => {
+            event.target.value = null;
+          }}
+          onChange={(event) => {
+            classifierDossierTest(Array.from(event.target.files || []));
+          }}
+          style={{ display: "none" }}
+        />
+
+        <input
+          id="selection-dossier-renommage"
+          type="file"
+          webkitdirectory="true"
+          directory="true"
+          multiple
+          onClick={(event) => {
+            event.target.value = null;
+          }}
+          onChange={(event) => {
+            handleSelectionDossierRenommage(event);
+            renommerOeuvresTest(Array.from(event.target.files || []));
+          }}
+          style={{ display: "none" }}
+        />
+
+        {messageImport && !resultatClassification && (
+          <div style={styles.panneauInfo}>
+            <strong>{messageImport}</strong>
+          </div>
+        )}
+
+        {dossierImport && !resultatClassification && (
+          <div style={styles.panneauInfo}>
+            <p>
+              <strong>Dossier sélectionné :</strong> {dossierImport}
+            </p>
+            <p>
+              <strong>Photos détectées :</strong> {nombrePhotos}
+            </p>
+          </div>
+        )}
+
+        {resultatClassification && !dashboardRenommage && (
+          <div style={styles.panneauInfo}>
+            <h3>CLASSIFICATION TERMINÉE</h3>
+            <p>
+              <strong>Dossier source</strong>
+              <br />
+              {resultatClassification.fichierTraite}
+            </p>
+            <p>
+              <strong>Dossier résultat</strong>
+              <br />
+              {resultatClassification.destination}
+            </p>
+            <button
+              type="button"
+              onClick={() => ouvrirDossierResultat(resultatClassification.destination)}
+              style={styles.boutonTraitement}
+            >
+              Ouvrir le dossier résultat de la classification
+            </button>
+            <p>Photos analysées : {resultatClassification.total}</p>
+            <p>Œuvres : {resultatClassification.stats.Oeuvres}</p>
+            <p>Cartels : {resultatClassification.stats.Cartels}</p>
+            <p>Architecture : {resultatClassification.stats.Architecture}</p>
+            <p>A vérifier : {resultatClassification.stats.A_verifier_classification}</p>
+            <p>Temps de traitement : {resultatClassification.dureeTraitement}</p>
+          </div>
+        )}
+
+        {messageRenommage && !dashboardRenommage && !renommageFinalEnCours && (
+          <div
+            data-chemin-renommage={cheminRenommagePrepare}
+            style={styles.panneauInfo}
+          >
+            <strong>{messageRenommage}</strong>
+            <p>
+              <strong>Dossier sélectionné :</strong> {dossierRenommage}
+            </p>
+            <p>
+              <strong>Œuvres détectées :</strong> {nombrePhotosRenommage}
+            </p>
+          </div>
+        )}
+
+        {(renommagePret || cheminRenommagePrepare) && !dashboardRenommage && (
+          <button
+            type="button"
+            onClick={() => lancerRenommageFinal()}
+            disabled={renommageFinalEnCours}
+            style={styles.boutonTraitement}
+          >
+            {renommageFinalEnCours
+              ? "Renommage en cours..."
+              : "Lancer le renommage"}
+          </button>
+        )}
+
+        {dashboardRenommage && (
+          <div style={styles.panneauInfo}>
+            <h3>{dashboardRenommage.statut}</h3>
+            <p>
+              <strong>Dossier source</strong>
+              <br />
+              {dashboardRenommage.dossierSource}
+            </p>
+            <p>
+              <strong>Dossier résultat</strong>
+              <br />
+              {dashboardRenommage.cheminResultat}
+            </p>
+            <button
+              type="button"
+              onClick={() => ouvrirDossierResultat(dashboardRenommage.cheminResultat)}
+              style={styles.boutonTraitement}
+            >
+              Ouvrir le dossier résultat du renommage
+            </button>
+            <p>Photos analysées : {dashboardRenommage.photosAnalysees}</p>
+            <p>Œuvres renommées : {dashboardRenommage.oeuvresRenommees}</p>
+            <p>Fichiers à vérifier : {dashboardRenommage.fichiersAVerifier}</p>
+            <p>Taux de réussite : {dashboardRenommage.tauxReussite} %</p>
+            <p>Temps de traitement : {formaterSecondes(dashboardRenommage.tempsRenommageSecondes)}</p>
+          </div>
+        )}
+
+        {(resultatClassification || dashboardRenommage) && (
+          <button
+            type="button"
+            onClick={retourAccueil}
+            style={styles.boutonBas}
+          >
+            🏠 Retour à l'accueil
+          </button>
+        )}
+
+        <hr style={styles.separateur} />
+
+        <button
+          type="button"
+          onClick={() => setModeGestionVoyage(true)}
+          style={styles.boutonBas}
+        >
+          Gestion du voyage
+        </button>
+
+        <button
+          type="button"
+          onClick={() => alert("Fonction disponible en v17")}
+          style={styles.boutonBas}
+        >
+          Bibliothèque des voyages
+        </button>
+
+        <button
+          type="button"
+          onClick={() => alert("Fonction disponible plus tard")}
+          style={styles.boutonBas}
+        >
+          Paramètres
+        </button>
+      </main>
+    </div>
+  );
+}
+
+export default App;
