@@ -8,18 +8,18 @@ import cv from "@techstark/opencv-js";
 function App() {
   console.log("APP PRINCIPALE - PhotoCartel v20.3 cloud-ready");
 
+  const estServeurLocal =
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.hostname.startsWith("192.168.") ||
+    window.location.hostname.startsWith("10.") ||
+    window.location.hostname.startsWith("172.");
+
   const API_BASE = (
     import.meta.env.VITE_PHOTOCARTEL_API_BASE ||
-    localStorage.getItem("photoCartelApiBase") ||
-    (
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1" ||
-      window.location.hostname.startsWith("192.168.") ||
-      window.location.hostname.startsWith("10.") ||
-      window.location.hostname.startsWith("172.")
-        ? `http://${window.location.hostname}:3001`
-        : window.location.origin
-    )
+    (estServeurLocal
+      ? `http://${window.location.hostname}:3001`
+      : "https://photocartel.onrender.com")
   ).replace(/\/$/, "");
 
   async function lireReponseJsonPhotoCartel(response, contexte) {
@@ -411,7 +411,10 @@ async function handlePhotoAnalyseSelection(event) {
       body: formData,
     });
 
-    const data = await response.json();
+    const data = await lireReponseJsonPhotoCartel(
+      response,
+      "Erreur analyse photo"
+    );
 
     if (!response.ok || !data.success) {
       throw new Error(data.error || "Erreur analyse IA");
@@ -422,7 +425,7 @@ async function handlePhotoAnalyseSelection(event) {
   } catch (error) {
     console.error(error);
     setAnalysePhotoResultat(null);
-    setMessageAnalysePhoto("Erreur analyse photo : " + error.message + " — vérifie que le serveur API est lancé sur le port 3001.");
+    setMessageAnalysePhoto("Erreur analyse photo : " + error.message + " — vérifie que l’API Render répond bien sur " + API_BASE + ".");
   } finally {
     setAnalysePhotoEnCours(false);
   }
