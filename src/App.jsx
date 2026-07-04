@@ -2,11 +2,11 @@ import { useState, useRef } from "react";
 import Tesseract from "tesseract.js";
 import cv from "@techstark/opencv-js";
 
-// PhotoCartel v22.3 — retour stable capture appareil photo depuis PhotoCartel. Mode Démonstration conservé.
+// PhotoCartel v25.4-test-album-photocartel — séparation stricte Visite / Analyser une photo. Mode Démonstration conservé.
 // Moteurs, endpoints et règles métier conservés.
 
 function App() {
-  console.log("APP PRINCIPALE - PhotoCartel v22.3 capture-stable cloud-ready");
+  console.log("APP PRINCIPALE - PhotoCartel v25.4-test-album-photocartel parcours-visite-separe cloud-ready");
 
   const estServeurLocal =
     window.location.hostname === "localhost" ||
@@ -159,6 +159,7 @@ const galerieTouchStartYRef = useRef(null);
 
 const [actualisationEnCours, setActualisationEnCours] = useState(false);
 const [messageActualisation, setMessageActualisation] = useState("");
+const [messageArborescenceAndroid, setMessageArborescenceAndroid] = useState("");
 const [derniereActualisation, setDerniereActualisation] = useState(null);
 
 const [modeParametres, setModeParametres] = useState(false);
@@ -313,6 +314,7 @@ function finDuVoyage() {
   setPhotosCollectees(0);
   localStorage.setItem("photoCartelPhotosCollectees", "0");
   setMessageActualisation("");
+  setMessageArborescenceAndroid("");
   setDerniereActualisation(null);
 
   setResultatClassification(null);
@@ -350,13 +352,225 @@ function estAndroid() {
   return /Android/i.test(navigator.userAgent || "");
 }
 
+
+const CATEGORIES_VISITE_ANDROID = [
+  "Oeuvres",
+  "Cartels",
+  "Jardins",
+  "Architecture",
+  "Batiments",
+  "Structures",
+];
+
+async function creerArborescenceAndroidSurTelephone({ voyageNom, villeNom, lieuNom, typeVisiteNom }) {
+  // v25.2-test : création réelle de l'arborescence sur le téléphone.
+  // Important : un site web ne peut pas écrire librement dans "Stockage interne" sans autorisation.
+  // Sur Android, PhotoCartel demande donc à l'utilisateur de choisir la racine du stockage interne,
+  // puis crée PhotoCartel/Voyage/Ville/Visite dans ce dossier autorisé.
+  if (!estAndroid()) {
+    return {
+      success: false,
+      ignore: true,
+      raison: "Création Android ignorée : test réalisé hors téléphone Android.",
+    };
+  }
+
+  if (typeof window.showDirectoryPicker !== "function") {
+    return {
+      success: false,
+      ignore: false,
+      raison:
+        "Le navigateur Android utilisé ne donne pas accès à la création de dossiers. Ouvre PhotoCartel dans Chrome Android à jour, puis réessaie.",
+    };
+  }
+
+  const continuer = window.confirm(
+    "PhotoCartel v25.4-test-album-photocartel va créer le vrai dossier sur le téléphone.\n\n" +
+      "Dans l'écran suivant, choisis : Stockage interne.\n\n" +
+      "PhotoCartel créera ensuite :\n" +
+      "PhotoCartel / " + voyageNom + " / " + villeNom + " / " + lieuNom
+  );
+
+  if (!continuer) {
+    return {
+      success: false,
+      ignore: false,
+      raison: "Création du dossier Android annulée par l'utilisateur.",
+    };
+  }
+
+  const racineStockage = await window.showDirectoryPicker({
+    id: "photocartel-stockage-interne",
+    mode: "readwrite",
+    startIn: "documents",
+  });
+
+  const dossierPhotoCartel = await racineStockage.getDirectoryHandle("PhotoCartel", {
+    create: true,
+  });
+  const dossierVoyage = await dossierPhotoCartel.getDirectoryHandle(voyageNom, {
+    create: true,
+  });
+  const dossierVille = await dossierVoyage.getDirectoryHandle(villeNom, {
+    create: true,
+  });
+  const dossierVisite = await dossierVille.getDirectoryHandle(lieuNom, {
+    create: true,
+  });
+
+  const categoriesCreees = [];
+
+  if (typeVisiteNom === "Musée") {
+    for (const categorie of CATEGORIES_VISITE_ANDROID) {
+      await dossierVisite.getDirectoryHandle(categorie, { create: true });
+      categoriesCreees.push(categorie);
+    }
+  }
+
+  return {
+    success: true,
+    cheminLisible:
+      "Stockage interne / PhotoCartel / " + voyageNom + " / " + villeNom + " / " + lieuNom,
+    categoriesCreees,
+  };
+}
+
+
+async function testerDossierAndroid() {
+  // v25.4-test-album-photocartel : test ciblé de l'album racine DCIM/PhotoCartel.
+  // Objectif : vérifier si la PWA peut écrire dans un dossier PhotoCartel déjà créé
+  // manuellement depuis la Galerie Samsung, puis créer l'arborescence voyage/ville/visite.
+  try {
+    setMessageArborescenceAndroid("Test album PhotoCartel en cours...");
+
+    const diagnostic =
+      "Adresse : " + window.location.href + "\n" +
+      "Contexte sécurisé HTTPS/localhost : " + (window.isSecureContext ? "OUI" : "NON") + "\n" +
+      "showDirectoryPicker disponible : " +
+      (typeof window.showDirectoryPicker === "function" ? "OUI" : "NON");
+
+    if (typeof window.showDirectoryPicker !== "function") {
+      const message =
+        "Test impossible pour l'instant : PhotoCartel ne voit pas l'API de sélection de dossier.\n\n" +
+        diagnostic +
+        "\n\nInterprétation :\n" +
+        "- si le contexte sécurisé est NON, il faudra publier/tester en HTTPS avant conclusion définitive ;\n" +
+        "- si le contexte sécurisé est OUI et que l'API reste absente, alors Chrome Android/PWA ne permet pas d'écrire dans DCIM/PhotoCartel.";
+      setMessageArborescenceAndroid(message);
+      alert(message);
+      return;
+    }
+
+    const continuer = window.confirm(
+      "Test PhotoCartel v25.4 — album DCIM/PhotoCartel\n\n" +
+        "Dans l'écran suivant, choisis le dossier déjà créé :\n\n" +
+        "DCIM / PhotoCartel\n\n" +
+        "Ne choisis pas DCIM, ne choisis pas Camera.\n" +
+        "Choisis directement PhotoCartel.\n\n" +
+        "PhotoCartel tentera ensuite de créer automatiquement :\n" +
+        "Italie 2026 / Florence / Uffizi / Oeuvres\n" +
+        "Italie 2026 / Florence / Uffizi / Cartels\n" +
+        "Italie 2026 / Florence / Uffizi / Jardins\n" +
+        "Italie 2026 / Florence / Uffizi / Architecture\n" +
+        "Italie 2026 / Florence / Uffizi / Batiments\n" +
+        "Italie 2026 / Florence / Uffizi / Structures\n\n" +
+        "Il créera aussi un fichier test_v25_4.txt."
+    );
+
+    if (!continuer) {
+      setMessageArborescenceAndroid("Test album PhotoCartel annulé.");
+      return;
+    }
+
+    const racinePhotoCartel = await window.showDirectoryPicker({
+      id: "pc-root",
+      mode: "readwrite",
+    });
+
+    const nomVoyageTest = nettoyerNomDossierLocal(voyage || "Italie 2026");
+    const nomVilleTest = nettoyerNomDossierLocal(villeVisite || "Florence");
+    const nomVisiteTest = nettoyerNomDossierLocal(lieuVisite || "Uffizi");
+
+    const dossierVoyage = await racinePhotoCartel.getDirectoryHandle(nomVoyageTest, {
+      create: true,
+    });
+    const dossierVille = await dossierVoyage.getDirectoryHandle(nomVilleTest, {
+      create: true,
+    });
+    const dossierVisite = await dossierVille.getDirectoryHandle(nomVisiteTest, {
+      create: true,
+    });
+
+    const categories = [
+      "Oeuvres",
+      "Cartels",
+      "Jardins",
+      "Architecture",
+      "Batiments",
+      "Structures",
+      "A_verifier_classification",
+    ];
+
+    for (const categorie of categories) {
+      await dossierVisite.getDirectoryHandle(categorie, { create: true });
+    }
+
+    const fichierTest = await dossierVisite.getFileHandle("test_v25_4.txt", {
+      create: true,
+    });
+    const flux = await fichierTest.createWritable();
+    await flux.write(
+      "PhotoCartel v25.4-test-album-photocartel\n" +
+        "Si tu lis ce fichier dans DCIM/PhotoCartel, le test est positif.\n" +
+        "Voyage : " + nomVoyageTest + "\n" +
+        "Ville : " + nomVilleTest + "\n" +
+        "Visite : " + nomVisiteTest + "\n" +
+        "Date : " + new Date().toISOString() + "\n"
+    );
+    await flux.close();
+
+    const message =
+      "TEST POSITIF côté navigateur.\n\n" +
+      "PhotoCartel a demandé la création de :\n" +
+      "DCIM / PhotoCartel / " +
+      nomVoyageTest +
+      " / " +
+      nomVilleTest +
+      " / " +
+      nomVisiteTest +
+      "\n\n" +
+      "Sous-dossiers créés :\n" +
+      categories.join("\n") +
+      "\n\nVérifie maintenant depuis Windows si cette arborescence apparaît réellement.";
+
+    setMessageArborescenceAndroid(message);
+    alert(message);
+  } catch (error) {
+    console.error("Erreur test album PhotoCartel", error);
+
+    const message =
+      error?.name === "AbortError"
+        ? "Test album PhotoCartel annulé par l'utilisateur."
+        : "Test album PhotoCartel échoué : " + (error?.message || String(error));
+
+    setMessageArborescenceAndroid(message);
+    alert(message);
+  }
+}
+
+function nettoyerNomDossierLocal(valeur) {
+  return String(valeur || "")
+    .replace(/[<>:"/\\|?*]/g, "")
+    .replace(/\s+/g, " ")
+    .trim() || "Sans nom";
+}
+
+
 function ouvrirAppareilPhoto() {
-  // v22.3 : retour au comportement stable validé sur Render.
-  // On utilise l'input file avec capture="environment".
-  // Sur Android/Chrome, cela ouvre l'appareil photo, prend une photo,
-  // puis revient automatiquement dans PhotoCartel.
-  // La tentative d'ouverture de Samsung Camera en mode application complète
-  // est volontairement retirée pour supprimer la régression.
+  // v25.4-test-album-photocartel : parcours VISITE strictement séparé de "Analyser une photo".
+  // Ce bouton doit appeler uniquement l'input de prise de photo de visite :
+  // accept="image/*" + capture="environment" + PAS de multiple.
+  // Objectif : éviter le menu générique "Appareil photo / Fichiers" autant que Chrome Android le permet.
   const input = inputPrendrePhotosRef.current;
 
   if (input) {
@@ -1135,17 +1349,25 @@ function handlePhotosPrises(event) {
     return;
   }
 
-  // Comportement stable Render restauré : après chaque photo prise depuis
-  // le bouton PhotoCartel, on revient dans l'application et le compteur
-  // s'incrémente immédiatement.
+  // v25.4-test-album-photocartel : après OK dans l'appareil photo de VISITE,
+  // PhotoCartel reçoit la photo, incrémente le compteur, puis tente
+  // de relancer le même input VISITE, jamais l'input "Analyser une photo".
+  // Si Chrome Android bloque cette réouverture automatique, la photo reste comptabilisée.
   setPhotosCollectees((ancienTotal) => {
     const nouveauTotal = ancienTotal + fichiers.length;
     localStorage.setItem("photoCartelPhotosCollectees", String(nouveauTotal));
     return nouveauTotal;
   });
+
   setDerniereActionVisite(
-    `${fichiers.length} photo(s) prise(s). Tu peux reprendre une photo ou ranger les photos de la visite.`
+    `${fichiers.length} photo(s) prise(s). Test v25.4-test-album-photocartel : tentative de réouverture du parcours VISITE.`
   );
+
+  if (estAndroid() && voyage && cheminCollecteActif) {
+    window.setTimeout(() => {
+      ouvrirAppareilPhoto();
+    }, 500);
+  }
 }
 
 
@@ -1883,6 +2105,15 @@ const validerNouvelleVisite = async () => {
       }
     }
 
+    let resultatArborescenceAndroid = null;
+
+    // v25.2-test : on ne tente plus de créer automatiquement l'arborescence Android
+    // lors de la création de visite. Le test est isolé dans le bouton
+    // "Test album PhotoCartel" pour éviter toute confusion.
+    setMessageArborescenceAndroid(
+      "Visite créée dans PhotoCartel. Test du stockage Android à lancer avec le bouton « Test album PhotoCartel »."
+    );
+
     setVilleVisite(ville);
     setLieuVisite(lieu);
     setTypeVisite(typeNouvelleVisite);
@@ -1927,7 +2158,12 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
         typeNouvelleVisite +
         (typeNouvelleVisite === "Musée"
           ? "\n\nCatégories musée créées automatiquement."
-          : "")
+          : "") +
+        (resultatArborescenceAndroid?.success
+          ? "\n\nDossier Android créé :\n" + resultatArborescenceAndroid.cheminLisible
+          : estAndroid()
+            ? "\n\nAttention : le dossier Android n'a pas été confirmé."
+            : "\n\nTest PC : la création physique Android sera à vérifier depuis le téléphone.")
     );
   } catch (error) {
     console.error(error);
@@ -3156,6 +3392,11 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
         texte: "Paramètres",
         action: () => setModeParametres(true),
       },
+      {
+        icone: "🧪",
+        texte: "Test album PhotoCartel",
+        action: testerDossierAndroid,
+      },
     ];
 
     return (
@@ -3694,6 +3935,63 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
             <BandeauModeDemonstration />
             <BlocEtatVisite />
 
+            <div
+              style={{
+                marginTop: 20,
+                marginBottom: 20,
+                padding: 18,
+                borderRadius: 24,
+                background: "#fff7df",
+                border: "2px solid #d39b2a",
+                boxShadow: "0 10px 24px rgba(0,0,0,0.08)",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 900,
+                  letterSpacing: 1,
+                  color: "#6f4a00",
+                  marginBottom: 12,
+                  textTransform: "uppercase",
+                }}
+              >
+                Prototype Android
+              </div>
+
+              <button
+                type="button"
+                onClick={testerDossierAndroid}
+                style={{
+                  width: "100%",
+                  border: "none",
+                  borderRadius: 20,
+                  padding: "18px 16px",
+                  background: "#c18418",
+                  color: "white",
+                  fontSize: 22,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+              >
+                🧪 Tester album PhotoCartel
+              </button>
+
+              <div
+                style={{
+                  marginTop: 12,
+                  color: "#6f4a00",
+                  fontSize: 15,
+                  fontWeight: 700,
+                  lineHeight: 1.4,
+                }}
+              >
+                Teste l’écriture dans le dossier déjà créé : DCIM / PhotoCartel.
+                Objectif : créer automatiquement Voyage / Ville / Visite / catégories.
+              </div>
+            </div>
+
             <div style={styles.grilleActions}>
               <ActionCarte
                 icone="📷"
@@ -3722,6 +4020,12 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                 disabled={!voyage}
                 couleur="#1f9a4b"
               />
+              <ActionCarte
+                icone="🧪"
+                titre="Tester album PhotoCartel"
+                onClick={testerDossierAndroid}
+                couleur="#8a4b12"
+              />
             </div>
 
             <div style={styles.compteurCarte}>
@@ -3733,6 +4037,12 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
             {messageActualisation && (
               <div style={styles.panneauInfo}>
                 <strong>{messageActualisation}</strong>
+              </div>
+            )}
+
+            {messageArborescenceAndroid && (
+              <div style={styles.panneauInfo}>
+                <strong>{messageArborescenceAndroid}</strong>
               </div>
             )}
 
@@ -3809,7 +4119,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
           type="file"
           accept="image/*"
           capture="environment"
-          multiple
           onChange={handlePhotosPrises}
           style={{ display: "none" }}
         />
@@ -3819,7 +4128,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
           id="analyse-photo-one-shot"
           type="file"
           accept="image/*"
-          capture="environment"
           onChange={handlePhotoAnalyseSelection}
           style={{ display: "none" }}
         />
