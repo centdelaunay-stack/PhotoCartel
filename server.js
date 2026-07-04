@@ -1,4 +1,4 @@
-// PhotoCartel v20.3 — server cloud-ready minimal. Routes Mode Démonstration conservées.
+// PhotoCartel v22.3 — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -32,7 +32,7 @@ const DOSSIER_EXPORTS_PHOTOCARTEL = path.join(
 fs.mkdirSync(DOSSIER_RACINE_DONNEES, { recursive: true });
 fs.mkdirSync(DOSSIER_EXPORTS_PHOTOCARTEL, { recursive: true });
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v20.3 — routes Mode Démonstration actives");
+console.log("PhotoCartel v22.3 — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -55,18 +55,18 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v20.3",
+    version: "v22.3",
     dataRoot: DOSSIER_RACINE_DONNEES,
   });
 });
 
 
-// PhotoCartel v20.3 — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v22.3 — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v20.3",
+    version: "v22.3",
     message: "Route mode démonstration disponible",
   });
 });
@@ -93,6 +93,54 @@ const EXTENSIONS_IMAGE = [".jpg", ".jpeg", ".png", ".webp"];
 
 function estImage(fichier) {
   return EXTENSIONS_IMAGE.includes(path.extname(fichier).toLowerCase());
+}
+
+
+function nettoyerSegmentCheminPhotoCartel(segment) {
+  return String(segment || "")
+    .replace(/[<>:"|?*]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cheminDansRacineDonnees(cheminRecu) {
+  if (!cheminRecu) return "";
+
+  const brut = String(cheminRecu).trim();
+  if (!brut) return "";
+
+  // En local Windows, on conserve le comportement historique : C:\Voyages reste C:\Voyages.
+  if (process.platform === "win32") {
+    return brut;
+  }
+
+  // Sur Render/Linux, on ne doit jamais créer un faux dossier "C:\Voyages".
+  // Toute arborescence reçue du frontend est replacée proprement sous DOSSIER_RACINE_DONNEES.
+  const brutNormalise = brut.replace(/\\/g, "/");
+
+  if (path.isAbsolute(brutNormalise) && brutNormalise.startsWith(DOSSIER_RACINE_DONNEES)) {
+    return brutNormalise;
+  }
+
+  let relatif = brutNormalise.replace(/^[A-Za-z]:\/?/, "");
+  relatif = relatif.replace(/^\/+/, "");
+
+  let segments = relatif
+    .split("/")
+    .map(nettoyerSegmentCheminPhotoCartel)
+    .filter((segment) => segment && segment !== "." && segment !== "..");
+
+  // Le frontend historique envoie souvent C:\Voyages\... ; en cloud, "Voyages" est déjà représenté
+  // par DOSSIER_RACINE_DONNEES. On évite donc /photocartel-data/Voyages/...
+  if (segments[0] && segments[0].toLowerCase() === "voyages") {
+    segments = segments.slice(1);
+  }
+
+  if (segments.length === 0) {
+    return DOSSIER_RACINE_DONNEES;
+  }
+
+  return path.join(DOSSIER_RACINE_DONNEES, ...segments);
 }
 
 function nettoyerCategorie(categorie) {
@@ -2100,7 +2148,8 @@ app.post("/classifier-dossier", async (req, res) => {
 
 app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) => {
   try {
-    const { cheminDestination } = req.body;
+    const cheminDestinationOriginal = req.body.cheminDestination;
+    const cheminDestination = cheminDansRacineDonnees(cheminDestinationOriginal);
 
     if (!cheminDestination) {
       return res.status(400).json({
@@ -2199,7 +2248,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v20.3",
+    version: "v22.3",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2287,7 +2336,8 @@ app.post("/api/mode-demonstration/exporter", handlerExporterModeDemonstration);
 
 app.post("/creer-dossier", async (req, res) => {
   try {
-    const { chemin } = req.body;
+    const cheminOriginal = req.body.chemin;
+    const chemin = cheminDansRacineDonnees(cheminOriginal);
 
     if (!chemin) {
       return res.status(400).json({ success: false, error: "Chemin manquant" });
@@ -2295,7 +2345,7 @@ app.post("/creer-dossier", async (req, res) => {
 
     fs.mkdirSync(chemin, { recursive: true });
 
-    res.json({ success: true, chemin });
+    res.json({ success: true, chemin, cheminOriginal });
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, error: error.message });
@@ -2313,7 +2363,7 @@ app.post(
       const photo = req.files.photo?.[0];
       const cartel = req.files.cartel?.[0];
 
-      const chemin = req.body.chemin;
+      const chemin = cheminDansRacineDonnees(req.body.chemin);
       const nomFichier = req.body.nomFichier;
 
       if (!photo) {
@@ -2356,7 +2406,8 @@ app.post(
 
 app.post("/creer-categories-musee", async (req, res) => {
   try {
-    const { chemin } = req.body;
+    const cheminOriginal = req.body.chemin;
+    const chemin = cheminDansRacineDonnees(cheminOriginal);
 
     if (!chemin) {
       return res.status(400).json({ success: false, error: "Chemin manquant" });
@@ -2368,6 +2419,8 @@ app.post("/creer-categories-musee", async (req, res) => {
 
     res.json({
       success: true,
+      chemin,
+      cheminOriginal,
       categories: CATEGORIES_MUSEE,
     });
   } catch (error) {
@@ -3079,7 +3132,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v20.3",
+      version: "v22.3",
       message: "Mode démonstration disponible",
       route,
       methode

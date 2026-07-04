@@ -2,11 +2,11 @@ import { useState, useRef } from "react";
 import Tesseract from "tesseract.js";
 import cv from "@techstark/opencv-js";
 
-// PhotoCartel v20.3 — cloud-ready minimal. Mode Démonstration conservé.
+// PhotoCartel v22.3 — retour stable capture appareil photo depuis PhotoCartel. Mode Démonstration conservé.
 // Moteurs, endpoints et règles métier conservés.
 
 function App() {
-  console.log("APP PRINCIPALE - PhotoCartel v20.3 cloud-ready");
+  console.log("APP PRINCIPALE - PhotoCartel v22.3 capture-stable cloud-ready");
 
   const estServeurLocal =
     window.location.hostname === "localhost" ||
@@ -100,7 +100,10 @@ const [cheminTamponActif, setCheminTamponActif] = useState(
 
 
   const [derniereActionVisite, setDerniereActionVisite] = useState("");
-  const [photosCollectees, setPhotosCollectees] = useState(0);
+  const [photosCollectees, setPhotosCollectees] = useState(() => {
+  const valeurStockee = Number(localStorage.getItem("photoCartelPhotosCollectees") || 0);
+  return Number.isFinite(valeurStockee) ? valeurStockee : 0;
+});
   const [derniereVisite, setDerniereVisite] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("photoCartelDerniereVisite") || "null");
@@ -308,6 +311,7 @@ function finDuVoyage() {
   setCheminTamponActif("");
   setDerniereActionVisite("Voyage terminé le " + formaterDate(new Date()));
   setPhotosCollectees(0);
+  localStorage.setItem("photoCartelPhotosCollectees", "0");
   setMessageActualisation("");
   setDerniereActualisation(null);
 
@@ -347,9 +351,12 @@ function estAndroid() {
 }
 
 function ouvrirAppareilPhoto() {
-  // v17.3.7 : retour volontaire à la méthode stable v17.3.5.
-  // Elle ouvre bien la caméra du téléphone, même si elle revient encore
-  // dans PhotoCartel après validation de chaque photo.
+  // v22.3 : retour au comportement stable validé sur Render.
+  // On utilise l'input file avec capture="environment".
+  // Sur Android/Chrome, cela ouvre l'appareil photo, prend une photo,
+  // puis revient automatiquement dans PhotoCartel.
+  // La tentative d'ouverture de Samsung Camera en mode application complète
+  // est volontairement retirée pour supprimer la régression.
   const input = inputPrendrePhotosRef.current;
 
   if (input) {
@@ -373,7 +380,7 @@ function handlePrendreDesPhotos() {
     localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
   }
 
-  setDerniereActionVisite("Appareil photo ouvert le " + formaterDate(new Date()));
+  setDerniereActionVisite("Appareil photo ouvert le " + formaterDate(new Date()) + ". Reviens ensuite dans PhotoCartel pour ranger les photos de la visite.");
   ouvrirAppareilPhoto();
 }
 
@@ -1019,16 +1026,14 @@ async function handleActualiserPhotos(event) {
 
   if (fichiersDepuisDebut.length === 0) {
     setMessageActualisation(
-      "Aucune photo sélectionnée ne semble avoir été prise depuis le début de la visite."
+      "Total de la visite : " + photosCollectees + " photo(s)."
     );
     return;
   }
 
   try {
     setActualisationEnCours(true);
-    setMessageActualisation(
-      `Actualisation en cours : ${fichiersDepuisDebut.length} photo(s) à copier.`
-    );
+    setMessageActualisation("Rangement des photos de la visite en cours...");
 
     const formData = new FormData();
     formData.append("cheminDestination", cheminCollecteActif);
@@ -1045,21 +1050,22 @@ async function handleActualiserPhotos(event) {
     const data = await response.json();
 
     if (!data.success) {
-      setMessageActualisation("Erreur actualisation : " + data.error);
-      alert("Erreur actualisation : " + data.error);
+      setMessageActualisation("Erreur rangement des photos : " + data.error);
+      alert("Erreur rangement des photos : " + data.error);
       return;
     }
 
-    setPhotosCollectees(data.totalDestination || data.copies || 0);
+    const total = Number(data.totalDestination || 0);
+
+    setPhotosCollectees(total);
+    localStorage.setItem("photoCartelPhotosCollectees", String(total));
     setDerniereActualisation(data);
-    setMessageActualisation(
-      `Actualisation terminée : ${data.copies} photo(s) copiée(s), ${data.ignores} déjà présente(s).`
-    );
-    setDerniereActionVisite("Photos actualisées le " + formaterDate(new Date()));
+    setMessageActualisation(`Total de la visite : ${total} photo(s).`);
+    setDerniereActionVisite("Photos rangées le " + formaterDate(new Date()));
   } catch (error) {
     console.error(error);
-    setMessageActualisation("Erreur actualisation : " + error.message);
-    alert("Erreur actualisation : " + error.message);
+    setMessageActualisation("Erreur rangement des photos : " + error.message);
+    alert("Erreur rangement des photos : " + error.message);
   } finally {
     setActualisationEnCours(false);
   }
@@ -1095,10 +1101,12 @@ async function creerTamponCollecteLibreEtOuvrirCamera() {
       return;
     }
 
+    const cheminTamponServeur = data.chemin || cheminTampon;
+
     setStatutVisite("EN_COURS");
     setDateFinVisite(null);
     setDossierTampon(nomTampon);
-    setCheminTamponActif(cheminTampon);
+    setCheminTamponActif(cheminTamponServeur);
     setLieuVisite(nomTampon);
     setTypeVisite("");
     setModeAucuneVisite(false);
@@ -1108,7 +1116,7 @@ async function creerTamponCollecteLibreEtOuvrirCamera() {
     localStorage.setItem("photoCartelLieuActif", nomTampon);
     localStorage.setItem("photoCartelTypeVisiteActif", "");
     localStorage.setItem("photoCartelDossierTamponActif", nomTampon);
-    localStorage.setItem("photoCartelCheminTamponActif", cheminTampon);
+    localStorage.setItem("photoCartelCheminTamponActif", cheminTamponServeur);
     localStorage.setItem("photoCartelDebutVisiteMs", String(maintenant.getTime()));
 
     setTimeout(() => {
@@ -1127,10 +1135,16 @@ function handlePhotosPrises(event) {
     return;
   }
 
-  // Fallback PC / navigateur non Android uniquement.
-  setPhotosCollectees((ancien) => ancien + fichiers.length);
+  // Comportement stable Render restauré : après chaque photo prise depuis
+  // le bouton PhotoCartel, on revient dans l'application et le compteur
+  // s'incrémente immédiatement.
+  setPhotosCollectees((ancienTotal) => {
+    const nouveauTotal = ancienTotal + fichiers.length;
+    localStorage.setItem("photoCartelPhotosCollectees", String(nouveauTotal));
+    return nouveauTotal;
+  });
   setDerniereActionVisite(
-    `${fichiers.length} photo(s) sélectionnée(s) le ${formaterDate(new Date())}`
+    `${fichiers.length} photo(s) prise(s). Tu peux reprendre une photo ou ranger les photos de la visite.`
   );
 }
 
@@ -1184,6 +1198,8 @@ function handlePhotosPrises(event) {
         return;
       }
 
+      const cheminTamponServeur = data.chemin || cheminTampon;
+
       const debutVisiteStocke = Number(localStorage.getItem("photoCartelDebutVisiteMs") || 0);
       const derniereVisiteInfo = {
         nom: lieuVisite || "Visite non renseignée",
@@ -1200,13 +1216,14 @@ function handlePhotosPrises(event) {
       setStatutVisite("EN_COURS");
       setDateFinVisite(null);
       setDossierTampon(nomTampon);
-      setCheminTamponActif(cheminTampon);
+      setCheminTamponActif(cheminTamponServeur);
       setLieuVisite(nomTampon);
       setTypeVisite("");
       setDerniereActionVisite(
         `${estTamponActif ? "Dossier tampon clôturé" : "Visite clôturée"} le ${formaterDate(maintenant)}. Nouveau dossier tampon actif : ${nomTampon}`
       );
       setPhotosCollectees(0);
+  localStorage.setItem("photoCartelPhotosCollectees", "0");
       setMessageActualisation("");
       setDerniereActualisation(null);
 
@@ -1214,7 +1231,7 @@ function handlePhotosPrises(event) {
       localStorage.setItem("photoCartelLieuActif", nomTampon);
       localStorage.setItem("photoCartelTypeVisiteActif", "");
       localStorage.setItem("photoCartelDossierTamponActif", nomTampon);
-      localStorage.setItem("photoCartelCheminTamponActif", cheminTampon);
+      localStorage.setItem("photoCartelCheminTamponActif", cheminTamponServeur);
       localStorage.setItem("photoCartelDebutVisiteMs", String(maintenant.getTime()));
 
       alert(
@@ -1224,7 +1241,7 @@ function handlePhotosPrises(event) {
           "Nouveau dossier tampon actif :\n\n" +
           nomTampon +
           "\n\nChemin :\n" +
-          cheminTampon
+          cheminTamponServeur
       );
     } catch (error) {
       console.error(error);
@@ -1762,6 +1779,9 @@ const validerNouveauVoyage = async () => {
       return;
     }
 
+    const cheminVoyageServeur = data.chemin || cheminVoyage;
+    console.log("Voyage créé côté serveur :", cheminVoyageServeur);
+
     setVoyage(nomVoyage);
     setVilleVisite("");
     setLieuVisite("");
@@ -1781,6 +1801,7 @@ setTypeNouvelleVisite("Musée");
     setCheminTamponActif("");
     setDerniereActionVisite("Nouveau voyage créé le " + formaterDate(new Date()));
     setPhotosCollectees(0);
+  localStorage.setItem("photoCartelPhotosCollectees", "0");
     setMessageActualisation("");
     setDerniereActualisation(null);
     setResultatClassification(null);
@@ -1838,6 +1859,8 @@ const validerNouvelleVisite = async () => {
       return;
     }
 
+    const cheminVisiteServeur = data.chemin || nouveauChemin;
+
     if (typeNouvelleVisite === "Musée") {
       const responseCategories = await fetch(
         API_BASE + "/creer-categories-musee",
@@ -1847,7 +1870,7 @@ const validerNouvelleVisite = async () => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            chemin: nouveauChemin,
+            chemin: cheminVisiteServeur,
           }),
         }
       );
@@ -1874,7 +1897,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       ville,
       lieu,
       type: typeNouvelleVisite,
-      chemin: nouveauChemin,
+      chemin: cheminVisiteServeur,
     });
 
     setStatutVisite("EN_COURS");
@@ -1883,6 +1906,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
     setCheminTamponActif("");
     setDerniereActionVisite("Nouvelle visite créée le " + formaterDate(new Date()));
     setPhotosCollectees(0);
+  localStorage.setItem("photoCartelPhotosCollectees", "0");
     setMessageActualisation("");
     setDerniereActualisation(null);
     setResultatClassification(null);
@@ -2316,7 +2340,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
     },
     grilleActions: {
       display: "grid",
-      gridTemplateColumns: "repeat(3, 1fr)",
+      gridTemplateColumns: "repeat(2, 1fr)",
       gap: "12px",
       margin: "18px 0",
     },
@@ -3396,8 +3420,8 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       {actualisationEnCours && (
         <div style={styles.modalOverlay}>
           <div style={styles.modal}>
-            <h2>Actualisation en cours</h2>
-            <p>Copie des photos vers le dossier de visite.</p>
+            <h2>Rangement en cours</h2>
+            <p>Rangement des photos dans le dossier de visite.</p>
             <p>Merci de patienter.</p>
           </div>
         </div>
@@ -3673,10 +3697,17 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
             <div style={styles.grilleActions}>
               <ActionCarte
                 icone="📷"
-                titre="Prendre des photos"
+                titre="Ouvrir l'appareil photo"
                 onClick={handlePrendreDesPhotos}
                 disabled={!voyage}
                 couleur="#c18418"
+              />
+              <ActionCarte
+                icone="🗂️"
+                titre="Ranger les photos de la visite"
+                onClick={ouvrirSelectionActualisationPhotos}
+                disabled={!voyage || !cheminCollecteActif || actualisationEnCours}
+                couleur="#1f7a8c"
               />
               <ActionCarte
                 icone="🖼️"
@@ -3698,6 +3729,12 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
               <div style={styles.compteurLabel}>Nombre de photos de la visite en cours</div>
               <div style={styles.compteurValeur}>{photosCollectees}</div>
             </div>
+
+            {messageActualisation && (
+              <div style={styles.panneauInfo}>
+                <strong>{messageActualisation}</strong>
+              </div>
+            )}
 
             <BlocDerniereVisite />
 
@@ -3789,10 +3826,13 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
 
         <input
           ref={inputActualiserPhotosRef}
-          id="actualisation-photos-visite"
+          id="rangement-photos-visite"
           type="file"
           accept="image/*"
           multiple
+          onClick={(event) => {
+            event.target.value = null;
+          }}
           onChange={handleActualiserPhotos}
           style={{ display: "none" }}
         />
