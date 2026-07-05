@@ -83,4 +83,16 @@ actuellement = œuvres renommées / total photos
 26 juin 2026
 le bouton 'fin de visite' d'un dossier tampon doit créer auto un nouveu  dossier tampon -> on ne ferme pas un dossier tampon uniquement avec 'nouvelle visite' (contexte = quand je n'ai pas le temps de créer proprement une nouvelle viste, je renommerai plus tard ces dossier tampon)
 
-je veux un bouton 'analyser une photo' ()= analyse d'un photo 'one shot' une fonctionalité 'grand public'). pas beoin de voyage ou de visite; J'ouvre l'app, le bouton 'analyser une photo' est dispo. je clique dessus, l'appareil photo du tel s'ouvre, je prends une photo et là, en temps réel (Open AI), il m'affiche le descriptif de la photo (il enregistre tout ça dans un dossier qui (pré?)existe "Photos analysées singulièrement"). EXEMPLES de résultats : "C'est un paysage de xxx" ; "c'est une peinture de David Hockcney intitulée ' xxx ' de  1965 " ;  " c'est l'eglise xxx de 1852, qui se trouve à xxx ".        Mettre le bouton 'analyser une photo' a côté de 'Prendre des photos". Pour l'instant bouton non connecté. On mettra le moteur derrière plus tard.
+je veux un bouton 'analyser une photo' ()= analyse d'un photo 'one shot' une fonctionalité 'grand public'). pas beoin de voyage ou de visite; J'ouvre l'app, le bouton 'analyser une photo' est dispo. je clique dessus, l'appareil photo du tel s'ouvre, je prends une photo et là, en temps réel (Open AI), il m'affiche le descriptif de la photo (il enregistre tout ça dans un dossier qui (pré?)existe "Photos analysées singulièrement"). EXEMPLES de résultats : "C'est un paysage de xxx" ; "c'est une peinture de David Hockcney intitulée ' xxx ' de  1965 " ;  " c'est l'eglise xxx de 1852, qui se trouve à xxx ".        Mettre le bouton 'analyser une photo' a côté de 'Prendre des photos". Pour l'instant bouton non connecté. On mettra le moteur derrière plus tard.  FAIT
+
+
+4 juillet 2026
+_Mettre des icones à la place des boutons
+_un bouton 'lancer l'analyse IA"
+_Un bouton 'interompre l'analyse IA"
+_Reconnecter l'icone du tel sur render.com
+_Fonctionalité d'envoi auto de courrile avec l'extrc en piece jointe
+_Reflefhir aux extract qui se réinitialise des que l'on en a fait un
+_Dans la fonction 'analyser une photo' toujours enregistrer la photos prise (meme si on ne lance pas l'IA) dans un dossier 'photos a anlyser'
+_dans la fonction 'analyser une photo' il faut griser le bouton 'enregistrer l'analyse' (=le rendre indisponible)  quand on a déjà cliqué dessus (on ne va pas enregistrer l'analyse plusiers fois)
+_ sur l’ecran résultat de la fonction ‘analyser une photo’ mettre les boutons dans une barre fixe ? Pas pratique d’avoir à scroller jusqu’en bas de l’analyse pour choir ce que l’on doit faire de cette photo

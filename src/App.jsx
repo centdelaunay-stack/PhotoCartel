@@ -2,11 +2,11 @@ import { useState, useRef } from "react";
 import Tesseract from "tesseract.js";
 import cv from "@techstark/opencv-js";
 
-// PhotoCartel v25.4-test-album-photocartel — séparation stricte Visite / Analyser une photo. Mode Démonstration conservé.
+// PhotoCartel v26-barre-superieure-fixe — séparation stricte Visite / Analyser une photo. Mode Démonstration conservé.
 // Moteurs, endpoints et règles métier conservés.
 
 function App() {
-  console.log("APP PRINCIPALE - PhotoCartel v25.4-test-album-photocartel parcours-visite-separe cloud-ready");
+  console.log("APP PRINCIPALE - PhotoCartel v26-barre-superieure-fixe parcours-visite-separe cloud-ready");
 
   const estServeurLocal =
     window.location.hostname === "localhost" ||
@@ -138,6 +138,7 @@ const [renommageFinalTermine, setRenommageFinalTermine] = useState(false);
 const cheminRenommagePrepareRef = useRef("");
 const inputPrendrePhotosRef = useRef(null);
 const inputActualiserPhotosRef = useRef(null);
+const inputAnalyserPhotoCameraRef = useRef(null);
 const inputAnalyserPhotoRef = useRef(null);
 
 const [analysePhotoFile, setAnalysePhotoFile] = useState(null);
@@ -145,9 +146,14 @@ const [analysePhotoUrl, setAnalysePhotoUrl] = useState("");
 const [analysePhotoResultat, setAnalysePhotoResultat] = useState(null);
 const [analysePhotoEnCours, setAnalysePhotoEnCours] = useState(false);
 const [modeAnalysePhoto, setModeAnalysePhoto] = useState(false);
+const [modeChoixActionAnalysePhoto, setModeChoixActionAnalysePhoto] = useState(false);
 const [photoPleinEcranUrl, setPhotoPleinEcranUrl] = useState("");
 const [messageAnalysePhoto, setMessageAnalysePhoto] = useState("");
 const [analysePhotoSauvegardeEnCours, setAnalysePhotoSauvegardeEnCours] = useState(false);
+const [analysePhotoSauvegardee, setAnalysePhotoSauvegardee] = useState(false);
+const [dateHeurePhotoAnalyse, setDateHeurePhotoAnalyse] = useState("");
+const analysePhotoSessionActiveRef = useRef(false);
+const analysePhotoOrigineRef = useRef("");
 
 const [modeGalerieAnalyses, setModeGalerieAnalyses] = useState(false);
 const [galerieAnalyses, setGalerieAnalyses] = useState([]);
@@ -211,6 +217,17 @@ const [modeDemonstrationEnCours, setModeDemonstrationEnCours] = useState(false);
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+    });
+  }
+
+  function formaterDateHeurePhoto(date) {
+    return date.toLocaleString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
   }
 
@@ -385,7 +402,7 @@ async function creerArborescenceAndroidSurTelephone({ voyageNom, villeNom, lieuN
   }
 
   const continuer = window.confirm(
-    "PhotoCartel v25.4-test-album-photocartel va créer le vrai dossier sur le téléphone.\n\n" +
+    "PhotoCartel v26-barre-superieure-fixe va créer le vrai dossier sur le téléphone.\n\n" +
       "Dans l'écran suivant, choisis : Stockage interne.\n\n" +
       "PhotoCartel créera ensuite :\n" +
       "PhotoCartel / " + voyageNom + " / " + villeNom + " / " + lieuNom
@@ -437,7 +454,7 @@ async function creerArborescenceAndroidSurTelephone({ voyageNom, villeNom, lieuN
 
 
 async function testerDossierAndroid() {
-  // v25.4-test-album-photocartel : test ciblé de l'album racine DCIM/PhotoCartel.
+  // v26-barre-superieure-fixe : test ciblé de l'album racine DCIM/PhotoCartel.
   // Objectif : vérifier si la PWA peut écrire dans un dossier PhotoCartel déjà créé
   // manuellement depuis la Galerie Samsung, puis créer l'arborescence voyage/ville/visite.
   try {
@@ -520,7 +537,7 @@ async function testerDossierAndroid() {
     });
     const flux = await fichierTest.createWritable();
     await flux.write(
-      "PhotoCartel v25.4-test-album-photocartel\n" +
+      "PhotoCartel v26-barre-superieure-fixe\n" +
         "Si tu lis ce fichier dans DCIM/PhotoCartel, le test est positif.\n" +
         "Voyage : " + nomVoyageTest + "\n" +
         "Ville : " + nomVilleTest + "\n" +
@@ -567,7 +584,7 @@ function nettoyerNomDossierLocal(valeur) {
 
 
 function ouvrirAppareilPhoto() {
-  // v25.4-test-album-photocartel : parcours VISITE strictement séparé de "Analyser une photo".
+  // v26-barre-superieure-fixe : parcours VISITE strictement séparé de "Analyser une photo".
   // Ce bouton doit appeler uniquement l'input de prise de photo de visite :
   // accept="image/*" + capture="environment" + PAS de multiple.
   // Objectif : éviter le menu générique "Appareil photo / Fichiers" autant que Chrome Android le permet.
@@ -598,8 +615,8 @@ function handlePrendreDesPhotos() {
   ouvrirAppareilPhoto();
 }
 
-function handleAnalyserUnePhoto() {
-  const input = inputAnalyserPhotoRef.current;
+function ouvrirInputAnalysePhoto(inputRef) {
+  const input = inputRef.current;
 
   if (input) {
     input.value = null;
@@ -607,18 +624,94 @@ function handleAnalyserUnePhoto() {
   }
 }
 
+function handleAnalyserUnePhoto() {
+  // v25.5 : le bouton principal ne doit plus ouvrir directement la galerie.
+  // Il doit d'abord afficher l'étape intermédiaire "Sélectionner une action".
+  setModeChoixActionAnalysePhoto(true);
+}
+
+function maintenirEcranAnalysePhotoOuvert() {
+  if (!analysePhotoSessionActiveRef.current) {
+    return;
+  }
+
+  setModeChoixActionAnalysePhoto(false);
+  setModeAnalysePhoto(true);
+}
+
+function verrouillerEcranAnalysePhotoMobile() {
+  // v25.5.4 : verrou de stabilité renforcé pour le retour de l'appareil photo Android.
+  // Le flux "Choisir un fichier" est déjà validé ; on garde néanmoins ce verrou neutre
+  // pour éviter tout retour visuel intempestif à l'accueil pendant la fin de l'analyse.
+  maintenirEcranAnalysePhotoOuvert();
+
+  [0, 120, 350, 800, 1500].forEach((delai) => {
+    window.setTimeout(() => {
+      maintenirEcranAnalysePhotoOuvert();
+    }, delai);
+  });
+}
+
+function choisirPrendrePhotoPourAnalyse() {
+  // v25.5.5 : retour au comportement stable v25.5.1 pour la caméra.
+  // Les verrous ajoutés ensuite perturbaient Chrome Android au retour de l'appareil photo.
+  // On revient donc au flux simple validé : afficher l'écran d'analyse puis ouvrir immédiatement l'input caméra.
+  analysePhotoSessionActiveRef.current = true;
+  analysePhotoOrigineRef.current = "camera";
+
+  setModeChoixActionAnalysePhoto(false);
+  setModeAnalysePhoto(true);
+  setAnalysePhotoFile(null);
+  setAnalysePhotoUrl("");
+  setAnalysePhotoResultat(null);
+  setAnalysePhotoEnCours(false);
+  setAnalysePhotoSauvegardee(false);
+  setDateHeurePhotoAnalyse("");
+  setMessageAnalysePhoto(
+    "Appareil photo ouvert. Prends la photo puis valide avec OK."
+  );
+
+  ouvrirInputAnalysePhoto(inputAnalyserPhotoCameraRef);
+}
+
+function choisirFichierPourAnalyse() {
+  analysePhotoSessionActiveRef.current = true;
+  analysePhotoOrigineRef.current = "fichier";
+  setModeChoixActionAnalysePhoto(false);
+  ouvrirInputAnalysePhoto(inputAnalyserPhotoRef);
+}
+
+function annulerChoixActionAnalysePhoto() {
+  setModeChoixActionAnalysePhoto(false);
+}
+
 async function handlePhotoAnalyseSelection(event) {
   const fichier = event.target.files?.[0];
 
   if (!fichier) {
+    // Si l'utilisateur annule l'appareil photo, on ne revient pas brutalement à l'accueil.
+    if (modeAnalysePhoto) {
+      setAnalysePhotoEnCours(false);
+      setMessageAnalysePhoto("Aucune photo sélectionnée.");
+    }
     return;
   }
 
-  const imageLocaleUrl = URL.createObjectURL(fichier);
+  // v25.5.5 : flux volontairement simple, identique au comportement caméra validé en v25.5.1.
+  // On conserve seulement les ajouts utiles : date/heure, bouton d'enregistrement unique, galerie cohérente.
+  analysePhotoSessionActiveRef.current = true;
 
+  const imageLocaleUrl = URL.createObjectURL(fichier);
+  const datePhoto = fichier.lastModified
+    ? new Date(fichier.lastModified)
+    : new Date();
+
+  setModeChoixActionAnalysePhoto(false);
   setAnalysePhotoFile(fichier);
   setAnalysePhotoUrl(imageLocaleUrl);
   setAnalysePhotoResultat(null);
+  setAnalysePhotoSauvegardee(false);
+  setDateHeurePhotoAnalyse(formaterDateHeurePhoto(datePhoto));
   setModeAnalysePhoto(true);
   setAnalysePhotoEnCours(true);
   setMessageAnalysePhoto("Analyse IA en cours...");
@@ -653,7 +746,10 @@ async function handlePhotoAnalyseSelection(event) {
 }
 
 function fermerAnalysePhoto() {
+  analysePhotoSessionActiveRef.current = false;
+  analysePhotoOrigineRef.current = "";
   setModeAnalysePhoto(false);
+  setModeChoixActionAnalysePhoto(false);
   setAnalysePhotoFile(null);
   setAnalysePhotoUrl("");
   setAnalysePhotoResultat(null);
@@ -661,6 +757,8 @@ function fermerAnalysePhoto() {
   setPhotoPleinEcranUrl("");
   setMessageAnalysePhoto("");
   setAnalysePhotoSauvegardeEnCours(false);
+  setAnalysePhotoSauvegardee(false);
+  setDateHeurePhotoAnalyse("");
 }
 
 function retourAccueilDepuisAnalysePhoto() {
@@ -669,11 +767,18 @@ function retourAccueilDepuisAnalysePhoto() {
 
 function reprendreAnalysePhoto() {
   setAnalysePhotoResultat(null);
+  setAnalysePhotoSauvegardee(false);
+  setDateHeurePhotoAnalyse("");
   setMessageAnalysePhoto("");
   handleAnalyserUnePhoto();
 }
 
 async function enregistrerAnalysePhoto() {
+  if (analysePhotoSauvegardee) {
+    alert("Cette analyse a déjà été enregistrée.");
+    return;
+  }
+
   if (!analysePhotoFile || !analysePhotoResultat) {
     alert("Aucune analyse à enregistrer.");
     return;
@@ -698,6 +803,8 @@ async function enregistrerAnalysePhoto() {
       throw new Error(data.error || "Erreur sauvegarde analyse");
     }
 
+    setAnalysePhotoSauvegardee(true);
+
     alert(
       "Analyse sauvegardée.\n\n" +
         "Photo : " +
@@ -713,6 +820,15 @@ async function enregistrerAnalysePhoto() {
   } finally {
     setAnalysePhotoSauvegardeEnCours(false);
   }
+}
+
+function handleClicEnregistrerAnalysePhoto() {
+  if (analysePhotoSauvegardee) {
+    alert("Cette analyse a déjà été enregistrée.");
+    return;
+  }
+
+  enregistrerAnalysePhoto();
 }
 
 function valeurAnalyse(valeur) {
@@ -800,24 +916,7 @@ function afficherFicheAnalyse(analyse) {
 
   return (
     <>
-      {afficherTitreBlocAnalyse("📍 Contexte de la photo")}
-      {afficherChampAnalyse(
-        "Pays de la photo",
-        premiereValeur(contextePhoto.pays_photo, analyse.pays_photo),
-        { afficherVide: true }
-      )}
-      {afficherChampAnalyse(
-        "Ville de la photo",
-        premiereValeur(contextePhoto.ville_photo, analyse.ville_photo),
-        { afficherVide: true }
-      )}
-      {afficherChampAnalyse(
-        "Site de la photo",
-        premiereValeur(contextePhoto.site_photo, analyse.site_photo),
-        { afficherVide: true }
-      )}
-
-      {afficherTitreBlocAnalyse("🎨 Contenu analysé")}
+      {afficherTitreBlocAnalyse("🎨 Résultats de la photo analysée")}
 
       <div style={styles.analyseType}>
         {premiereValeur(
@@ -884,6 +983,23 @@ function afficherFicheAnalyse(analyse) {
         scoreConfiance !== "" && scoreConfiance !== undefined
           ? `${Math.round(Number(scoreConfiance || 0) * 100)} %`
           : ""
+      )}
+
+      {afficherTitreBlocAnalyse("📍 Contexte de la photo")}
+      {afficherChampAnalyse(
+        "Pays de la photo",
+        premiereValeur(contextePhoto.pays_photo, analyse.pays_photo),
+        { afficherVide: true }
+      )}
+      {afficherChampAnalyse(
+        "Ville de la photo",
+        premiereValeur(contextePhoto.ville_photo, analyse.ville_photo),
+        { afficherVide: true }
+      )}
+      {afficherChampAnalyse(
+        "Site de la photo",
+        premiereValeur(contextePhoto.site_photo, analyse.site_photo),
+        { afficherVide: true }
       )}
     </>
   );
@@ -1349,7 +1465,7 @@ function handlePhotosPrises(event) {
     return;
   }
 
-  // v25.4-test-album-photocartel : après OK dans l'appareil photo de VISITE,
+  // v26-barre-superieure-fixe : après OK dans l'appareil photo de VISITE,
   // PhotoCartel reçoit la photo, incrémente le compteur, puis tente
   // de relancer le même input VISITE, jamais l'input "Analyser une photo".
   // Si Chrome Android bloque cette réouverture automatique, la photo reste comptabilisée.
@@ -1360,7 +1476,7 @@ function handlePhotosPrises(event) {
   });
 
   setDerniereActionVisite(
-    `${fichiers.length} photo(s) prise(s). Test v25.4-test-album-photocartel : tentative de réouverture du parcours VISITE.`
+    `${fichiers.length} photo(s) prise(s). Test v26-barre-superieure-fixe : tentative de réouverture du parcours VISITE.`
   );
 
   if (estAndroid() && voyage && cheminCollecteActif) {
@@ -2488,9 +2604,171 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       minHeight: "100vh",
       background: "#f7f3ec",
       fontFamily: "Inter, Arial, sans-serif",
-      padding: "18px",
+      padding: "72px 18px 104px",
       paddingBottom: "104px",
       color: "#192028",
+    },
+    modalFond: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 3000,
+      background: "rgba(17, 24, 32, 0.45)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "22px",
+      boxSizing: "border-box",
+    },
+    modalCarte: {
+      width: "100%",
+      maxWidth: "390px",
+      background: "#fffdf8",
+      borderRadius: "24px",
+      padding: "22px",
+      boxSizing: "border-box",
+      boxShadow: "0 22px 60px rgba(0,0,0,0.25)",
+      border: "1px solid rgba(199,166,110,0.35)",
+    },
+    modalTitre: {
+      margin: "0 0 8px",
+      color: "#111820",
+      fontSize: "24px",
+      fontWeight: "800",
+    },
+    modalTexte: {
+      margin: "0 0 18px",
+      color: "#666",
+      lineHeight: 1.35,
+      fontSize: "15px",
+    },
+    modalBoutonPrincipal: {
+      width: "100%",
+      border: "none",
+      borderRadius: "16px",
+      padding: "15px 16px",
+      marginBottom: "12px",
+      background: "#8a6a35",
+      color: "white",
+      fontSize: "17px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    modalBoutonSecondaire: {
+      width: "100%",
+      border: "1px solid rgba(138,106,53,0.45)",
+      borderRadius: "16px",
+      padding: "15px 16px",
+      marginBottom: "12px",
+      background: "white",
+      color: "#111820",
+      fontSize: "17px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    modalBoutonAnnuler: {
+      width: "100%",
+      border: "none",
+      borderRadius: "16px",
+      padding: "13px 16px",
+      background: "transparent",
+      color: "#77736c",
+      fontSize: "15px",
+      fontWeight: "800",
+      cursor: "pointer",
+    },
+    barreSuperieure: {
+      position: "fixed",
+      top: 0,
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "100%",
+      maxWidth: "430px",
+      minHeight: "54px",
+      zIndex: 9998,
+      boxSizing: "border-box",
+      padding: "8px 12px",
+      paddingTop: "calc(8px + env(safe-area-inset-top))",
+      backgroundColor: "rgba(255,253,248,0.96)",
+      borderBottom: "1px solid rgba(199,166,110,0.22)",
+      boxShadow: "0 8px 24px rgba(91,67,38,0.10)",
+      display: "flex",
+      alignItems: "center",
+      gap: "10px",
+      fontFamily: "Inter, Arial, sans-serif",
+      backdropFilter: "blur(12px)",
+    },
+    barreSuperieureMenu: {
+      width: "30px",
+      height: "30px",
+      border: "none",
+      backgroundColor: "transparent",
+      color: "#30363d",
+      fontSize: "22px",
+      lineHeight: "30px",
+      fontWeight: "700",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 0,
+      cursor: "default",
+      flex: "0 0 auto",
+    },
+    barreSuperieureLogo: {
+      width: "28px",
+      height: "28px",
+      borderRadius: "8px",
+      backgroundColor: "#111820",
+      color: "#c9a14a",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: "11px",
+      fontWeight: "900",
+      letterSpacing: "-0.06em",
+      border: "1px solid rgba(201,161,74,0.45)",
+      boxShadow: "0 3px 10px rgba(0,0,0,0.16)",
+      flex: "0 0 auto",
+    },
+    barreSuperieureTitre: {
+      fontSize: "15px",
+      lineHeight: "18px",
+      fontWeight: "800",
+      letterSpacing: "-0.03em",
+      color: "#111820",
+      margin: 0,
+      whiteSpace: "nowrap",
+    },
+    barreSuperieureVersion: {
+      marginLeft: "2px",
+      padding: "3px 6px",
+      borderRadius: "8px",
+      backgroundColor: "#fffdf8",
+      border: "1px solid rgba(199,166,110,0.34)",
+      color: "#111820",
+      fontSize: "11px",
+      lineHeight: "14px",
+      fontWeight: "800",
+      letterSpacing: "-0.02em",
+      whiteSpace: "nowrap",
+    },
+    barreSuperieureEspace: {
+      flex: 1,
+    },
+    barreSuperieureIcone: {
+      width: "28px",
+      height: "28px",
+      border: "none",
+      backgroundColor: "transparent",
+      color: "#30363d",
+      fontSize: "18px",
+      lineHeight: "28px",
+      fontWeight: "800",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 0,
+      cursor: "default",
+      flex: "0 0 auto",
     },
     telephone: {
       width: "100%",
@@ -2952,7 +3230,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       bottom: 0,
       background: "#f7f3ec",
       overflowY: "auto",
-      padding: "18px",
+      padding: "76px 18px 18px",
       paddingBottom: "104px",
       color: "#192028",
       fontFamily: "Inter, Arial, sans-serif",
@@ -2974,6 +3252,27 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       backgroundColor: "white",
       cursor: "pointer",
       boxShadow: "0 8px 24px rgba(91,67,38,0.14)",
+    },
+    dateHeurePhotoCarte: {
+      backgroundColor: "rgba(255,255,255,0.88)",
+      border: "1px solid rgba(199,166,110,0.20)",
+      borderRadius: "14px",
+      padding: "10px 12px",
+      margin: "0 0 14px",
+      boxShadow: "0 8px 20px rgba(91,67,38,0.06)",
+      textAlign: "left",
+      fontFamily: "Arial, sans-serif",
+    },
+    dateHeurePhotoLabel: {
+      color: "#263a5f",
+      fontSize: "14px",
+      fontWeight: "900",
+      marginBottom: "4px",
+    },
+    dateHeurePhotoValeur: {
+      color: "#111827",
+      fontSize: "15px",
+      fontWeight: "700",
     },
     analyseCarte: {
       backgroundColor: "rgba(255,255,255,0.88)",
@@ -3354,6 +3653,28 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
     );
   }
 
+  function BarreSuperieurePhotoCartel() {
+    return (
+      <header style={styles.barreSuperieure} aria-label="En-tête PhotoCartel">
+        <button type="button" style={styles.barreSuperieureMenu} aria-label="Menu PhotoCartel">
+          ☰
+        </button>
+        <div style={styles.barreSuperieureLogo} aria-label="Logo PhotoCartel">
+          PC
+        </div>
+        <h1 style={styles.barreSuperieureTitre}>PhotoCartel</h1>
+        <span style={styles.barreSuperieureVersion}>v26</span>
+        <div style={styles.barreSuperieureEspace} />
+        <button type="button" style={styles.barreSuperieureIcone} aria-label="Aide PhotoCartel">
+          ?
+        </button>
+        <button type="button" style={styles.barreSuperieureIcone} aria-label="Options PhotoCartel">
+          ⋮
+        </button>
+      </header>
+    );
+  }
+
   function BarreFixe() {
     // v19.2 : barre fixe = accès permanent aux gestes essentiels de PhotoCartel.
     // Accueil, Analyser une photo et Nouvelle visite sont connectés aux fonctions existantes.
@@ -3419,6 +3740,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
 
   return (
     <div style={styles.page}>
+      <BarreSuperieurePhotoCartel />
       <BarreFixe />
       {photoPleinEcranUrl && (
         <div
@@ -3433,7 +3755,42 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
         </div>
       )}
 
-      {modeAnalysePhoto && (
+      {modeChoixActionAnalysePhoto && (
+        <div style={styles.modalFond}>
+          <div style={styles.modalCarte}>
+            <h2 style={styles.modalTitre}>Sélectionner une action</h2>
+            <p style={styles.modalTexte}>
+              Choisis comment PhotoCartel doit récupérer la photo à analyser.
+            </p>
+
+            <button
+              type="button"
+              onClick={choisirPrendrePhotoPourAnalyse}
+              style={styles.modalBoutonPrincipal}
+            >
+              📷 Prendre une photo
+            </button>
+
+            <button
+              type="button"
+              onClick={choisirFichierPourAnalyse}
+              style={styles.modalBoutonSecondaire}
+            >
+              🖼️ Choisir un fichier / galerie
+            </button>
+
+            <button
+              type="button"
+              onClick={annulerChoixActionAnalysePhoto}
+              style={styles.modalBoutonAnnuler}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(modeAnalysePhoto || analysePhotoSessionActiveRef.current) && (
         <div style={styles.analyseEcran}>
           <main style={styles.analyseTelephone}>
             <h1 style={styles.titre}>Analyse d'une photo</h1>
@@ -3446,6 +3803,13 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                 style={styles.analyseMiniature}
                 onClick={() => setPhotoPleinEcranUrl(analysePhotoUrl)}
               />
+            )}
+
+            {dateHeurePhotoAnalyse && (
+              <div style={styles.dateHeurePhotoCarte}>
+                <div style={styles.dateHeurePhotoLabel}>📅 Date et heure de la photo</div>
+                <div style={styles.dateHeurePhotoValeur}>{dateHeurePhotoAnalyse}</div>
+              </div>
             )}
 
             <div style={styles.analyseCarte}>
@@ -3474,7 +3838,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
             <div style={styles.analyseBoutons}>
               <button
                 type="button"
-                onClick={enregistrerAnalysePhoto}
+                onClick={handleClicEnregistrerAnalysePhoto}
                 disabled={
                   analysePhotoEnCours ||
                   analysePhotoSauvegardeEnCours ||
@@ -3485,20 +3849,24 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                   opacity:
                     analysePhotoEnCours ||
                     analysePhotoSauvegardeEnCours ||
-                    !analysePhotoResultat
+                    !analysePhotoResultat ||
+                    analysePhotoSauvegardee
                       ? 0.45
                       : 1,
                   cursor:
                     analysePhotoEnCours ||
                     analysePhotoSauvegardeEnCours ||
-                    !analysePhotoResultat
+                    !analysePhotoResultat ||
+                    analysePhotoSauvegardee
                       ? "not-allowed"
                       : "pointer",
                 }}
               >
                 {analysePhotoSauvegardeEnCours
                   ? "Sauvegarde en cours..."
-                  : "Enregistrer l'analyse"}
+                  : analysePhotoSauvegardee
+                    ? "Analyse enregistrée"
+                    : "Enregistrer l'analyse"}
               </button>
 
               <button
@@ -3573,6 +3941,15 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                     />
                   )}
 
+                  {(fiche.datePhotoLocale || fiche.dateAnalyseLocale) && (
+                    <div style={styles.dateHeurePhotoCarte}>
+                      <div style={styles.dateHeurePhotoLabel}>📅 Date et heure de la photo</div>
+                      <div style={styles.dateHeurePhotoValeur}>
+                        {fiche.datePhotoLocale || fiche.dateAnalyseLocale}
+                      </div>
+                    </div>
+                  )}
+
                   <div
                     style={styles.analyseCarte}
                     onTouchStart={handleGalerieTouchStart}
@@ -3582,7 +3959,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                     {afficherBoutonAnalyseComplete()}
                     {afficherChampAnalyse("Photo", fiche.nomPhoto)}
                     {afficherChampAnalyse("JSON", fiche.nomJson)}
-                    {afficherChampAnalyse("Date", fiche.dateAnalyseLocale)}
                   </div>
 
                   <p style={styles.galerieAideSwipe}>
@@ -3921,11 +4297,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       )}
 
       <main style={styles.telephone}>
-        <header style={styles.hero}>
-          <div style={styles.logoIcone}>PC</div>
-          <h1 style={styles.titre}>PhotoCartel</h1>
-        </header>
-
         {resultatClassification && !dashboardRenommage ? (
           <EcranClassificationTerminee />
         ) : dashboardRenommage ? (
@@ -4124,8 +4495,18 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
         />
 
         <input
+          ref={inputAnalyserPhotoCameraRef}
+          id="analyse-photo-one-shot-camera"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handlePhotoAnalyseSelection}
+          style={{ display: "none" }}
+        />
+
+        <input
           ref={inputAnalyserPhotoRef}
-          id="analyse-photo-one-shot"
+          id="analyse-photo-one-shot-fichier"
           type="file"
           accept="image/*"
           onChange={handlePhotoAnalyseSelection}
