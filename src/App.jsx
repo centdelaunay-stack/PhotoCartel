@@ -2,11 +2,15 @@ import { useState, useRef } from "react";
 import Tesseract from "tesseract.js";
 import cv from "@techstark/opencv-js";
 
-// PhotoCartel v26-barre-superieure-fixe — séparation stricte Visite / Analyser une photo. Mode Démonstration conservé.
+
+const LOGO_PHOTOCARTEL_SRC =
+  "data:image/webp;base64,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";
+
+// PhotoCartel v27.2-charte-graphique — habillage visuel global PhotoCartel. Moteurs conservés.
 // Moteurs, endpoints et règles métier conservés.
 
 function App() {
-  console.log("APP PRINCIPALE - PhotoCartel v26-barre-superieure-fixe parcours-visite-separe cloud-ready");
+  console.log("APP PRINCIPALE - PhotoCartel v27.2-charte-graphique parcours-visite-separe cloud-ready");
 
   const estServeurLocal =
     window.location.hostname === "localhost" ||
@@ -402,7 +406,7 @@ async function creerArborescenceAndroidSurTelephone({ voyageNom, villeNom, lieuN
   }
 
   const continuer = window.confirm(
-    "PhotoCartel v26-barre-superieure-fixe va créer le vrai dossier sur le téléphone.\n\n" +
+    "PhotoCartel v27.1-nettoyage-interface-demo va créer le vrai dossier sur le téléphone.\n\n" +
       "Dans l'écran suivant, choisis : Stockage interne.\n\n" +
       "PhotoCartel créera ensuite :\n" +
       "PhotoCartel / " + voyageNom + " / " + villeNom + " / " + lieuNom
@@ -454,11 +458,13 @@ async function creerArborescenceAndroidSurTelephone({ voyageNom, villeNom, lieuN
 
 
 async function testerDossierAndroid() {
-  // v26-barre-superieure-fixe : test ciblé de l'album racine DCIM/PhotoCartel.
+  // v27.1-nettoyage-interface-demo : test ciblé de l'album racine DCIM/PhotoCartel.
   // Objectif : vérifier si la PWA peut écrire dans un dossier PhotoCartel déjà créé
   // manuellement depuis la Galerie Samsung, puis créer l'arborescence voyage/ville/visite.
   try {
-    setMessageArborescenceAndroid("Test album PhotoCartel en cours...");
+    // v27.2.1 : le bouton de test affiche les diagnostics en alerte uniquement,
+    // pour ne pas polluer l'écran d'accueil avec un long message technique.
+    setMessageArborescenceAndroid("");
 
     const diagnostic =
       "Adresse : " + window.location.href + "\n" +
@@ -473,7 +479,7 @@ async function testerDossierAndroid() {
         "\n\nInterprétation :\n" +
         "- si le contexte sécurisé est NON, il faudra publier/tester en HTTPS avant conclusion définitive ;\n" +
         "- si le contexte sécurisé est OUI et que l'API reste absente, alors Chrome Android/PWA ne permet pas d'écrire dans DCIM/PhotoCartel.";
-      setMessageArborescenceAndroid(message);
+      setMessageArborescenceAndroid("");
       alert(message);
       return;
     }
@@ -495,7 +501,7 @@ async function testerDossierAndroid() {
     );
 
     if (!continuer) {
-      setMessageArborescenceAndroid("Test album PhotoCartel annulé.");
+      setMessageArborescenceAndroid("");
       return;
     }
 
@@ -537,7 +543,7 @@ async function testerDossierAndroid() {
     });
     const flux = await fichierTest.createWritable();
     await flux.write(
-      "PhotoCartel v26-barre-superieure-fixe\n" +
+      "PhotoCartel v27.1-nettoyage-interface-demo\n" +
         "Si tu lis ce fichier dans DCIM/PhotoCartel, le test est positif.\n" +
         "Voyage : " + nomVoyageTest + "\n" +
         "Ville : " + nomVilleTest + "\n" +
@@ -560,7 +566,7 @@ async function testerDossierAndroid() {
       categories.join("\n") +
       "\n\nVérifie maintenant depuis Windows si cette arborescence apparaît réellement.";
 
-    setMessageArborescenceAndroid(message);
+    setMessageArborescenceAndroid("");
     alert(message);
   } catch (error) {
     console.error("Erreur test album PhotoCartel", error);
@@ -570,7 +576,7 @@ async function testerDossierAndroid() {
         ? "Test album PhotoCartel annulé par l'utilisateur."
         : "Test album PhotoCartel échoué : " + (error?.message || String(error));
 
-    setMessageArborescenceAndroid(message);
+    setMessageArborescenceAndroid("");
     alert(message);
   }
 }
@@ -584,7 +590,7 @@ function nettoyerNomDossierLocal(valeur) {
 
 
 function ouvrirAppareilPhoto() {
-  // v26-barre-superieure-fixe : parcours VISITE strictement séparé de "Analyser une photo".
+  // v27.1-nettoyage-interface-demo : parcours VISITE strictement séparé de "Analyser une photo".
   // Ce bouton doit appeler uniquement l'input de prise de photo de visite :
   // accept="image/*" + capture="environment" + PAS de multiple.
   // Objectif : éviter le menu générique "Appareil photo / Fichiers" autant que Chrome Android le permet.
@@ -1465,7 +1471,7 @@ function handlePhotosPrises(event) {
     return;
   }
 
-  // v26-barre-superieure-fixe : après OK dans l'appareil photo de VISITE,
+  // v27.1-nettoyage-interface-demo : après OK dans l'appareil photo de VISITE,
   // PhotoCartel reçoit la photo, incrémente le compteur, puis tente
   // de relancer le même input VISITE, jamais l'input "Analyser une photo".
   // Si Chrome Android bloque cette réouverture automatique, la photo reste comptabilisée.
@@ -1476,7 +1482,7 @@ function handlePhotosPrises(event) {
   });
 
   setDerniereActionVisite(
-    `${fichiers.length} photo(s) prise(s). Test v26-barre-superieure-fixe : tentative de réouverture du parcours VISITE.`
+    `${fichiers.length} photo(s) prise(s). Test v27.1-nettoyage-interface-demo : tentative de réouverture du parcours VISITE.`
   );
 
   if (estAndroid() && voyage && cheminCollecteActif) {
@@ -2223,12 +2229,10 @@ const validerNouvelleVisite = async () => {
 
     let resultatArborescenceAndroid = null;
 
-    // v25.2-test : on ne tente plus de créer automatiquement l'arborescence Android
-    // lors de la création de visite. Le test est isolé dans le bouton
-    // "Test album PhotoCartel" pour éviter toute confusion.
-    setMessageArborescenceAndroid(
-      "Visite créée dans PhotoCartel. Test du stockage Android à lancer avec le bouton « Test album PhotoCartel »."
-    );
+    // v27.2.1 : message utilisateur neutralisé.
+    // La mécanique de test Android reste disponible via le bouton dédié,
+    // mais on ne mentionne plus l’ancien libellé prototype dans le flux normal.
+    setMessageArborescenceAndroid("Visite créée avec succès.");
 
     setVilleVisite(ville);
     setLieuVisite(lieu);
@@ -2599,7 +2603,26 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
 
   const valeurOuVide = (valeur, secours) => valeur || secours;
 
-  const styles = {
+  const themePhotoCartel = {
+    ivoire: "#f8f3ea",
+    ivoireClair: "#fffdf8",
+    ivoireCarte: "rgba(255, 253, 248, 0.94)",
+    encre: "#171a1f",
+    texte: "#2d2a25",
+    texteDoux: "#746b5f",
+    or: "#b58a3a",
+    orFonce: "#7a5520",
+    orClair: "#ead8b5",
+    bordureOr: "rgba(181, 138, 58, 0.26)",
+    ombreCarte: "0 18px 44px rgba(80, 62, 38, 0.11)",
+    ombreLegere: "0 10px 26px rgba(80, 62, 38, 0.08)",
+    ombreBouton: "0 10px 22px rgba(122, 85, 32, 0.14)",
+    rayonCarte: "22px",
+    rayonBouton: "16px",
+    font: "Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif",
+  };
+
+  const baseStyles = {
     page: {
       minHeight: "100vh",
       background: "#f7f3ec",
@@ -2714,19 +2737,13 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       flex: "0 0 auto",
     },
     barreSuperieureLogo: {
-      width: "28px",
-      height: "28px",
-      borderRadius: "8px",
-      backgroundColor: "#111820",
-      color: "#c9a14a",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      fontSize: "11px",
-      fontWeight: "900",
-      letterSpacing: "-0.06em",
+      width: "42px",
+      height: "42px",
+      borderRadius: "13px",
+      display: "block",
+      objectFit: "cover",
       border: "1px solid rgba(201,161,74,0.45)",
-      boxShadow: "0 3px 10px rgba(0,0,0,0.16)",
+      boxShadow: "0 6px 16px rgba(0,0,0,0.18)",
       flex: "0 0 auto",
     },
     barreSuperieureTitre: {
@@ -3454,6 +3471,538 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
       objectFit: "contain",
       touchAction: "pinch-zoom",
     },
+
+  };
+
+  const styles = {
+    ...baseStyles,
+    page: {
+      ...baseStyles.page,
+      background:
+        "radial-gradient(circle at 50% -10%, rgba(234,216,181,0.60) 0, rgba(248,243,234,0.92) 34%, #f6efe3 100%)",
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+      padding: "66px 14px 94px",
+      paddingBottom: "94px",
+    },
+    telephone: {
+      ...baseStyles.telephone,
+      maxWidth: "430px",
+      padding: "10px 14px 88px",
+    },
+    barreSuperieure: {
+      ...baseStyles.barreSuperieure,
+      minHeight: "58px",
+      padding: "8px 12px",
+      paddingTop: "calc(8px + env(safe-area-inset-top))",
+      backgroundColor: "rgba(255,253,248,0.97)",
+      borderBottom: `1px solid ${themePhotoCartel.bordureOr}`,
+      boxShadow: "0 10px 30px rgba(67, 49, 28, 0.12)",
+      fontFamily: themePhotoCartel.font,
+      backdropFilter: "blur(16px)",
+    },
+    barreSuperieureLogo: {
+      ...baseStyles.barreSuperieureLogo,
+      width: "40px",
+      height: "40px",
+      borderRadius: "14px",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      boxShadow: "0 8px 18px rgba(64, 47, 28, 0.18)",
+    },
+    barreSuperieureTitre: {
+      ...baseStyles.barreSuperieureTitre,
+      color: themePhotoCartel.encre,
+      fontSize: "15px",
+      fontWeight: "850",
+      letterSpacing: "-0.02em",
+    },
+    barreSuperieureVersion: {
+      ...baseStyles.barreSuperieureVersion,
+      backgroundColor: "rgba(234,216,181,0.32)",
+      color: themePhotoCartel.orFonce,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      fontWeight: "900",
+    },
+    barreSuperieureMenu: {
+      ...baseStyles.barreSuperieureMenu,
+      color: themePhotoCartel.encre,
+      fontWeight: "800",
+    },
+    barreSuperieureIcone: {
+      ...baseStyles.barreSuperieureIcone,
+      color: themePhotoCartel.encre,
+      fontWeight: "850",
+    },
+    hero: {
+      ...baseStyles.hero,
+      background:
+        "linear-gradient(135deg, rgba(255,253,248,0.94), rgba(244,235,219,0.92))",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: themePhotoCartel.rayonCarte,
+      boxShadow: themePhotoCartel.ombreCarte,
+    },
+    titre: {
+      ...baseStyles.titre,
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+      fontWeight: "750",
+      letterSpacing: "-0.045em",
+    },
+    carteEtat: {
+      ...baseStyles.carteEtat,
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,0.98), rgba(251,247,239,0.94))",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: themePhotoCartel.rayonCarte,
+      padding: "15px 16px",
+      boxShadow: themePhotoCartel.ombreCarte,
+      marginBottom: "13px",
+    },
+    sectionTitre: {
+      ...baseStyles.sectionTitre,
+      color: themePhotoCartel.orFonce,
+      fontFamily: themePhotoCartel.font,
+      fontSize: "11px",
+      letterSpacing: "0.12em",
+      margin: "0 0 10px",
+    },
+    etatPrincipal: {
+      ...baseStyles.etatPrincipal,
+      color: themePhotoCartel.encre,
+      fontSize: "24px",
+      fontWeight: "760",
+      margin: "0 0 10px",
+      letterSpacing: "-0.035em",
+    },
+    ligneEtat: {
+      ...baseStyles.ligneEtat,
+      gridTemplateColumns: "30px 1fr",
+      gap: "10px",
+      padding: "9px 0",
+      borderTop: "1px solid rgba(91,67,38,0.10)",
+    },
+    ligneEtatIcone: {
+      ...baseStyles.ligneEtatIcone,
+      color: themePhotoCartel.or,
+      fontSize: "19px",
+    },
+    ligneEtatLabel: {
+      ...baseStyles.ligneEtatLabel,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+      fontSize: "10px",
+      letterSpacing: "0.11em",
+    },
+    ligneEtatValeur: {
+      ...baseStyles.ligneEtatValeur,
+      color: themePhotoCartel.encre,
+      fontSize: "17px",
+      fontWeight: "720",
+    },
+    grilleActions: {
+      ...baseStyles.grilleActions,
+      gap: "10px",
+      margin: "13px 0",
+    },
+    carteAction: {
+      ...baseStyles.carteAction,
+      minHeight: "106px",
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,0.98), rgba(248,243,234,0.92))",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "20px",
+      boxShadow: themePhotoCartel.ombreLegere,
+      padding: "10px 8px",
+      gap: "9px",
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+    },
+    carteActionIconeRond: {
+      ...baseStyles.carteActionIconeRond,
+      width: "48px",
+      height: "48px",
+      background:
+        "linear-gradient(135deg, rgba(234,216,181,0.82), rgba(255,253,248,0.92))",
+      color: themePhotoCartel.orFonce,
+      boxShadow: "inset 0 0 0 1px rgba(181,138,58,0.20)",
+      fontSize: "24px",
+    },
+    carteActionTitre: {
+      ...baseStyles.carteActionTitre,
+      fontSize: "14px",
+      fontWeight: "820",
+      color: themePhotoCartel.encre,
+      letterSpacing: "-0.015em",
+    },
+    compteurCarte: {
+      ...baseStyles.compteurCarte,
+      background: themePhotoCartel.ivoireCarte,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "18px",
+      boxShadow: themePhotoCartel.ombreLegere,
+      padding: "11px 14px",
+      margin: "0 0 13px",
+    },
+    compteurIcone: {
+      ...baseStyles.compteurIcone,
+      backgroundColor: "rgba(234,216,181,0.68)",
+      color: themePhotoCartel.orFonce,
+    },
+    compteurLabel: {
+      ...baseStyles.compteurLabel,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+      fontSize: "13px",
+    },
+    compteurValeur: {
+      ...baseStyles.compteurValeur,
+      color: themePhotoCartel.encre,
+      fontWeight: "850",
+    },
+    carteDerniereVisite: {
+      ...baseStyles.carteDerniereVisite,
+      background: themePhotoCartel.ivoireCarte,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "20px",
+      boxShadow: themePhotoCartel.ombreLegere,
+      padding: "15px 16px",
+      marginBottom: "13px",
+    },
+    detailLigne: {
+      ...baseStyles.detailLigne,
+      padding: "8px 0",
+      borderTop: "1px solid rgba(91,67,38,0.10)",
+    },
+    detailIcone: {
+      ...baseStyles.detailIcone,
+      color: themePhotoCartel.or,
+    },
+    detailLabel: {
+      ...baseStyles.detailLabel,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
+    detailValeur: {
+      ...baseStyles.detailValeur,
+      color: themePhotoCartel.encre,
+    },
+    boutonLigne: {
+      ...baseStyles.boutonLigne,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,0.98), rgba(244,235,219,0.92))",
+      color: themePhotoCartel.orFonce,
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: themePhotoCartel.ombreBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    bouton: {
+      ...baseStyles.bouton,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,0.98), rgba(244,235,219,0.92))",
+      color: themePhotoCartel.encre,
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: themePhotoCartel.ombreBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    boutonTraitement: {
+      ...baseStyles.boutonTraitement,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      background:
+        "linear-gradient(135deg, rgba(255,253,248,0.98), rgba(234,216,181,0.54))",
+      color: themePhotoCartel.orFonce,
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: themePhotoCartel.ombreBouton,
+      fontFamily: themePhotoCartel.font,
+      fontSize: "14px",
+      letterSpacing: "0.01em",
+    },
+    boutonBas: {
+      ...baseStyles.boutonBas,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,0.98), rgba(244,235,219,0.92))",
+      color: themePhotoCartel.orFonce,
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: themePhotoCartel.ombreBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    panneauInfo: {
+      ...baseStyles.panneauInfo,
+      background: "rgba(255,253,248,0.94)",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "18px",
+      boxShadow: themePhotoCartel.ombreLegere,
+      color: themePhotoCartel.texte,
+      fontFamily: themePhotoCartel.font,
+    },
+    modalFond: {
+      ...baseStyles.modalFond,
+      background: "rgba(23, 26, 31, 0.46)",
+      backdropFilter: "blur(8px)",
+    },
+    modalCarte: {
+      ...baseStyles.modalCarte,
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,1), rgba(248,243,234,0.98))",
+      borderRadius: "26px",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      boxShadow: "0 28px 70px rgba(34, 26, 16, 0.30)",
+      fontFamily: themePhotoCartel.font,
+    },
+    modalTitre: {
+      ...baseStyles.modalTitre,
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+      letterSpacing: "-0.035em",
+    },
+    modalTexte: {
+      ...baseStyles.modalTexte,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
+    modalBoutonPrincipal: {
+      ...baseStyles.modalBoutonPrincipal,
+      background: "linear-gradient(135deg, #8b6427, #b58a3a)",
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: "0 14px 28px rgba(122, 85, 32, 0.24)",
+      fontFamily: themePhotoCartel.font,
+    },
+    modalBoutonSecondaire: {
+      ...baseStyles.modalBoutonSecondaire,
+      background: "rgba(255,253,248,0.96)",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      color: themePhotoCartel.encre,
+      borderRadius: themePhotoCartel.rayonBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    modalBoutonAnnuler: {
+      ...baseStyles.modalBoutonAnnuler,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
+    modalOverlay: {
+      ...baseStyles.modalOverlay,
+      backgroundColor: "rgba(23, 26, 31, 0.46)",
+      backdropFilter: "blur(8px)",
+    },
+    modal: {
+      ...baseStyles.modal,
+      background:
+        "linear-gradient(180deg, rgba(255,253,248,1), rgba(248,243,234,0.98))",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "24px",
+      boxShadow: "0 28px 70px rgba(34, 26, 16, 0.28)",
+      fontFamily: themePhotoCartel.font,
+    },
+    input: {
+      ...baseStyles.input,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "12px",
+      backgroundColor: "rgba(255,253,248,0.96)",
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+    },
+    resultatSucces: {
+      ...baseStyles.resultatSucces,
+      background: "linear-gradient(135deg, rgba(238,249,232,0.96), rgba(255,253,248,0.96))",
+      border: "1px solid rgba(76,147,59,0.22)",
+      borderRadius: "22px",
+      boxShadow: themePhotoCartel.ombreCarte,
+    },
+    resultatIconeSucces: {
+      ...baseStyles.resultatIconeSucces,
+      backgroundColor: "rgba(92,166,74,0.14)",
+      color: "#2d7d34",
+      boxShadow: "inset 0 0 0 1px rgba(92,166,74,0.18)",
+    },
+    resultatTitre: {
+      ...baseStyles.resultatTitre,
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+      fontWeight: "780",
+      letterSpacing: "-0.025em",
+    },
+    resultatTexte: {
+      ...baseStyles.resultatTexte,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
+    resumeIcone: {
+      ...baseStyles.resumeIcone,
+      backgroundColor: "rgba(234,216,181,0.68)",
+      color: themePhotoCartel.orFonce,
+    },
+    resumeValeur: {
+      ...baseStyles.resumeValeur,
+      color: themePhotoCartel.encre,
+    },
+    resumeLabel: {
+      ...baseStyles.resumeLabel,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
+    analyseEcran: {
+      ...baseStyles.analyseEcran,
+      background:
+        "radial-gradient(circle at 50% -10%, rgba(234,216,181,0.48) 0, rgba(248,243,234,0.92) 34%, #f6efe3 100%)",
+      color: themePhotoCartel.encre,
+      fontFamily: themePhotoCartel.font,
+      padding: "72px 18px 18px",
+      paddingBottom: "104px",
+    },
+    analyseMiniature: {
+      ...baseStyles.analyseMiniature,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "18px",
+      boxShadow: themePhotoCartel.ombreCarte,
+      backgroundColor: themePhotoCartel.ivoireClair,
+    },
+    dateHeurePhotoCarte: {
+      ...baseStyles.dateHeurePhotoCarte,
+      background: themePhotoCartel.ivoireCarte,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "18px",
+      boxShadow: themePhotoCartel.ombreLegere,
+      fontFamily: themePhotoCartel.font,
+    },
+    dateHeurePhotoLabel: {
+      ...baseStyles.dateHeurePhotoLabel,
+      color: themePhotoCartel.orFonce,
+    },
+    dateHeurePhotoValeur: {
+      ...baseStyles.dateHeurePhotoValeur,
+      color: themePhotoCartel.encre,
+    },
+    analyseCarte: {
+      ...baseStyles.analyseCarte,
+      background: themePhotoCartel.ivoireCarte,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "22px",
+      boxShadow: themePhotoCartel.ombreCarte,
+      fontFamily: themePhotoCartel.font,
+    },
+    analyseBlocTitre: {
+      ...baseStyles.analyseBlocTitre,
+      background:
+        "linear-gradient(135deg, rgba(234,216,181,0.58), rgba(255,253,248,0.94))",
+      color: themePhotoCartel.orFonce,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "14px",
+      fontFamily: themePhotoCartel.font,
+    },
+    analyseType: {
+      ...baseStyles.analyseType,
+      color: themePhotoCartel.orFonce,
+      fontFamily: themePhotoCartel.font,
+      fontWeight: "900",
+    },
+    analyseLigne: {
+      ...baseStyles.analyseLigne,
+      gridTemplateColumns: "118px 1fr",
+      borderBottom: "1px solid rgba(91,67,38,0.10)",
+      fontFamily: themePhotoCartel.font,
+    },
+    analyseLabel: {
+      ...baseStyles.analyseLabel,
+      color: themePhotoCartel.orFonce,
+    },
+    analyseValeur: {
+      ...baseStyles.analyseValeur,
+      color: themePhotoCartel.encre,
+    },
+    boutonAnalyseSauver: {
+      ...baseStyles.boutonAnalyseSauver,
+      background: "linear-gradient(135deg, #247c38, #34a853)",
+      border: "1px solid rgba(36,124,56,0.48)",
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: "0 12px 24px rgba(36,124,56,0.18)",
+      fontFamily: themePhotoCartel.font,
+    },
+    boutonAnalyseSecondaire: {
+      ...baseStyles.boutonAnalyseSecondaire,
+      background: "rgba(255,253,248,0.96)",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      color: themePhotoCartel.orFonce,
+      borderRadius: themePhotoCartel.rayonBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    boutonAnalyseComplete: {
+      ...baseStyles.boutonAnalyseComplete,
+      background:
+        "linear-gradient(135deg, rgba(255,253,248,0.98), rgba(234,216,181,0.46))",
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      color: themePhotoCartel.orFonce,
+      borderRadius: themePhotoCartel.rayonBouton,
+      boxShadow: themePhotoCartel.ombreBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    boutonAnalyseFermer: {
+      ...baseStyles.boutonAnalyseFermer,
+      background: "rgba(255,247,237,0.92)",
+      border: "1px solid rgba(154,52,18,0.28)",
+      borderRadius: themePhotoCartel.rayonBouton,
+      fontFamily: themePhotoCartel.font,
+    },
+    barreFixe: {
+      ...baseStyles.barreFixe,
+      backgroundColor: "rgba(255,253,248,0.97)",
+      borderTop: `1px solid ${themePhotoCartel.bordureOr}`,
+      boxShadow: "0 -10px 30px rgba(67, 49, 28, 0.12)",
+      padding: "6px 8px 7px",
+      paddingBottom: "calc(7px + env(safe-area-inset-bottom))",
+      fontFamily: themePhotoCartel.font,
+      backdropFilter: "blur(16px)",
+    },
+    barreFixeBouton: {
+      ...baseStyles.barreFixeBouton,
+      color: themePhotoCartel.texteDoux,
+      borderRadius: "14px",
+      padding: "5px 2px",
+    },
+    barreFixeIcone: {
+      ...baseStyles.barreFixeIcone,
+      fontSize: "20px",
+      lineHeight: "20px",
+    },
+    barreFixeTexte: {
+      ...baseStyles.barreFixeTexte,
+      fontSize: "8px",
+      lineHeight: "9px",
+      fontWeight: "850",
+      whiteSpace: "nowrap",
+      color: themePhotoCartel.texteDoux,
+    },
+    parametresSection: {
+      ...baseStyles.parametresSection,
+      background: themePhotoCartel.ivoireCarte,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      borderRadius: "20px",
+      boxShadow: themePhotoCartel.ombreLegere,
+    },
+    parametresTexte: {
+      ...baseStyles.parametresTexte,
+      color: themePhotoCartel.texte,
+      fontFamily: themePhotoCartel.font,
+    },
+    parametresChemin: {
+      ...baseStyles.parametresChemin,
+      backgroundColor: "rgba(234,216,181,0.30)",
+      color: themePhotoCartel.texteDoux,
+      border: `1px solid ${themePhotoCartel.bordureOr}`,
+      fontFamily: themePhotoCartel.font,
+    },
+    galerieCompteur: {
+      ...baseStyles.galerieCompteur,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
+    galerieAideSwipe: {
+      ...baseStyles.galerieAideSwipe,
+      color: themePhotoCartel.texteDoux,
+      fontFamily: themePhotoCartel.font,
+    },
   };
 
   function afficherValeurEtat(valeur, fallback = "—") {
@@ -3520,19 +4069,9 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
   }
 
   function BandeauModeDemonstration() {
-    if (!modeDemonstrationActif) return null;
-
-    return (
-      <section style={styles.bandeauModeDemonstration}>
-        <div style={styles.bandeauModeDemonstrationTitre}>
-          <span style={styles.pointModeDemonstration}>●</span>
-          MODE DÉMONSTRATION EN COURS
-        </div>
-        <p style={styles.bandeauModeDemonstrationTexte}>
-          Les analyses enregistrées sont stockées dans le dossier de démonstration.
-        </p>
-      </section>
-    );
+    // v27.1 : le mode démonstration reste actif techniquement, mais son bandeau vert
+    // n'est plus affiché dans l'interface pour libérer de la place et réduire le bruit visuel.
+    return null;
   }
 
   function BlocDerniereVisite() {
@@ -3659,11 +4198,13 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
         <button type="button" style={styles.barreSuperieureMenu} aria-label="Menu PhotoCartel">
           ☰
         </button>
-        <div style={styles.barreSuperieureLogo} aria-label="Logo PhotoCartel">
-          PC
-        </div>
+        <img
+          src={LOGO_PHOTOCARTEL_SRC}
+          alt="Logo PhotoCartel"
+          style={styles.barreSuperieureLogo}
+        />
         <h1 style={styles.barreSuperieureTitre}>PhotoCartel</h1>
-        <span style={styles.barreSuperieureVersion}>v26</span>
+        <span style={styles.barreSuperieureVersion}>v27.2</span>
         <div style={styles.barreSuperieureEspace} />
         <button type="button" style={styles.barreSuperieureIcone} aria-label="Aide PhotoCartel">
           ?
@@ -3712,11 +4253,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
         icone: "⚙️",
         texte: "Paramètres",
         action: () => setModeParametres(true),
-      },
-      {
-        icone: "🧪",
-        texte: "Test album PhotoCartel",
-        action: testerDossierAndroid,
       },
     ];
 
@@ -4053,7 +4589,7 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
               <div style={styles.sectionTitre}>Mode démonstration</div>
 
               <p style={styles.parametresTexte}>
-                Statut : <strong>{modeDemonstrationActif ? "ACTIF" : "INACTIF"}</strong>
+                Statut : <strong>INACTIF</strong>
               </p>
 
               {modeDemonstrationActif && (
@@ -4065,17 +4601,15 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
               {!modeDemonstrationActif && (
                 <button
                   type="button"
-                  onClick={lancerModeDemonstration}
-                  disabled={modeDemonstrationEnCours}
+                  onClick={undefined}
+                  disabled={true}
                   style={{
                     ...styles.bouton,
-                    opacity: modeDemonstrationEnCours ? 0.45 : 1,
-                    cursor: modeDemonstrationEnCours ? "not-allowed" : "pointer",
+                    opacity: 0.45,
+                    cursor: "not-allowed",
                   }}
                 >
-                  {modeDemonstrationEnCours
-                    ? "Lancement en cours..."
-                    : "Lancer le mode démonstration"}
+                  Lancer le mode démonstration
                 </button>
               )}
 
@@ -4083,12 +4617,12 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                 <>
                   <button
                     type="button"
-                    onClick={exporterPhotosModeDemonstration}
-                    disabled={modeDemonstrationEnCours}
+                    onClick={undefined}
+                    disabled={true}
                     style={{
                       ...styles.boutonTraitement,
-                      opacity: modeDemonstrationEnCours ? 0.45 : 1,
-                      cursor: modeDemonstrationEnCours ? "not-allowed" : "pointer",
+                      opacity: 0.45,
+                      cursor: "not-allowed",
                     }}
                   >
                     Exporter les photos de démonstration
@@ -4096,13 +4630,13 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
 
                   <button
                     type="button"
-                    onClick={sortirModeDemonstration}
-                    disabled={modeDemonstrationEnCours}
+                    onClick={undefined}
+                    disabled={true}
                     style={{
                       ...styles.boutonAnalyseFermer,
                       marginTop: 9,
-                      opacity: modeDemonstrationEnCours ? 0.45 : 1,
-                      cursor: modeDemonstrationEnCours ? "not-allowed" : "pointer",
+                      opacity: 0.45,
+                      cursor: "not-allowed",
                     }}
                   >
                     Sortir du mode démonstration
@@ -4306,63 +4840,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
             <BandeauModeDemonstration />
             <BlocEtatVisite />
 
-            <div
-              style={{
-                marginTop: 20,
-                marginBottom: 20,
-                padding: 18,
-                borderRadius: 24,
-                background: "#fff7df",
-                border: "2px solid #d39b2a",
-                boxShadow: "0 10px 24px rgba(0,0,0,0.08)",
-                textAlign: "center",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 18,
-                  fontWeight: 900,
-                  letterSpacing: 1,
-                  color: "#6f4a00",
-                  marginBottom: 12,
-                  textTransform: "uppercase",
-                }}
-              >
-                Prototype Android
-              </div>
-
-              <button
-                type="button"
-                onClick={testerDossierAndroid}
-                style={{
-                  width: "100%",
-                  border: "none",
-                  borderRadius: 20,
-                  padding: "18px 16px",
-                  background: "#c18418",
-                  color: "white",
-                  fontSize: 22,
-                  fontWeight: 900,
-                  cursor: "pointer",
-                }}
-              >
-                🧪 Tester album PhotoCartel
-              </button>
-
-              <div
-                style={{
-                  marginTop: 12,
-                  color: "#6f4a00",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  lineHeight: 1.4,
-                }}
-              >
-                Teste l’écriture dans le dossier déjà créé : DCIM / PhotoCartel.
-                Objectif : créer automatiquement Voyage / Ville / Visite / catégories.
-              </div>
-            </div>
-
             <div style={styles.grilleActions}>
               <ActionCarte
                 icone="📷"
@@ -4390,12 +4867,6 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                 onClick={finDeVisite}
                 disabled={!voyage}
                 couleur="#1f9a4b"
-              />
-              <ActionCarte
-                icone="🧪"
-                titre="Tester album PhotoCartel"
-                onClick={testerDossierAndroid}
-                couleur="#8a4b12"
               />
             </div>
 
@@ -4434,6 +4905,18 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                 style={styles.boutonTraitement}
               >
                 Renommer
+              </button>
+
+              <button
+                type="button"
+                onClick={testerDossierAndroid}
+                style={{
+                  ...styles.boutonTraitement,
+                  gridColumn: "1 / -1",
+                  color: "#7a5a1f",
+                }}
+              >
+                Tester création album PhotoCartel
               </button>
             </div>
 
@@ -4562,3 +5045,4 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
 }
 
 export default App;
+
