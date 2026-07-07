@@ -170,6 +170,8 @@ const galerieTouchStartYRef = useRef(null);
 const [actualisationEnCours, setActualisationEnCours] = useState(false);
 const [messageActualisation, setMessageActualisation] = useState("");
 const [messageArborescenceAndroid, setMessageArborescenceAndroid] = useState("");
+const [messageTestStockageAndroid, setMessageTestStockageAndroid] = useState("");
+const [testStockageAndroidEnCours, setTestStockageAndroidEnCours] = useState(false);
 const [derniereActualisation, setDerniereActualisation] = useState(null);
 
 const [modeParametres, setModeParametres] = useState(false);
@@ -566,6 +568,88 @@ function ouvrirAppareilPhoto() {
   if (input) {
     input.value = null;
     input.click();
+  }
+}
+
+
+async function testerStockageAndroid() {
+  setMessageTestStockageAndroid("");
+
+  if (!window.showDirectoryPicker) {
+    setMessageTestStockageAndroid(
+      "Test impossible : ce Chrome ne propose pas window.showDirectoryPicker()."
+    );
+    return;
+  }
+
+  setTestStockageAndroidEnCours(true);
+
+  try {
+    const dossierChoisi = await window.showDirectoryPicker({
+      mode: "readwrite",
+    });
+
+    if (dossierChoisi.queryPermission) {
+      const permissionLectureEcriture = await dossierChoisi.queryPermission({
+        mode: "readwrite",
+      });
+
+      if (permissionLectureEcriture !== "granted" && dossierChoisi.requestPermission) {
+        const permissionDemandee = await dossierChoisi.requestPermission({
+          mode: "readwrite",
+        });
+
+        if (permissionDemandee !== "granted") {
+          setMessageTestStockageAndroid(
+            "Test refusé : PhotoCartel n'a pas obtenu l'autorisation d'écriture dans le dossier sélectionné."
+          );
+          return;
+        }
+      }
+    }
+
+    const dossierTampon = await dossierChoisi.getDirectoryHandle(
+      "EN_COURS_PhotoCartel",
+      { create: true }
+    );
+
+    const horodatage = genererTimestampAnalysePhoto(new Date());
+    const nomFichierTest = `test_stockage_photocartel_${horodatage}.txt`;
+    const fichierTest = await dossierTampon.getFileHandle(nomFichierTest, {
+      create: true,
+    });
+
+    const contenuTest =
+      "Test stockage PhotoCartel OK\n" +
+      `Dossier choisi : ${dossierChoisi.name}\n` +
+      "Sous-dossier cible : EN_COURS_PhotoCartel\n" +
+      `Date : ${new Date().toISOString()}\n`;
+
+    const fluxEcriture = await fichierTest.createWritable();
+    await fluxEcriture.write(contenuTest);
+    await fluxEcriture.close();
+
+    const fichierRelu = await fichierTest.getFile();
+    const contenuRelu = await fichierRelu.text();
+
+    if (!contenuRelu.includes("Test stockage PhotoCartel OK")) {
+      throw new Error("Le fichier test a été créé mais sa relecture est incohérente.");
+    }
+
+    setMessageTestStockageAndroid(
+      `Test réussi : dossier ${dossierChoisi.name}/EN_COURS_PhotoCartel créé ou accessible. Fichier écrit et relu : ${nomFichierTest}`
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      setMessageTestStockageAndroid("Test annulé : aucun dossier n'a été sélectionné.");
+    } else {
+      console.error(error);
+      setMessageTestStockageAndroid(
+        `Test échoué : ${error?.message || "erreur inconnue"}`
+      );
+    }
+  } finally {
+    setTestStockageAndroidEnCours(false);
   }
 }
 
@@ -4857,6 +4941,13 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
                 couleur="#1f7a8c"
               />
               <ActionCarte
+                icone="🧪"
+                titre="Tester stockage Android"
+                onClick={testerStockageAndroid}
+                disabled={testStockageAndroidEnCours}
+                couleur="#8a5a00"
+              />
+              <ActionCarte
                 icone="🖼️"
                 titre="Galerie"
                 onClick={ouvrirGaleriePhotosAnalysees}
@@ -4886,6 +4977,12 @@ localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
             {messageArborescenceAndroid && (
               <div style={styles.panneauInfo}>
                 <strong>{messageArborescenceAndroid}</strong>
+              </div>
+            )}
+
+            {messageTestStockageAndroid && (
+              <div style={styles.panneauInfo}>
+                <strong>{messageTestStockageAndroid}</strong>
               </div>
             )}
 
