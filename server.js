@@ -1,4 +1,4 @@
-// PhotoCartel v26-barre-superieure-fixe — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v28-infrastructure-dossiers — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -22,17 +22,39 @@ const __dirname = path.dirname(__filename);
 const DOSSIER_RACINE_DONNEES =
   process.env.PHOTOCARTEL_DATA_DIR ||
   (process.platform === "win32"
-    ? "C:\\Voyages"
+    ? "C:\\PhotoCartel"
     : path.join(__dirname, "photocartel-data"));
+const DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL = [
+  "Voyages",
+  "Classifications",
+  "Œuvres renommées",
+  "Exports",
+  "Photos à analyser",
+  "Photos analysées",
+  "Collecte Photo en cours",
+  "Démonstrations",
+  "Paramètres",
+  "Logs",
+];
+
 const DOSSIER_EXPORTS_PHOTOCARTEL = path.join(
   DOSSIER_RACINE_DONNEES,
   "Exports"
 );
 
-fs.mkdirSync(DOSSIER_RACINE_DONNEES, { recursive: true });
-fs.mkdirSync(DOSSIER_EXPORTS_PHOTOCARTEL, { recursive: true });
+function initialiserInfrastructurePhotoCartel() {
+  fs.mkdirSync(DOSSIER_RACINE_DONNEES, { recursive: true });
+
+  for (const nomDossier of DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL) {
+    fs.mkdirSync(path.join(DOSSIER_RACINE_DONNEES, nomDossier), { recursive: true });
+  }
+}
+
+initialiserInfrastructurePhotoCartel();
+console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
+console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v26-barre-superieure-fixe — routes Mode Démonstration actives");
+console.log("PhotoCartel v28-infrastructure-dossiers — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -55,18 +77,19 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v26-barre-superieure-fixe",
+    version: "v28-infrastructure-dossiers",
     dataRoot: DOSSIER_RACINE_DONNEES,
+    infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v26-barre-superieure-fixe — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v28-infrastructure-dossiers — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v26-barre-superieure-fixe",
+    version: "v28-infrastructure-dossiers",
     message: "Route mode démonstration disponible",
   });
 });
@@ -111,12 +134,12 @@ function cheminDansRacineDonnees(cheminRecu) {
   const brut = String(cheminRecu).trim();
   if (!brut) return "";
 
-  // En local Windows, on conserve le comportement historique : C:\Voyages reste C:\Voyages.
+  // En local Windows, le frontend envoie déjà une racine absolue (v28 : C:\PhotoCartel).
   if (process.platform === "win32") {
     return brut;
   }
 
-  // Sur Render/Linux, on ne doit jamais créer un faux dossier "C:\Voyages".
+  // Sur Render/Linux, on ne doit jamais créer un faux dossier Windows comme "C:\PhotoCartel" ou "C:\Voyages".
   // Toute arborescence reçue du frontend est replacée proprement sous DOSSIER_RACINE_DONNEES.
   const brutNormalise = brut.replace(/\\/g, "/");
 
@@ -132,9 +155,9 @@ function cheminDansRacineDonnees(cheminRecu) {
     .map(nettoyerSegmentCheminPhotoCartel)
     .filter((segment) => segment && segment !== "." && segment !== "..");
 
-  // Le frontend historique envoie souvent C:\Voyages\... ; en cloud, "Voyages" est déjà représenté
-  // par DOSSIER_RACINE_DONNEES. On évite donc /photocartel-data/Voyages/...
-  if (segments[0] && segments[0].toLowerCase() === "voyages") {
+  // Compatibilité : si le frontend envoie une ancienne racine Windows (C:\Voyages)
+  // ou la nouvelle racine (C:\PhotoCartel), on replace proprement sous DOSSIER_RACINE_DONNEES.
+  if (segments[0] && ["voyages", "photocartel"].includes(segments[0].toLowerCase())) {
     segments = segments.slice(1);
   }
 
@@ -2250,7 +2273,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v26-barre-superieure-fixe",
+    version: "v28-infrastructure-dossiers",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3134,7 +3157,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v26-barre-superieure-fixe",
+      version: "v28-infrastructure-dossiers",
       message: "Mode démonstration disponible",
       route,
       methode
