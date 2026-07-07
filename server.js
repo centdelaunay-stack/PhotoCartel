@@ -1,4 +1,4 @@
-// PhotoCartel v28.1-infrastructure-idempotente — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v28.2.4-dossiers-metier-visite — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -42,6 +42,57 @@ const DOSSIER_EXPORTS_PHOTOCARTEL = path.join(
   "Exports"
 );
 
+const DOSSIER_METIER_VOYAGES = "Voyages";
+
+function construireCheminVoyageMetierPhotoCartel(nomVoyage) {
+  // v28.2.4 : la création métier PC doit toujours partir de la racine officielle PhotoCartel.
+  // On ignore volontairement tout ancien dossierRacine envoyé par le frontend
+  // pour éviter de recréer des voyages sous C:\\Voyages ou PhotoCartel_Mode_Demonstration.
+  const nomVoyageNettoye = nettoyerSegmentCheminPhotoCartel(nomVoyage);
+
+  if (!nomVoyageNettoye) {
+    return "";
+  }
+
+  return path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES, nomVoyageNettoye);
+}
+
+function construireCheminVilleMetierPhotoCartel(nomVoyage, nomVille) {
+  // v28.2.4 : la ville est un dossier métier créé sous le voyage actif.
+  const nomVoyageNettoye = nettoyerSegmentCheminPhotoCartel(nomVoyage);
+  const nomVilleNettoye = nettoyerSegmentCheminPhotoCartel(nomVille);
+
+  if (!nomVoyageNettoye || !nomVilleNettoye) {
+    return "";
+  }
+
+  return path.join(
+    DOSSIER_RACINE_DONNEES,
+    DOSSIER_METIER_VOYAGES,
+    nomVoyageNettoye,
+    nomVilleNettoye
+  );
+}
+
+function construireCheminVisiteMetierPhotoCartel(nomVoyage, nomVille, nomVisite) {
+  // v28.2.4 : la visite est le dossier métier créé sous la ville active.
+  const nomVoyageNettoye = nettoyerSegmentCheminPhotoCartel(nomVoyage);
+  const nomVilleNettoye = nettoyerSegmentCheminPhotoCartel(nomVille);
+  const nomVisiteNettoye = nettoyerSegmentCheminPhotoCartel(nomVisite);
+
+  if (!nomVoyageNettoye || !nomVilleNettoye || !nomVisiteNettoye) {
+    return "";
+  }
+
+  return path.join(
+    DOSSIER_RACINE_DONNEES,
+    DOSSIER_METIER_VOYAGES,
+    nomVoyageNettoye,
+    nomVilleNettoye,
+    nomVisiteNettoye
+  );
+}
+
 function initialiserInfrastructurePhotoCartel() {
   fs.mkdirSync(DOSSIER_RACINE_DONNEES, { recursive: true });
 
@@ -54,7 +105,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v28.1-infrastructure-idempotente — routes Mode Démonstration actives");
+console.log("PhotoCartel v28.2.4-dossiers-metier-visite — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -77,19 +128,19 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v28.1-infrastructure-idempotente",
+    version: "v28.2.4-dossiers-metier-visite",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v28.1-infrastructure-idempotente — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v28.2.4-dossiers-metier-visite — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.1-infrastructure-idempotente",
+    version: "v28.2.4-dossiers-metier-visite",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2273,7 +2324,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.1-infrastructure-idempotente",
+    version: "v28.2.4-dossiers-metier-visite",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2358,6 +2409,153 @@ app.post("/mode-demonstration/lancer", handlerLancerModeDemonstration);
 app.post("/api/mode-demonstration/lancer", handlerLancerModeDemonstration);
 app.post("/mode-demonstration/exporter", handlerExporterModeDemonstration);
 app.post("/api/mode-demonstration/exporter", handlerExporterModeDemonstration);
+
+app.post("/creer-voyage", async (req, res) => {
+  try {
+    const nomVoyage = nettoyerSegmentCheminPhotoCartel(req.body.nomVoyage);
+
+    if (!nomVoyage) {
+      return res.status(400).json({ success: false, error: "Nom de voyage manquant" });
+    }
+
+    initialiserInfrastructurePhotoCartel();
+
+    const chemin = construireCheminVoyageMetierPhotoCartel(nomVoyage);
+
+    fs.mkdirSync(chemin, { recursive: true });
+
+    res.json({
+      success: true,
+      chemin,
+      nomVoyage,
+      typeDossier: "metier_voyage",
+      architecture: "PhotoCartel/Voyages/<Voyage>",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/creer-voyage", async (req, res) => {
+  try {
+    const nomVoyage = nettoyerSegmentCheminPhotoCartel(req.body.nomVoyage);
+
+    if (!nomVoyage) {
+      return res.status(400).json({ success: false, error: "Nom de voyage manquant" });
+    }
+
+    initialiserInfrastructurePhotoCartel();
+
+    const chemin = construireCheminVoyageMetierPhotoCartel(nomVoyage);
+
+    fs.mkdirSync(chemin, { recursive: true });
+
+    res.json({
+      success: true,
+      chemin,
+      nomVoyage,
+      typeDossier: "metier_voyage",
+      architecture: "PhotoCartel/Voyages/<Voyage>",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+async function handlerCreerVille(req, res) {
+  try {
+    const nomVoyage = nettoyerSegmentCheminPhotoCartel(req.body.nomVoyage);
+    const nomVille = nettoyerSegmentCheminPhotoCartel(req.body.nomVille);
+
+    if (!nomVoyage) {
+      return res.status(400).json({ success: false, error: "Nom de voyage manquant" });
+    }
+
+    if (!nomVille) {
+      return res.status(400).json({ success: false, error: "Nom de ville manquant" });
+    }
+
+    initialiserInfrastructurePhotoCartel();
+
+    const chemin = construireCheminVilleMetierPhotoCartel(nomVoyage, nomVille);
+
+    if (!chemin) {
+      return res.status(400).json({ success: false, error: "Chemin de ville invalide" });
+    }
+
+    fs.mkdirSync(chemin, { recursive: true });
+
+    res.json({
+      success: true,
+      chemin,
+      nomVoyage,
+      nomVille,
+      typeDossier: "metier_ville",
+      architecture: "PhotoCartel/Voyages/<Voyage>/<Ville>",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+app.post("/creer-ville", handlerCreerVille);
+app.post("/api/creer-ville", handlerCreerVille);
+
+async function handlerCreerVisiteMetier(req, res) {
+  try {
+    const nomVoyage = nettoyerSegmentCheminPhotoCartel(req.body.nomVoyage);
+    const nomVille = nettoyerSegmentCheminPhotoCartel(req.body.nomVille);
+    const nomVisite = nettoyerSegmentCheminPhotoCartel(req.body.nomVisite);
+    const typeVisite = nettoyerSegmentCheminPhotoCartel(req.body.typeVisite || "Musée");
+
+    if (!nomVoyage) {
+      return res.status(400).json({ success: false, error: "Nom de voyage manquant" });
+    }
+
+    if (!nomVille) {
+      return res.status(400).json({ success: false, error: "Nom de ville manquant" });
+    }
+
+    if (!nomVisite) {
+      return res.status(400).json({ success: false, error: "Nom de visite manquant" });
+    }
+
+    initialiserInfrastructurePhotoCartel();
+
+    const chemin = construireCheminVisiteMetierPhotoCartel(nomVoyage, nomVille, nomVisite);
+
+    if (!chemin) {
+      return res.status(400).json({ success: false, error: "Chemin de visite invalide" });
+    }
+
+    fs.mkdirSync(chemin, { recursive: true });
+
+    res.json({
+      success: true,
+      chemin,
+      nomVoyage,
+      nomVille,
+      nomVisite,
+      typeVisite,
+      typeDossier: "metier_visite",
+      architecture: "PhotoCartel/Voyages/<Voyage>/<Ville>/<Nom de la visite>",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+app.post("/creer-visite-metier", handlerCreerVisiteMetier);
+app.post("/api/creer-visite-metier", handlerCreerVisiteMetier);
+
+// Compatibilité locale avec les essais v28.2.3 : l'ancien endpoint crée désormais une visite.
+app.post("/creer-lieu", handlerCreerVisiteMetier);
+app.post("/api/creer-lieu", handlerCreerVisiteMetier);
 
 app.post("/creer-dossier", async (req, res) => {
   try {
@@ -3157,7 +3355,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v28.1-infrastructure-idempotente",
+      version: "v28.2.4-dossiers-metier-visite",
       message: "Mode démonstration disponible",
       route,
       methode
