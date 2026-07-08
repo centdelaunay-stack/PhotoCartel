@@ -1,4 +1,4 @@
-// PhotoCartel v28.2.7-dossiers-metier-permissions-android — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v28.2.8-dossiers-metier-autorisation-android-unique — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -122,7 +122,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v28.2.7-dossiers-metier-permissions-android — routes Mode Démonstration actives");
+console.log("PhotoCartel v28.2.8-dossiers-metier-autorisation-android-unique — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -145,19 +145,19 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v28.2.7-dossiers-metier-permissions-android",
+    version: "v28.2.8-dossiers-metier-autorisation-android-unique",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v28.2.7-dossiers-metier-permissions-android — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v28.2.8-dossiers-metier-autorisation-android-unique — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.2.7-dossiers-metier-permissions-android",
+    version: "v28.2.8-dossiers-metier-autorisation-android-unique",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2341,7 +2341,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.2.7-dossiers-metier-permissions-android",
+    version: "v28.2.8-dossiers-metier-autorisation-android-unique",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3373,7 +3373,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v28.2.7-dossiers-metier-permissions-android",
+      version: "v28.2.8-dossiers-metier-autorisation-android-unique",
       message: "Mode démonstration disponible",
       route,
       methode
