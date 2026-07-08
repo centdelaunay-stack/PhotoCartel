@@ -1,4 +1,4 @@
-// PhotoCartel v28.2.5-dossiers-metier-visite-android — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v28.2.6-dossiers-metier-visite-categories — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -93,6 +93,23 @@ function construireCheminVisiteMetierPhotoCartel(nomVoyage, nomVille, nomVisite)
   );
 }
 
+function creerSousDossiersCategoriesVisite(cheminVisite, typeVisite = "Musée") {
+  // v28.2.6 : alignement PC/local avec Android.
+  // La création d'une visite doit créer aussi les sous-dossiers métier utiles.
+  const categories =
+    typeVisite === "Musée"
+      ? CATEGORIES_MUSEE
+      : ["A_verifier_classification"];
+
+  fs.mkdirSync(cheminVisite, { recursive: true });
+
+  for (const categorie of categories) {
+    fs.mkdirSync(path.join(cheminVisite, categorie), { recursive: true });
+  }
+
+  return categories;
+}
+
 function initialiserInfrastructurePhotoCartel() {
   fs.mkdirSync(DOSSIER_RACINE_DONNEES, { recursive: true });
 
@@ -105,7 +122,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v28.2.5-dossiers-metier-visite-android — routes Mode Démonstration actives");
+console.log("PhotoCartel v28.2.6-dossiers-metier-visite-categories — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -128,19 +145,19 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v28.2.5-dossiers-metier-visite-android",
+    version: "v28.2.6-dossiers-metier-visite-categories",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v28.2.5-dossiers-metier-visite-android — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v28.2.6-dossiers-metier-visite-categories — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.2.5-dossiers-metier-visite-android",
+    version: "v28.2.6-dossiers-metier-visite-categories",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2324,7 +2341,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.2.5-dossiers-metier-visite-android",
+    version: "v28.2.6-dossiers-metier-visite-categories",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2532,7 +2549,7 @@ async function handlerCreerVisiteMetier(req, res) {
       return res.status(400).json({ success: false, error: "Chemin de visite invalide" });
     }
 
-    fs.mkdirSync(chemin, { recursive: true });
+    const categoriesCreees = creerSousDossiersCategoriesVisite(chemin, typeVisite);
 
     res.json({
       success: true,
@@ -2541,6 +2558,7 @@ async function handlerCreerVisiteMetier(req, res) {
       nomVille,
       nomVisite,
       typeVisite,
+      categoriesCreees,
       typeDossier: "metier_visite",
       architecture: "PhotoCartel/Voyages/<Voyage>/<Ville>/<Nom de la visite>",
     });
@@ -3355,7 +3373,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v28.2.5-dossiers-metier-visite-android",
+      version: "v28.2.6-dossiers-metier-visite-categories",
       message: "Mode démonstration disponible",
       route,
       methode
