@@ -1,4 +1,4 @@
-// PhotoCartel v28.3.2-ux-creation-voyage-visite-stabilisee — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v29-enregistrement-photos-dossiers-photocartel — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -122,7 +122,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v28.3.2-ux-creation-voyage-visite-stabilisee — routes Mode Démonstration actives");
+console.log("PhotoCartel v29-enregistrement-photos-dossiers-photocartel — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -145,19 +145,19 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v28.3.2-ux-creation-voyage-visite-stabilisee",
+    version: "v29-enregistrement-photos-dossiers-photocartel",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v28.3.2-ux-creation-voyage-visite-stabilisee — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v29-enregistrement-photos-dossiers-photocartel — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.3.2-ux-creation-voyage-visite-stabilisee",
+    version: "v29-enregistrement-photos-dossiers-photocartel",
     message: "Route mode démonstration disponible",
   });
 });
@@ -1910,7 +1910,7 @@ app.post("/sauvegarder-analyse-photo", upload.single("photo"), async (req, res) 
     const dossierRacine = req.body.dossierRacine || DOSSIER_RACINE_DONNEES;
     const dossierDestination = path.join(
       dossierRacine,
-      "Photos analysées singulièrement"
+      "Photos analysées"
     );
 
     fs.mkdirSync(dossierDestination, { recursive: true });
@@ -1935,7 +1935,7 @@ app.post("/sauvegarder-analyse-photo", upload.single("photo"), async (req, res) 
 
     const metadonnees = {
       type_document: "PHOTO_ANALYSEE",
-      version_photocartel: "v18.3",
+      version_photocartel: "v29",
       date_analyse_iso: new Date().toISOString(),
       date_analyse_locale: formaterDateHeureLocale(new Date()),
       nom_photo_original: req.file.originalname || "",
@@ -2239,6 +2239,92 @@ app.post("/classifier-dossier", async (req, res) => {
   }
 });
 
+
+app.post("/enregistrer-photos-visite", upload.array("photos"), async (req, res) => {
+  try {
+    const dossierRacine = req.body.dossierRacine || DOSSIER_RACINE_DONNEES;
+    const dossierDestination = path.join(
+      cheminDansRacineDonnees(dossierRacine),
+      "Collecte Photo en cours"
+    );
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Aucune photo reçue",
+      });
+    }
+
+    fs.mkdirSync(dossierDestination, { recursive: true });
+
+    const fichiersSauvegardes = [];
+    const resultats = [];
+    let copies = 0;
+    let ignores = 0;
+
+    for (const photo of req.files) {
+      try {
+        const nomOriginal = nettoyerNomFichier(photo.originalname || "photo.jpg");
+        const extension = path.extname(nomOriginal).toLowerCase() || ".jpg";
+
+        if (!EXTENSIONS_IMAGE.includes(extension)) {
+          ignores += 1;
+          resultats.push({
+            fichier: nomOriginal,
+            success: false,
+            ignore: true,
+            raison: "Extension non image",
+          });
+          continue;
+        }
+
+        const timestamp = genererTimestampAnalysePhoto(new Date());
+        const nomDestination = rendreNomUnique(
+          dossierDestination,
+          `${timestamp}_VISITE${extension}`
+        );
+        const cheminFinal = path.join(dossierDestination, nomDestination);
+
+        fs.writeFileSync(cheminFinal, photo.buffer);
+        fichiersSauvegardes.push(nomDestination);
+        copies += 1;
+        resultats.push({
+          fichier: nomOriginal,
+          fichierDestination: nomDestination,
+          success: true,
+          ignore: false,
+        });
+      } catch (error) {
+        console.error("ERREUR ENREGISTREMENT PHOTO VISITE =", error);
+        ignores += 1;
+        resultats.push({
+          fichier: photo.originalname,
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      dossierDestination,
+      cheminDestination: dossierDestination,
+      recus: req.files.length,
+      copies,
+      ignores,
+      fichiersSauvegardes,
+      totalDestination: compterImagesDossier(dossierDestination),
+      resultats,
+    });
+  } catch (error) {
+    console.error("ERREUR /enregistrer-photos-visite =", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) => {
   try {
     const cheminDestinationOriginal = req.body.cheminDestination;
@@ -2341,7 +2427,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v28.3.2-ux-creation-voyage-visite-stabilisee",
+    version: "v29-enregistrement-photos-dossiers-photocartel",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2359,7 +2445,7 @@ async function handlerLancerModeDemonstration(req, res) {
     );
     const cheminAnalyses = path.join(
       cheminModeDemonstration,
-      "Photos analysées singulièrement"
+      "Photos analysées"
     );
 
     fs.mkdirSync(cheminModeDemonstration, { recursive: true });
@@ -2905,7 +2991,7 @@ app.get("/photos-analysees", async (req, res) => {
     const dossierRacine = req.query.dossierRacine || DOSSIER_RACINE_DONNEES;
     const dossierDestination = path.join(
       dossierRacine,
-      "Photos analysées singulièrement"
+      "Photos analysées"
     );
 
     if (!fs.existsSync(dossierDestination)) {
@@ -2968,7 +3054,7 @@ app.delete("/photo-analysee", async (req, res) => {
     const dossierRacine = req.body?.dossierRacine || DOSSIER_RACINE_DONNEES;
     const dossierDestination = path.join(
       dossierRacine,
-      "Photos analysées singulièrement"
+      "Photos analysées"
     );
 
     const nomPhoto = path.basename(req.body?.nomPhoto || "");
@@ -3300,7 +3386,7 @@ app.get("/export-analyses-csv", async (req, res) => {
     const dossierRacine = req.query.dossierRacine || DOSSIER_RACINE_DONNEES;
     const dossierDestination = path.join(
       dossierRacine,
-      "Photos analysées singulièrement"
+      "Photos analysées"
     );
 
     const maintenant = new Date();
@@ -3341,7 +3427,7 @@ app.get("/photo-analysee/:nomPhoto", async (req, res) => {
     const dossierRacine = req.query.dossierRacine || DOSSIER_RACINE_DONNEES;
     const dossierDestination = path.join(
       dossierRacine,
-      "Photos analysées singulièrement"
+      "Photos analysées"
     );
 
     const nomPhoto = path.basename(decodeURIComponent(req.params.nomPhoto || ""));
@@ -3373,7 +3459,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v28.3.2-ux-creation-voyage-visite-stabilisee",
+      version: "v29-enregistrement-photos-dossiers-photocartel",
       message: "Mode démonstration disponible",
       route,
       methode
