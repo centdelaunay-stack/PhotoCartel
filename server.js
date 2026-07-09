@@ -1,4 +1,4 @@
-// PhotoCartel v30.1-rangement-photos-visites — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v30.2-correctif-rangement-android — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -122,7 +122,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v30.1-rangement-photos-visites — routes Mode Démonstration actives");
+console.log("PhotoCartel v30.2-correctif-rangement-android — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -145,14 +145,14 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v30.1-rangement-photos-visites",
+    version: "v30.2-correctif-rangement-android",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v30.1-rangement-photos-visites — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v30.2-correctif-rangement-android — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 
 function extraireMsDepuisNomPhotoCartel(nomFichier) {
@@ -296,7 +296,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v30.1-rangement-photos-visites",
+    version: "v30.2-correctif-rangement-android",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2566,7 +2566,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v30.1-rangement-photos-visites",
+    version: "v30.2-correctif-rangement-android",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3598,7 +3598,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v30.1-rangement-photos-visites",
+      version: "v30.2-correctif-rangement-android",
       message: "Mode démonstration disponible",
       route,
       methode
