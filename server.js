@@ -1,4 +1,4 @@
-// PhotoCartel v29-enregistrement-photos-dossiers-photocartel — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v30.1-rangement-photos-visites — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -122,7 +122,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v29-enregistrement-photos-dossiers-photocartel — routes Mode Démonstration actives");
+console.log("PhotoCartel v30.1-rangement-photos-visites — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -145,19 +145,158 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v29-enregistrement-photos-dossiers-photocartel",
+    version: "v30.1-rangement-photos-visites",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v29-enregistrement-photos-dossiers-photocartel — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v30.1-rangement-photos-visites — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
+
+function extraireMsDepuisNomPhotoCartel(nomFichier) {
+  const match = String(nomFichier || "").match(/(\d{8})_(\d{6})(?:_(\d{3}))?/);
+  if (!match) return 0;
+
+  const date = match[1];
+  const heure = match[2];
+  const millisecondes = match[3] || "000";
+  const annee = Number(date.slice(0, 4));
+  const mois = Number(date.slice(4, 6)) - 1;
+  const jour = Number(date.slice(6, 8));
+  const heures = Number(heure.slice(0, 2));
+  const minutes = Number(heure.slice(2, 4));
+  const secondes = Number(heure.slice(4, 6));
+
+  const valeur = new Date(annee, mois, jour, heures, minutes, secondes, Number(millisecondes)).getTime();
+  return Number.isFinite(valeur) ? valeur : 0;
+}
+
+function trouverVisitePourPhotoRangement(visites, nomFichier) {
+  const photoMs = extraireMsDepuisNomPhotoCartel(nomFichier);
+  if (!photoMs) return null;
+
+  return visites.find((visite) => {
+    const debut = Number(visite.debutMs || 0);
+    const fin = Number(visite.finMs || 0);
+    return debut && fin && photoMs >= debut && photoMs < fin;
+  }) || null;
+}
+
+function cheminDestinationVisiteDepuisRangement(visite) {
+  const nomVoyage = nettoyerSegmentCheminPhotoCartel(visite.voyage);
+  const nomVille = nettoyerSegmentCheminPhotoCartel(visite.ville);
+  const nomVisite = nettoyerSegmentCheminPhotoCartel(visite.nom);
+
+  if (!nomVoyage || !nomVille || !nomVisite) return "";
+
+  return path.join(
+    DOSSIER_RACINE_DONNEES,
+    DOSSIER_METIER_VOYAGES,
+    nomVoyage,
+    nomVille,
+    nomVisite
+  );
+}
+
+app.post("/ranger-photos-visites", async (req, res) => {
+  try {
+    const visites = Array.isArray(req.body.visites) ? req.body.visites : [];
+
+    if (visites.length === 0) {
+      return res.json({
+        success: true,
+        photosLues: 0,
+        photosRangees: 0,
+        photosNonAttribuees: 0,
+        visites: [],
+      });
+    }
+
+    const dossierRacine = req.body.dossierRacine || DOSSIER_RACINE_DONNEES;
+    const dossierCollecte = path.join(
+      cheminDansRacineDonnees(dossierRacine),
+      "Collecte Photo en cours"
+    );
+
+    fs.mkdirSync(dossierCollecte, { recursive: true });
+
+    const statsParVisite = new Map(visites.map((visite) => [visite.id, { ...visite, photosRangees: 0 }]));
+    let photosLues = 0;
+    let photosRangees = 0;
+    let photosNonAttribuees = 0;
+    const resultats = [];
+
+    const fichiers = fs
+      .readdirSync(dossierCollecte)
+      .filter(estImage)
+      .sort((a, b) => a.localeCompare(b, "fr", { numeric: true }));
+
+    for (const fichier of fichiers) {
+      photosLues += 1;
+      const visite = trouverVisitePourPhotoRangement(visites, fichier);
+
+      if (!visite) {
+        photosNonAttribuees += 1;
+        resultats.push({ fichier, success: false, raison: "Aucune visite correspondante" });
+        continue;
+      }
+
+      const cheminDestination = cheminDestinationVisiteDepuisRangement(visite);
+      if (!cheminDestination) {
+        photosNonAttribuees += 1;
+        resultats.push({ fichier, success: false, raison: "Chemin destination invalide" });
+        continue;
+      }
+
+      fs.mkdirSync(cheminDestination, { recursive: true });
+
+      const cheminSource = path.join(dossierCollecte, fichier);
+      const nomDestination = rendreNomUnique(cheminDestination, fichier);
+      const cheminFinal = path.join(cheminDestination, nomDestination);
+
+      fs.renameSync(cheminSource, cheminFinal);
+
+      photosRangees += 1;
+      const stat = statsParVisite.get(visite.id);
+      if (stat) stat.photosRangees += 1;
+
+      resultats.push({
+        fichier,
+        fichierDestination: nomDestination,
+        visiteId: visite.id,
+        visiteNom: visite.nom,
+        success: true,
+      });
+    }
+
+    res.json({
+      success: true,
+      mode: "serveur",
+      dossierCollecte,
+      photosLues,
+      photosRangees,
+      deplaces: photosRangees,
+      photosNonAttribuees,
+      visites: Array.from(statsParVisite.values()),
+      resultats,
+      totalCollecteRestant: compterImagesDossier(dossierCollecte),
+    });
+  } catch (error) {
+    console.error("ERREUR /ranger-photos-visites =", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v29-enregistrement-photos-dossiers-photocartel",
+    version: "v30.1-rangement-photos-visites",
     message: "Route mode démonstration disponible",
   });
 });
@@ -1935,7 +2074,7 @@ app.post("/sauvegarder-analyse-photo", upload.single("photo"), async (req, res) 
 
     const metadonnees = {
       type_document: "PHOTO_ANALYSEE",
-      version_photocartel: "v29",
+      version_photocartel: "v30.1",
       date_analyse_iso: new Date().toISOString(),
       date_analyse_locale: formaterDateHeureLocale(new Date()),
       nom_photo_original: req.file.originalname || "",
@@ -2427,7 +2566,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v29-enregistrement-photos-dossiers-photocartel",
+    version: "v30.1-rangement-photos-visites",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3459,7 +3598,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v29-enregistrement-photos-dossiers-photocartel",
+      version: "v30.1-rangement-photos-visites",
       message: "Mode démonstration disponible",
       route,
       methode
