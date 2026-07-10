@@ -1,6 +1,6 @@
-// PhotoCartel v31.0-multi-visite-pwa — server cloud-ready.
+// PhotoCartel v31.2-exploration-dossiers — server cloud-ready.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
-// Visite rapide : ville officielle toujours égale à « Ville non renseignée ».
+// Visite rapide : « Ville non renseignée » reste le libellé UI ; le stockage utilise « Visites rapides ».
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -131,7 +131,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v31.0-multi-visite-pwa — routes Mode Démonstration actives");
+console.log("PhotoCartel v31.2-exploration-dossiers — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -154,14 +154,14 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v31.0-multi-visite-pwa",
+    version: "v31.2-exploration-dossiers",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v31.0-multi-visite-pwa — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v31.2-exploration-dossiers — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 
 function extraireMsDepuisNomPhotoCartel(nomFichier) {
@@ -193,9 +193,16 @@ function trouverVisitePourPhotoRangement(visites, nomFichier) {
   }) || null;
 }
 
+function nomDossierVilleStockagePourVisite(visite = {}) {
+  const type = String(visite.type || visite.typeVisite || "").trim();
+  const nom = String(visite.nom || visite.nomVisite || "").trim();
+  const estRapide = !type || nom.startsWith("Visite rapide_") || nom.startsWith("A_EN_COURS_");
+  return estRapide ? "Visites rapides" : String(visite.ville || visite.nomVille || "").trim();
+}
+
 function cheminDestinationVisiteDepuisRangement(visite) {
   const nomVoyage = nettoyerSegmentCheminPhotoCartel(visite.voyage);
-  const nomVille = nettoyerSegmentCheminPhotoCartel(visite.ville);
+  const nomVille = nettoyerSegmentCheminPhotoCartel(nomDossierVilleStockagePourVisite(visite));
   const nomVisite = nettoyerSegmentCheminPhotoCartel(visite.nom);
 
   if (!nomVoyage || !nomVille || !nomVisite) return "";
@@ -305,7 +312,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v31.0-multi-visite-pwa",
+    version: "v31.2-exploration-dossiers",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2581,7 +2588,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v31.0-multi-visite-pwa",
+    version: "v31.2-exploration-dossiers",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2772,10 +2779,11 @@ async function handlerCreerVisiteMetier(req, res) {
         : req.body.typeVisite
     );
     const estVisiteRapide = !String(typeVisite || "").trim();
-    // v31 : pour une visite rapide, le serveur impose la valeur métier neutre.
+    // v31.2 : le libellé UI reste « Ville non renseignée », mais le dossier physique
+    // de toutes les visites rapides est désormais « Visites rapides ».
     // Une ancienne ville éventuellement envoyée par un client obsolète est volontairement ignorée.
     const nomVille = estVisiteRapide
-      ? "Ville non renseignée"
+      ? "Visites rapides"
       : nettoyerSegmentCheminPhotoCartel(req.body.nomVille);
 
     if (!nomVoyage) {
@@ -3129,6 +3137,26 @@ app.post("/renommer-oeuvres", async (req, res) => {
     });
   }
 });
+
+app.post(["/ouvrir-photocartel", "/api/ouvrir-photocartel"], async (req, res) => {
+  try {
+    initialiserInfrastructurePhotoCartel();
+
+    if (process.platform !== "win32") {
+      return res.status(400).json({
+        success: false,
+        error: "L'ouverture directe dans l'Explorateur est disponible sur le serveur local Windows.",
+      });
+    }
+
+    exec(`explorer "${DOSSIER_RACINE_DONNEES}"`);
+    res.json({ success: true, chemin: DOSSIER_RACINE_DONNEES });
+  } catch (error) {
+    console.error("ERREUR /ouvrir-photocartel =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 
 app.post("/ouvrir-dossier", async (req, res) => {
   try {
@@ -3635,7 +3663,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v31.0-multi-visite-pwa",
+      version: "v31.2-exploration-dossiers",
       message: "Mode démonstration disponible",
       route,
       methode
