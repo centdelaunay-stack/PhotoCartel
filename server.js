@@ -1,4 +1,6 @@
-// PhotoCartel v30.2-correctif-rangement-android — server cloud-ready. Base v21.1 conservée pour rangement photos sans doublons.
+// PhotoCartel v31.0-multi-visite-pwa — server cloud-ready.
+// Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
+// Visite rapide : ville officielle toujours égale à « Ville non renseignée ».
 // Aucun moteur IA/OCR/classification/renommage modifié.
 
 import express from "express";
@@ -93,13 +95,20 @@ function construireCheminVisiteMetierPhotoCartel(nomVoyage, nomVille, nomVisite)
   );
 }
 
+function categoriesPourTypeVisite(typeVisite = "Musée") {
+  if (typeVisite === "Musée") return CATEGORIES_MUSEE;
+  if (typeVisite === "Église" || typeVisite === "Eglise") return CATEGORIES_EGLISE;
+
+  // Une visite rapide (type vide) reste volontairement un dossier racine vide.
+  if (!String(typeVisite || "").trim()) return [];
+
+  return ["A_verifier_classification"];
+}
+
 function creerSousDossiersCategoriesVisite(cheminVisite, typeVisite = "Musée") {
-  // v28.2.6 : alignement PC/local avec Android.
-  // La création d'une visite doit créer aussi les sous-dossiers métier utiles.
-  const categories =
-    typeVisite === "Musée"
-      ? CATEGORIES_MUSEE
-      : ["A_verifier_classification"];
+  // v30.5 : les catégories dépendent réellement du type de visite.
+  // Une visite rapide crée uniquement son dossier racine, sans sous-dossier typé.
+  const categories = categoriesPourTypeVisite(typeVisite);
 
   fs.mkdirSync(cheminVisite, { recursive: true });
 
@@ -122,7 +131,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v30.2-correctif-rangement-android — routes Mode Démonstration actives");
+console.log("PhotoCartel v31.0-multi-visite-pwa — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -145,14 +154,14 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v30.2-correctif-rangement-android",
+    version: "v31.0-multi-visite-pwa",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v30.2-correctif-rangement-android — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v31.0-multi-visite-pwa — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 
 function extraireMsDepuisNomPhotoCartel(nomFichier) {
@@ -296,7 +305,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v30.2-correctif-rangement-android",
+    version: "v31.0-multi-visite-pwa",
     message: "Route mode démonstration disponible",
   });
 });
@@ -318,6 +327,12 @@ const CATEGORIES_MUSEE = [
   "Architecture",
   "Batiments",
   "Structures",
+  "A_verifier_classification",
+];
+
+const CATEGORIES_EGLISE = [
+  "Facade",
+  "Nef",
   "A_verifier_classification",
 ];
 
@@ -2566,7 +2581,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v30.2-correctif-rangement-android",
+    version: "v31.0-multi-visite-pwa",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2750,9 +2765,18 @@ app.post("/api/creer-ville", handlerCreerVille);
 async function handlerCreerVisiteMetier(req, res) {
   try {
     const nomVoyage = nettoyerSegmentCheminPhotoCartel(req.body.nomVoyage);
-    const nomVille = nettoyerSegmentCheminPhotoCartel(req.body.nomVille);
     const nomVisite = nettoyerSegmentCheminPhotoCartel(req.body.nomVisite);
-    const typeVisite = nettoyerSegmentCheminPhotoCartel(req.body.typeVisite || "Musée");
+    const typeVisite = nettoyerSegmentCheminPhotoCartel(
+      req.body.typeVisite === undefined || req.body.typeVisite === null
+        ? "Musée"
+        : req.body.typeVisite
+    );
+    const estVisiteRapide = !String(typeVisite || "").trim();
+    // v31 : pour une visite rapide, le serveur impose la valeur métier neutre.
+    // Une ancienne ville éventuellement envoyée par un client obsolète est volontairement ignorée.
+    const nomVille = estVisiteRapide
+      ? "Ville non renseignée"
+      : nettoyerSegmentCheminPhotoCartel(req.body.nomVille);
 
     if (!nomVoyage) {
       return res.status(400).json({ success: false, error: "Nom de voyage manquant" });
@@ -2795,6 +2819,19 @@ async function handlerCreerVisiteMetier(req, res) {
 
 app.post("/creer-visite-metier", handlerCreerVisiteMetier);
 app.post("/api/creer-visite-metier", handlerCreerVisiteMetier);
+
+function verifierDossierVisiteDiagnostic(cheminVisite, typeVisite = "Musée") {
+  const categoriesAttendues = categoriesPourTypeVisite(typeVisite);
+
+  return {
+    existe: fs.existsSync(cheminVisite),
+    categories: categoriesAttendues.map((categorie) => ({
+      nom: categorie,
+      existe: fs.existsSync(path.join(cheminVisite, categorie)),
+    })),
+  };
+}
+
 
 // Compatibilité locale avec les essais v28.2.3 : l'ancien endpoint crée désormais une visite.
 app.post("/creer-lieu", handlerCreerVisiteMetier);
@@ -3598,7 +3635,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v30.2-correctif-rangement-android",
+      version: "v31.0-multi-visite-pwa",
       message: "Mode démonstration disponible",
       route,
       methode
