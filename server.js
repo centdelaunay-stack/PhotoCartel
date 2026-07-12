@@ -1,4 +1,4 @@
-// PhotoCartel v32.3 DEV — server inchangé fonctionnellement ; version alignée sur le nouveau layout de la fiche résultat.
+// PhotoCartel v34.2 — stabilisation des actions de la fiche résultat et de la persistance.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
 // Visite rapide : « Ville non renseignée » reste le libellé UI ; le stockage utilise « Visites rapides ».
 // Aucun moteur IA/OCR/classification/renommage modifié.
@@ -131,7 +131,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v32.3 DEV — routes Mode Démonstration actives");
+console.log("PhotoCartel v34.2 — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -154,14 +154,14 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v32.3 DEV",
+    version: "v34.2",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
 });
 
 
-// PhotoCartel v32.3 DEV — routes Mode Démonstration déclarées très tôt.
+// PhotoCartel v34 — routes Mode Démonstration déclarées très tôt.
 // Objectif : éviter toute ambiguïté d'ordre d'enregistrement des routes Express.
 
 function extraireMsDepuisNomPhotoCartel(nomFichier) {
@@ -312,7 +312,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v32.3 DEV",
+    version: "v34.2",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2133,6 +2133,187 @@ app.post("/sauvegarder-analyse-photo", upload.single("photo"), async (req, res) 
 });
 
 
+function dossierAnalysePhotoCartel(dossierRacine, nomDossier) {
+  // v34.1 : les dossiers du cycle d’analyse appartiennent toujours à
+  // l’infrastructure officielle PhotoCartel. En local Windows, on force donc
+  // C:\PhotoCartel (ou PHOTOCARTEL_DATA_DIR) afin d’éviter une écriture
+  // accidentelle dans une ancienne racine métier ou un sous-dossier.
+  let racine = DOSSIER_RACINE_DONNEES;
+
+  if (process.platform !== "win32" && dossierRacine) {
+    racine = cheminDansRacineDonnees(dossierRacine) || DOSSIER_RACINE_DONNEES;
+  }
+
+  const dossier = path.join(racine, nomDossier);
+  fs.mkdirSync(dossier, { recursive: true });
+  return dossier;
+}
+
+function verifierFichierEcrit(chemin, libelle) {
+  if (!fs.existsSync(chemin)) {
+    throw new Error(`${libelle} non créé : ${chemin}`);
+  }
+  const taille = fs.statSync(chemin).size;
+  if (taille <= 0) {
+    throw new Error(`${libelle} vide : ${chemin}`);
+  }
+  return taille;
+}
+
+function extensionImageDepuisNom(nomFichier, extensionDefaut = ".jpeg") {
+  const extension = path.extname(String(nomFichier || "")).toLowerCase();
+  return EXTENSIONS_IMAGE.includes(extension) ? extension : extensionDefaut;
+}
+
+app.post("/sauvegarder-photo-a-analyser", upload.single("photo"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: "Photo manquante" });
+    const dossierDestination = dossierAnalysePhotoCartel(req.body.dossierRacine, "Photos à analyser");
+    fs.mkdirSync(dossierDestination, { recursive: true });
+    const timestampInitial = String(req.body.timestampInitial || genererTimestampAnalysePhoto(new Date()));
+    const extension = extensionImageDepuisNom(req.file.originalname);
+    const nomPhoto = rendreNomUnique(dossierDestination, `${timestampInitial}_PHOTO_A_ANALYSER${extension}`);
+    fs.writeFileSync(path.join(dossierDestination, nomPhoto), req.file.buffer);
+    res.json({ success: true, dossierDestination, nomPhoto, timestampInitial });
+  } catch (error) {
+    console.error("ERREUR /sauvegarder-photo-a-analyser =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/finaliser-analyse-photo", upload.single("photo"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: "Photo manquante" });
+    const dossierDestination = dossierAnalysePhotoCartel(req.body.dossierRacine, "Photos analysées");
+    const dossierAAnalyser = dossierAnalysePhotoCartel(req.body.dossierRacine, "Photos à analyser");
+    fs.mkdirSync(dossierDestination, { recursive: true });
+    const timestampInitial = String(req.body.timestampInitial || genererTimestampAnalysePhoto(new Date()));
+    const baseNom = `${timestampInitial}_PHOTO_ANALYSEE`;
+    const nomPhoto = rendreNomUnique(dossierDestination, `${baseNom}.jpeg`);
+    const baseFinale = path.basename(nomPhoto, path.extname(nomPhoto));
+    const nomJson = `${baseFinale}.json`;
+    const analyse = parserJsonSouple(req.body.analyse, {});
+    const metadonnees = {
+      type_document: "PHOTO_ANALYSEE",
+      statut_analyse: "ANALYSEE",
+      version_photocartel: "v34.2",
+      timestamp_initial: timestampInitial,
+      date_analyse_iso: new Date().toISOString(),
+      date_analyse_locale: formaterDateHeureLocale(new Date()),
+      nom_photo_original: req.file.originalname || "",
+      nom_photo_sauvegardee: nomPhoto,
+      nom_json_sauvegarde: nomJson,
+      dossier_destination: dossierDestination,
+      analyse,
+    };
+    const cheminPhoto = path.join(dossierDestination, nomPhoto);
+    const cheminJson = path.join(dossierDestination, nomJson);
+    fs.writeFileSync(cheminPhoto, req.file.buffer);
+    fs.writeFileSync(cheminJson, JSON.stringify(metadonnees, null, 2), "utf-8");
+    const taillePhoto = verifierFichierEcrit(cheminPhoto, "Photo analysée");
+    const tailleJson = verifierFichierEcrit(cheminJson, "Fiche JSON analysée");
+    const nomPhotoAAnalyser = path.basename(String(req.body.nomPhotoAAnalyser || ""));
+    if (nomPhotoAAnalyser) {
+      const cheminAAnalyser = path.join(dossierAAnalyser, nomPhotoAAnalyser);
+      if (fs.existsSync(cheminAAnalyser)) fs.unlinkSync(cheminAAnalyser);
+    }
+    console.log("Analyse finalisée :", { dossierDestination, nomPhoto, nomJson, taillePhoto, tailleJson });
+    res.json({
+      success: true,
+      dossierDestination,
+      nomPhoto,
+      nomJson,
+      timestampInitial,
+      cheminPhoto,
+      cheminJson,
+      taillePhoto,
+      tailleJson,
+    });
+  } catch (error) {
+    console.error("ERREUR /finaliser-analyse-photo =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/modifier-analyse-photo", upload.single("photo"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: "Photo manquante" });
+    const dossierDestination = dossierAnalysePhotoCartel(req.body.dossierRacine, "Photos analysées");
+    fs.mkdirSync(dossierDestination, { recursive: true });
+    const timestampInitial = String(req.body.timestampInitial || genererTimestampAnalysePhoto(new Date()));
+    const baseNom = `${timestampInitial}_PHOTO_ANALYSEE_MODIFIEE`;
+    const nomPhoto = rendreNomUnique(dossierDestination, `${baseNom}.jpeg`);
+    const baseFinale = path.basename(nomPhoto, path.extname(nomPhoto));
+    const nomJson = `${baseFinale}.json`;
+    const analyse = parserJsonSouple(req.body.analyse, {});
+    const metadonnees = {
+      type_document: "PHOTO_ANALYSEE_MODIFIEE",
+      statut_analyse: "MODIFIEE",
+      version_photocartel: "v34.2",
+      timestamp_initial: timestampInitial,
+      date_modification_iso: new Date().toISOString(),
+      date_modification_locale: formaterDateHeureLocale(new Date()),
+      nom_photo_original: req.file.originalname || "",
+      nom_photo_sauvegardee: nomPhoto,
+      nom_json_sauvegarde: nomJson,
+      dossier_destination: dossierDestination,
+      analyse,
+    };
+    const cheminPhoto = path.join(dossierDestination, nomPhoto);
+    const cheminJson = path.join(dossierDestination, nomJson);
+    fs.writeFileSync(cheminPhoto, req.file.buffer);
+    fs.writeFileSync(cheminJson, JSON.stringify(metadonnees, null, 2), "utf-8");
+    const taillePhoto = verifierFichierEcrit(cheminPhoto, "Photo analysée modifiée");
+    const tailleJson = verifierFichierEcrit(cheminJson, "Fiche JSON modifiée");
+    for (const ancienNom of [req.body.ancienNomPhoto, req.body.ancienNomJson]) {
+      const nomSecurise = path.basename(String(ancienNom || ""));
+      if (!nomSecurise || nomSecurise === nomPhoto || nomSecurise === nomJson) continue;
+      const ancienChemin = path.join(dossierDestination, nomSecurise);
+      if (fs.existsSync(ancienChemin)) fs.unlinkSync(ancienChemin);
+    }
+    console.log("Analyse modifiée enregistrée :", { dossierDestination, nomPhoto, nomJson, taillePhoto, tailleJson });
+    res.json({
+      success: true,
+      dossierDestination,
+      nomPhoto,
+      nomJson,
+      timestampInitial,
+      cheminPhoto,
+      cheminJson,
+      taillePhoto,
+      tailleJson,
+    });
+  } catch (error) {
+    console.error("ERREUR /modifier-analyse-photo =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete("/supprimer-fichiers-analyse", (req, res) => {
+  try {
+    const nomDossier = ["Photos à analyser", "Photos analysées"].includes(req.body.dossier)
+      ? req.body.dossier
+      : "Photos à analyser";
+    const dossier = dossierAnalysePhotoCartel(req.body.dossierRacine, nomDossier);
+    const noms = Array.isArray(req.body.noms) ? req.body.noms : [];
+    let supprimes = 0;
+    for (const nom of noms) {
+      const nomSecurise = path.basename(String(nom || ""));
+      if (!nomSecurise) continue;
+      const chemin = path.join(dossier, nomSecurise);
+      if (fs.existsSync(chemin)) {
+        fs.unlinkSync(chemin);
+        supprimes += 1;
+      }
+    }
+    res.json({ success: true, supprimes });
+  } catch (error) {
+    console.error("ERREUR /supprimer-fichiers-analyse =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
 app.post("/classifier-photo", upload.single("photo"), async (req, res) => {
   try {
     if (!req.file) {
@@ -2588,7 +2769,7 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v32.3 DEV",
+    version: "v34",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3664,7 +3845,7 @@ app.use((req, res, next) => {
     console.log("PING MODE DEMONSTRATION RECU =", methode, route);
     return res.json({
       success: true,
-      version: "v32.3 DEV",
+      version: "v34",
       message: "Mode démonstration disponible",
       route,
       methode
