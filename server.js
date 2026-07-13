@@ -1,4 +1,4 @@
-// PhotoCartel v34.4 — enregistrement fiable des analyses modifiées et remplacement coordonné photo/JSON.
+// PhotoCartel v34.5 — autorisations réutilisées et synchronisation complète des champs édités dans le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
 // Visite rapide : « Ville non renseignée » reste le libellé UI ; le stockage utilise « Visites rapides ».
 // Aucun moteur IA/OCR/classification/renommage modifié.
@@ -131,7 +131,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v34.4 — routes Mode Démonstration actives");
+console.log("PhotoCartel v34.5 — routes Mode Démonstration actives");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -154,7 +154,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v34.4",
+    version: "v34.5",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -312,7 +312,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v34.4",
+    version: "v34.5",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2196,7 +2196,7 @@ app.post("/finaliser-analyse-photo", upload.single("photo"), async (req, res) =>
     const metadonnees = {
       type_document: "PHOTO_ANALYSEE",
       statut_analyse: "ANALYSEE",
-      version_photocartel: "v34.4",
+      version_photocartel: "v34.5",
       timestamp_initial: timestampInitial,
       date_analyse_iso: new Date().toISOString(),
       date_analyse_locale: formaterDateHeureLocale(new Date()),
@@ -2250,7 +2250,7 @@ app.post("/modifier-analyse-photo", upload.single("photo"), async (req, res) => 
     const metadonnees = {
       type_document: "PHOTO_ANALYSEE_MODIFIEE",
       statut_analyse: "MODIFIEE",
-      version_photocartel: "v34.4",
+      version_photocartel: "v34.5",
       timestamp_initial: timestampInitial,
       date_modification_iso: new Date().toISOString(),
       date_modification_locale: formaterDateHeureLocale(new Date()),
