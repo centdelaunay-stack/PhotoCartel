@@ -7,15 +7,15 @@ const LOGO_PHOTOCARTEL_SRC =
   "data:image/webp;base64,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";
 
 const VERSION = {
-  numero: "v34.7",
-  descriptif: "autorisations simplifiées et annulation des modifications",
+  numero: "v34.8",
+  descriptif: "autorisation persistante entre les analyses",
   date: "2026-07-13",
-  build: 7,
+  build: 8,
 };
 
 const VERSION_COMPLETE = `${VERSION.numero} - ${VERSION.descriptif}`;
 
-// PhotoCartel v34.7 — autorisation racine PhotoCartel réutilisée et annulation sûre des modifications.
+// PhotoCartel v34.8 — le handle racine PhotoCartel reste vivant entre les rendus React et les analyses successives.
 // La photo est d’abord enregistrée dans « Photos à analyser », puis l’analyse est lancée manuellement.
 
 const DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL = [
@@ -238,6 +238,10 @@ const [analysePhotoModifiee, setAnalysePhotoModifiee] = useState(false);
 const analysePhotoAvantEditionRef = useRef(null);
 const analysePhotoModifieeAvantEditionRef = useRef(false);
 const autorisationStockageHandleCandidatRef = useRef(null);
+// v34.8 : ces handles doivent survivre aux re-rendus React. Des variables locales `let`
+// étaient réinitialisées à chaque changement d’état, ce qui forçait une nouvelle demande.
+const photoCartelHandleDcimSessionRef = useRef(null);
+const photoCartelHandleRacineAndroidSessionRef = useRef(null);
 const [analysePhotoNomAAnalyser, setAnalysePhotoNomAAnalyser] = useState("");
 const [analysePhotoNomAnalysee, setAnalysePhotoNomAnalysee] = useState("");
 const [analysePhotoNomJson, setAnalysePhotoNomJson] = useState("");
@@ -859,8 +863,6 @@ async function creerArborescenceAndroidSurTelephone({ voyageNom, villeNom, lieuN
 
 
 
-let photoCartelHandleDcimSession = null;
-let photoCartelHandleRacineAndroidSession = null;
 const NOM_HANDLE_RACINE_ANDROID = "racine-photocartel";
 const NOM_HANDLE_DCIM_HISTORIQUE = "dcim";
 
@@ -965,19 +967,19 @@ async function obtenirDossierRacinePhotoCartelAndroid({
   // Objectif UX : l'utilisateur sélectionne directement DCIM/PhotoCartel quand il existe.
   // Si l'ancien handle DCIM v28.2.8 est déjà autorisé, il reste accepté en compatibilité.
   if (
-    photoCartelHandleRacineAndroidSession &&
-    (await handleAndroidEncoreAutorise(photoCartelHandleRacineAndroidSession, { demanderPermissionSiNecessaire }))
+    photoCartelHandleRacineAndroidSessionRef.current &&
+    (await handleAndroidEncoreAutorise(photoCartelHandleRacineAndroidSessionRef.current, { demanderPermissionSiNecessaire }))
   ) {
     return {
       type: "photocartel",
-      dossierPhotoCartel: photoCartelHandleRacineAndroidSession,
+      dossierPhotoCartel: photoCartelHandleRacineAndroidSessionRef.current,
       source: "session",
     };
   }
 
   const handleRacineSauvegarde = await lireHandleAndroid(NOM_HANDLE_RACINE_ANDROID);
   if (handleRacineSauvegarde && (await handleAndroidEncoreAutorise(handleRacineSauvegarde, { demanderPermissionSiNecessaire }))) {
-    photoCartelHandleRacineAndroidSession = handleRacineSauvegarde;
+    photoCartelHandleRacineAndroidSessionRef.current = handleRacineSauvegarde;
     return {
       type: "photocartel",
       dossierPhotoCartel: handleRacineSauvegarde,
@@ -985,16 +987,16 @@ async function obtenirDossierRacinePhotoCartelAndroid({
     };
   }
 
-  if (photoCartelHandleDcimSession && (await handleDcimEncoreAutorise(photoCartelHandleDcimSession, { demanderPermissionSiNecessaire }))) {
+  if (photoCartelHandleDcimSessionRef.current && (await handleDcimEncoreAutorise(photoCartelHandleDcimSessionRef.current, { demanderPermissionSiNecessaire }))) {
     const { dossierPhotoCartel } = await creerArborescenceInfrastructurePhotoCartel(
-      photoCartelHandleDcimSession
+      photoCartelHandleDcimSessionRef.current
     );
     // v30.x : quand la racine conservée est DCIM, on reconstruit PhotoCartel à partir de DCIM.
     // On ne persiste pas le sous-handle dérivé PhotoCartel, moins fiable sur Android.
-    photoCartelHandleRacineAndroidSession = null;
+    photoCartelHandleRacineAndroidSessionRef.current = null;
     return {
       type: "dcim",
-      dossierDcim: photoCartelHandleDcimSession,
+      dossierDcim: photoCartelHandleDcimSessionRef.current,
       dossierPhotoCartel,
       source: "session-dcim",
     };
@@ -1002,12 +1004,12 @@ async function obtenirDossierRacinePhotoCartelAndroid({
 
   const handleDcimSauvegarde = await lireHandleDcimAndroid();
   if (handleDcimSauvegarde && (await handleDcimEncoreAutorise(handleDcimSauvegarde, { demanderPermissionSiNecessaire }))) {
-    photoCartelHandleDcimSession = handleDcimSauvegarde;
+    photoCartelHandleDcimSessionRef.current = handleDcimSauvegarde;
     const { dossierPhotoCartel } = await creerArborescenceInfrastructurePhotoCartel(
       handleDcimSauvegarde
     );
     // v30.x : on garde le handle DCIM comme référence stable et on reconstruit PhotoCartel.
-    photoCartelHandleRacineAndroidSession = null;
+    photoCartelHandleRacineAndroidSessionRef.current = null;
     return {
       type: "dcim",
       dossierDcim: handleDcimSauvegarde,
@@ -1034,7 +1036,7 @@ async function obtenirDossierRacinePhotoCartelAndroid({
   });
 
   if (dossierChoisi.name === "PhotoCartel") {
-    photoCartelHandleRacineAndroidSession = dossierChoisi;
+    photoCartelHandleRacineAndroidSessionRef.current = dossierChoisi;
     await sauvegarderHandleAndroid(NOM_HANDLE_RACINE_ANDROID, dossierChoisi);
 
     return {
@@ -1045,13 +1047,13 @@ async function obtenirDossierRacinePhotoCartelAndroid({
   }
 
   if (dossierChoisi.name === "DCIM") {
-    photoCartelHandleDcimSession = dossierChoisi;
+    photoCartelHandleDcimSessionRef.current = dossierChoisi;
     await sauvegarderHandleDcimAndroid(dossierChoisi);
 
     const { dossierPhotoCartel } = await creerArborescenceInfrastructurePhotoCartel(dossierChoisi);
     // v30.x : sélection DCIM = on sauvegarde DCIM uniquement.
     // Le dossier PhotoCartel est toujours retrouvé depuis DCIM au besoin.
-    photoCartelHandleRacineAndroidSession = null;
+    photoCartelHandleRacineAndroidSessionRef.current = null;
 
     return {
       type: "dcim",
@@ -1500,7 +1502,7 @@ async function handleAnalyserUnePhoto() {
     return;
   }
 
-  // v34.7 : on prépare AVANT l'affichage du bouton le handle déjà mémorisé.
+  // v34.8 : on prépare AVANT l'affichage du bouton le handle déjà mémorisé.
   // Ainsi, le clic utilisateur peut appeler requestPermission() immédiatement,
   // sans rouvrir inutilement le sélecteur de dossiers.
   const handleRacineSauvegarde = await lireHandleAndroid(NOM_HANDLE_RACINE_ANDROID);
@@ -1517,7 +1519,7 @@ async function autoriserStockagePourAnalyseDepuisClic() {
     setAutorisationStockageAnalyseEnCours(true);
     setMessageAnalysePhoto("");
 
-    // v34.7 — cas B : un handle racine est déjà mémorisé mais sa permission
+    // v34.8 — cas B : un handle racine est déjà mémorisé mais sa permission
     // doit être réactivée. requestPermission() est la toute première opération
     // du clic utilisateur : aucun passage par l'explorateur n'est nécessaire.
     const handleCandidat = autorisationStockageHandleCandidatRef.current;
@@ -1525,13 +1527,13 @@ async function autoriserStockagePourAnalyseDepuisClic() {
       const permission = await handleCandidat.requestPermission({ mode: "readwrite" });
       if (permission === "granted") {
         if (handleCandidat.name === "PhotoCartel") {
-          photoCartelHandleRacineAndroidSession = handleCandidat;
-          photoCartelHandleDcimSession = null;
+          photoCartelHandleRacineAndroidSessionRef.current = handleCandidat;
+          photoCartelHandleDcimSessionRef.current = null;
           await sauvegarderHandleAndroid(NOM_HANDLE_RACINE_ANDROID, handleCandidat);
           await verifierInfrastructureDansPhotoCartelAndroid(handleCandidat);
         } else if (handleCandidat.name === "DCIM") {
-          photoCartelHandleDcimSession = handleCandidat;
-          photoCartelHandleRacineAndroidSession = null;
+          photoCartelHandleDcimSessionRef.current = handleCandidat;
+          photoCartelHandleRacineAndroidSessionRef.current = null;
           await sauvegarderHandleDcimAndroid(handleCandidat);
           await creerArborescenceInfrastructurePhotoCartel(handleCandidat);
         }
@@ -1548,7 +1550,7 @@ async function autoriserStockagePourAnalyseDepuisClic() {
       throw new Error("L’accès mémorisé a été refusé. Appuie de nouveau sur Autoriser PhotoCartel pour sélectionner la racine DCIM / PhotoCartel.");
     }
 
-    // v34.7 — cas C : aucun handle réutilisable. On ouvre alors une seule fois
+    // v34.8 — cas C : aucun handle réutilisable. On ouvre alors une seule fois
     // le sélecteur et on exige la racine PhotoCartel (ou DCIM si elle n'existe pas).
     if (typeof window.showDirectoryPicker !== "function") {
       throw new Error(
@@ -1557,19 +1559,19 @@ async function autoriserStockagePourAnalyseDepuisClic() {
     }
 
     const dossierChoisi = await window.showDirectoryPicker({
-      id: "photocartel-racine-v34-7",
+      id: "photocartel-racine-v34-8",
       mode: "readwrite",
       startIn: "pictures",
     });
 
     if (dossierChoisi.name === "PhotoCartel") {
-      photoCartelHandleRacineAndroidSession = dossierChoisi;
-      photoCartelHandleDcimSession = null;
+      photoCartelHandleRacineAndroidSessionRef.current = dossierChoisi;
+      photoCartelHandleDcimSessionRef.current = null;
       await sauvegarderHandleAndroid(NOM_HANDLE_RACINE_ANDROID, dossierChoisi);
       await verifierInfrastructureDansPhotoCartelAndroid(dossierChoisi);
     } else if (dossierChoisi.name === "DCIM") {
-      photoCartelHandleDcimSession = dossierChoisi;
-      photoCartelHandleRacineAndroidSession = null;
+      photoCartelHandleDcimSessionRef.current = dossierChoisi;
+      photoCartelHandleRacineAndroidSessionRef.current = null;
       await sauvegarderHandleDcimAndroid(dossierChoisi);
       await creerArborescenceInfrastructurePhotoCartel(dossierChoisi);
     } else {
@@ -2157,7 +2159,7 @@ async function enregistrerAnalysePhoto() {
     const analyseSynchronisee = synchroniserAnalysePourSauvegarde(analysePhotoResultat);
     let data;
     if (estAndroid()) {
-      // v34.7 : aucune nouvelle demande d'autorisation pendant une session ouverte.
+      // v34.8 : aucune nouvelle demande d'autorisation pendant une session ouverte.
       // L'accès racine a été validé avant le choix de la photo et doit être réutilisé tel quel.
       const resultatRacineAndroidPreautorise = await obtenirDossierRacinePhotoCartelAndroid({
         ouvrirSelecteurSiNecessaire: false,
