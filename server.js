@@ -1,4 +1,4 @@
-// PhotoCartel v36.1 — renommage coordonné des analyses modifiées depuis la galerie.
+// PhotoCartel v36.2 — resynchronisation de la miniature après renommage d’une analyse.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
@@ -133,7 +133,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v36.1 — renommage des analyses modifiées depuis la galerie actif");
+console.log("PhotoCartel v36.2 — miniature resynchronisée après renommage");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -156,7 +156,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v36.1",
+    version: "v36.2",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -314,7 +314,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v36.1",
+    version: "v36.2",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3431,7 +3431,7 @@ app.post("/modifier-analyse-galerie", async (req, res) => {
     const contenuModifie = {
       ...contenuExistant,
       statut_analyse: "MODIFIEE",
-      version_photocartel: "v36.1",
+      version_photocartel: "v36.2",
       date_analyse_iso: dateAnalyseIso,
       date_analyse_locale: dateAnalyseLocale,
       date_modification_iso: dateAnalyseIso,
