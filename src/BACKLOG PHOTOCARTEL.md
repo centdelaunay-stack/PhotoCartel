@@ -99,7 +99,8 @@ _ sur l’ecran résultat de la fonction ‘analyser une photo’ mettre les bou
 
 
 15 juillet 2026
-Ajouter en petit en rouge sous le boton ranger de la page d'accueil le nombre de photo à ranger (et éventuellement dans combien de visite (s'inspirer du petit testxte sous le bouton Galerie des des photos à analyser)
+Ajouter un  texte en petit en rouge '"dans" le bouton "ranger les photos" de la page d'accueil : le nombre de photos à ranger (et éventuellement dans combien de visites. S'inspirer du petit texte sous le bouton "Galerie des des photos à analyser"
+
 faire une bibliothèque des visite --> changer le nom de l'icone 'bibilotheque des voyages en bibliothèque'
 
 Dans le moteur de recherche : crer un moteur classique (on selectionne dans des champs distincts certains attributs) mais aussi une entrée style conversation bot ou l'on pourrait s'exprimer 'sors moi toutes les peintues de Matisse que j'ai photographiées en Allemangne)
