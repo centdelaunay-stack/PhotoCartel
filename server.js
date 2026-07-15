@@ -1,4 +1,4 @@
-// PhotoCartel v37.1 — corrections ergonomiques de la page d’accueil ; logique serveur inchangée.
+// PhotoCartel v38 — serveur métier inchangé ; alignement de version avec les correctifs d’accueil du frontend.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
@@ -133,7 +133,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v37.1 — serveur métier inchangé");
+console.log("PhotoCartel v38 — serveur métier inchangé");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -156,7 +156,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v37.1",
+    version: "v38",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -314,7 +314,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v37.1",
+    version: "v38",
     message: "Route mode démonstration disponible",
   });
 });

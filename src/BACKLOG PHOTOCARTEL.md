@@ -96,3 +96,12 @@ _Reflefhir aux extract qui se réinitialise des que l'on en a fait un
 _Dans la fonction 'analyser une photo' toujours enregistrer la photos prise (meme si on ne lance pas l'IA) dans un dossier 'photos a anlyser'
 _dans la fonction 'analyser une photo' il faut griser le bouton 'enregistrer l'analyse' (=le rendre indisponible)  quand on a déjà cliqué dessus (on ne va pas enregistrer l'analyse plusiers fois)
 _ sur l’ecran résultat de la fonction ‘analyser une photo’ mettre les boutons dans une barre fixe ? Pas pratique d’avoir à scroller jusqu’en bas de l’analyse pour choir ce que l’on doit faire de cette photo
+
+
+15 juillet 2026
+Ajouter en petit en rouge sous le boton ranger de la page d'accueil le nombre de photo à ranger (et éventuellement dans combien de visite (s'inspirer du petit testxte sous le bouton Galerie des des photos à analyser)
+faire une bibliothèque des visite --> changer le nom de l'icone 'bibilotheque des voyages en bibliothèque'
+
+Dans le moteur de recherche : crer un moteur classique (on selectionne dans des champs distincts certains attributs) mais aussi une entrée style conversation bot ou l'on pourrait s'exprimer 'sors moi toutes les peintues de Matisse que j'ai photographiées en Allemangne)
+
+pour plus tard créer une GROSSE fonctionalité "Dégrossir un voyage" (nom meilleur à trouver) . On -> on soumet à PhotoCartel un fichier de 1000 photos non renommées (elles ont chacune le timestand dans leur nom). PhotoCartel idenfit intelligemment les 1000 photos grâce à la proximité ou eloignement des timestand identifie des "visites" et crée ainsi des sous-dossiers où il regroupent les photos d'une même visite
