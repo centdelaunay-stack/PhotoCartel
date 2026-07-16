@@ -1,4 +1,4 @@
-// PhotoCartel v38.3 — serveur métier inchangé ; alignement de version avec la correction d’autorisation racine du frontend.
+// PhotoCartel v38.4 — serveur métier inchangé ; alignement de version avec la liste flottante des types de visite du frontend.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
@@ -101,7 +101,7 @@ function categoriesPourTypeVisite(typeVisite = "Musée") {
   if (typeVisite === "Musée") return CATEGORIES_MUSEE;
   if (typeVisite === "Église" || typeVisite === "Eglise") return CATEGORIES_EGLISE;
 
-  // v38.3 : les nouveaux types sont proposés sans catégorie à ce stade.
+  // v38.4 : les nouveaux types sont proposés sans catégorie à ce stade.
   if (
     [
       "Transport",
@@ -148,7 +148,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v38.3 — serveur métier inchangé");
+console.log("PhotoCartel v38.4 — serveur métier inchangé");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -171,7 +171,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v38.3",
+    version: "v38.4",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -329,7 +329,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v38.3",
+    version: "v38.4",
     message: "Route mode démonstration disponible",
   });
 });
