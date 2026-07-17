@@ -1,4 +1,4 @@
-// PhotoCartel v38.6 — backend métier inchangé ; alignement de version avec l’écran Dernières visites du frontend.
+// PhotoCartel v38.7 — exposition du statut de modification des analyses ; reste du backend métier inchangé.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
@@ -148,7 +148,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v38.6 — backend métier inchangé, version alignée avec le frontend");
+console.log("PhotoCartel v38.7 — statut des analyses modifiées exposé au frontend");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -171,7 +171,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v38.6",
+    version: "v38.7",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -329,7 +329,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v38.6",
+    version: "v38.7",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3539,6 +3539,9 @@ app.get("/photos-analysees", async (req, res) => {
           imageUrl: `/photo-analysee/${encodeURIComponent(
             nomPhoto
           )}?dossierRacine=${encodeURIComponent(dossierRacine)}`,
+          analyseModifiee:
+            String(contenu.statut_analyse || "").toUpperCase() === "MODIFIEE" ||
+            /_MODIFIEE\.json$/i.test(nomJson),
           analyse: contenu.analyse || {},
         });
       } catch (error) {
