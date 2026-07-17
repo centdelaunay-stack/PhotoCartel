@@ -1,4 +1,4 @@
-// PhotoCartel v38.4 — serveur métier inchangé ; alignement de version avec la liste flottante des types de visite du frontend.
+// PhotoCartel v38.5 — suppression connectée dans la Galerie des photos analysées ; le serveur supprime le couple photo + fiche associée.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
@@ -148,7 +148,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v38.4 — serveur métier inchangé");
+console.log("PhotoCartel v38.5 — suppression connectée dans la Galerie des photos analysées");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -171,7 +171,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v38.4",
+    version: "v38.5",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -329,7 +329,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v38.4",
+    version: "v38.5",
     message: "Route mode démonstration disponible",
   });
 });
