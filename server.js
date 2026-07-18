@@ -1,5 +1,5 @@
-// PhotoCartel v38.13 — serveur inchangé par rapport à la v38.12 validée.
-// La correction concerne exclusivement la gestion du handle Android dans App.jsx.
+// PhotoCartel v39 — serveur métier inchangé.
+// La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
 // PhotoCartel v38.12 — le serveur vérifie le statut MODIFIEE par comparaison avec le résultat IA initial.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
@@ -150,7 +150,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v38.12 — statut MODIFIEE vérifié par comparaison serveur");
+console.log("PhotoCartel v39 — serveur métier inchangé, reprise stockage gérée côté App.jsx");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -173,7 +173,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v38.12",
+    version: "v39",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -331,7 +331,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v38.12",
+    version: "v39",
     message: "Route mode démonstration disponible",
   });
 });
