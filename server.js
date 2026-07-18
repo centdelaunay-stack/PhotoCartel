@@ -1,4 +1,4 @@
-// PhotoCartel v40.1 — correction de connexion App/Server pour la modification de l’identité des visites.
+// PhotoCartel v40.3 — résolution robuste et persistance de l’emplacement réel des visites.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
 // PhotoCartel v38.12 — le serveur vérifie le statut MODIFIEE par comparaison avec le résultat IA initial.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
@@ -150,7 +150,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v40.1 — modification de l’identité des visites active");
+console.log("PhotoCartel v40.3 — modification de l’identité des visites active");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -173,7 +173,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v40.1",
+    version: "v40.3",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -257,6 +257,130 @@ function renommerContenuVisiteRecursive(dossier, ancienNom, nouveauNom) {
   }
 }
 
+function trouverDossiersVisiteDansVoyage(dossierVoyage, nomVisite) {
+  if (!fs.existsSync(dossierVoyage)) return [];
+
+  const correspondances = [];
+  const nomCible = nettoyerSegmentCheminPhotoCartel(nomVisite);
+
+  for (const entreeVille of fs.readdirSync(dossierVoyage, { withFileTypes: true })) {
+    if (!entreeVille.isDirectory()) continue;
+    const dossierVille = path.join(dossierVoyage, entreeVille.name);
+    const dossierCandidat = path.join(dossierVille, nomCible);
+    if (fs.existsSync(dossierCandidat) && fs.statSync(dossierCandidat).isDirectory()) {
+      correspondances.push({
+        chemin: dossierCandidat,
+        stockageVille: entreeVille.name,
+      });
+    }
+  }
+
+  return correspondances;
+}
+
+function resoudreSourceVisite({
+  nomVoyage,
+  nomAncien,
+  ancienChemin,
+  ancienStockageVille,
+  ancienneVille,
+  ancienneVisiteRapide,
+}) {
+  const dossierVoyage = path.join(
+    DOSSIER_RACINE_DONNEES,
+    DOSSIER_METIER_VOYAGES,
+    nomVoyage
+  );
+
+  const candidats = [];
+  const ajouterCandidat = (chemin, stockageVille) => {
+    if (!chemin) return;
+    const normalise = path.normalize(chemin);
+    if (
+      fs.existsSync(normalise) &&
+      fs.statSync(normalise).isDirectory() &&
+      nettoyerSegmentCheminPhotoCartel(path.basename(normalise)) === nomAncien
+    ) {
+      candidats.push({
+        chemin: normalise,
+        stockageVille: stockageVille || path.basename(path.dirname(normalise)),
+      });
+    }
+  };
+
+  const cheminRecu = String(ancienChemin || "").trim();
+  if (cheminRecu) {
+    if (path.isAbsolute(cheminRecu)) {
+      ajouterCandidat(cheminRecu);
+    } else {
+      const segments = cheminRecu
+        .replace(/\\/g, "/")
+        .split("/")
+        .map(nettoyerSegmentCheminPhotoCartel)
+        .filter(Boolean);
+      const indexVoyages = segments.findIndex(
+        (segment) => segment.toLowerCase() === DOSSIER_METIER_VOYAGES.toLowerCase()
+      );
+      const relatifs =
+        indexVoyages >= 0 ? segments.slice(indexVoyages + 1) : segments;
+      if (relatifs.length >= 3) {
+        ajouterCandidat(
+          path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES, ...relatifs)
+        );
+      } else if (relatifs.length >= 2) {
+        ajouterCandidat(path.join(dossierVoyage, ...relatifs));
+      }
+    }
+  }
+
+  const villePreferee = nettoyerSegmentCheminPhotoCartel(
+    ancienStockageVille ||
+      (ancienneVisiteRapide ? "Visites rapides" : ancienneVille)
+  );
+  if (villePreferee) {
+    ajouterCandidat(
+      path.join(dossierVoyage, villePreferee, nomAncien),
+      villePreferee
+    );
+  }
+
+  for (const correspondance of trouverDossiersVisiteDansVoyage(
+    dossierVoyage,
+    nomAncien
+  )) {
+    ajouterCandidat(correspondance.chemin, correspondance.stockageVille);
+  }
+
+  const uniques = [];
+  const vus = new Set();
+  for (const candidat of candidats) {
+    const cle = path.resolve(candidat.chemin).toLowerCase();
+    if (!vus.has(cle)) {
+      vus.add(cle);
+      uniques.push(candidat);
+    }
+  }
+
+  if (uniques.length === 0) {
+    throw Object.assign(
+      new Error(
+        `Dossier de visite introuvable dans le voyage « ${nomVoyage} » : ${nomAncien}`
+      ),
+      { statusCode: 404 }
+    );
+  }
+  if (uniques.length > 1) {
+    throw Object.assign(
+      new Error(
+        `Plusieurs dossiers portent le nom « ${nomAncien} » dans ce voyage. La modification est interrompue pour éviter toute ambiguïté.`
+      ),
+      { statusCode: 409 }
+    );
+  }
+
+  return uniques[0];
+}
+
 function handlerModifierIdentiteVisite(req, res) {
   try {
     const {
@@ -264,6 +388,8 @@ function handlerModifierIdentiteVisite(req, res) {
       ancienNom,
       ancienneVille,
       ancienneVisiteRapide,
+      ancienChemin,
+      ancienStockageVille,
       nouveauNom,
       nouvelleVille,
       nouveauType,
@@ -273,24 +399,27 @@ function handlerModifierIdentiteVisite(req, res) {
     const nomVoyage = nettoyerSegmentCheminPhotoCartel(voyage);
     const nomAncien = nettoyerSegmentCheminPhotoCartel(ancienNom);
     const nomNouveau = nettoyerSegmentCheminPhotoCartel(nouveauNom);
-    const villeAncienneStockage = nettoyerSegmentCheminPhotoCartel(
-      ancienneVisiteRapide ? "Visites rapides" : ancienneVille
-    );
     const villeNouvelleStockage = nettoyerSegmentCheminPhotoCartel(
       nouvelleVisiteRapide ? "Visites rapides" : nouvelleVille
     );
 
-    if (!nomVoyage || !nomAncien || !nomNouveau || !villeAncienneStockage || !villeNouvelleStockage) {
-      return res.status(400).json({ success: false, error: "Identité de visite incomplète." });
+    if (!nomVoyage || !nomAncien || !nomNouveau || !villeNouvelleStockage) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Identité de visite incomplète." });
     }
 
-    const source = path.join(
-      DOSSIER_RACINE_DONNEES,
-      DOSSIER_METIER_VOYAGES,
+    const sourceResolue = resoudreSourceVisite({
       nomVoyage,
-      villeAncienneStockage,
-      nomAncien
-    );
+      nomAncien,
+      ancienChemin,
+      ancienStockageVille,
+      ancienneVille,
+      ancienneVisiteRapide,
+    });
+    const source = sourceResolue.chemin;
+    const villeAncienneReelle = sourceResolue.stockageVille;
+
     const parentDestination = path.join(
       DOSSIER_RACINE_DONNEES,
       DOSSIER_METIER_VOYAGES,
@@ -299,48 +428,67 @@ function handlerModifierIdentiteVisite(req, res) {
     );
     const destination = path.join(parentDestination, nomNouveau);
 
-    if (!fs.existsSync(source)) {
-      return res.status(404).json({ success: false, error: "Dossier de visite introuvable : " + source });
-    }
-    if (source !== destination && fs.existsSync(destination)) {
-      return res.status(409).json({ success: false, error: "Une visite porte déjà ce nom dans cette ville." });
+    if (
+      path.resolve(source).toLowerCase() !==
+        path.resolve(destination).toLowerCase() &&
+      fs.existsSync(destination)
+    ) {
+      return res.status(409).json({
+        success: false,
+        error: "Une visite porte déjà ce nom dans cette ville.",
+      });
     }
 
     fs.mkdirSync(parentDestination, { recursive: true });
-    if (source !== destination) fs.renameSync(source, destination);
+    if (
+      path.resolve(source).toLowerCase() !==
+      path.resolve(destination).toLowerCase()
+    ) {
+      fs.renameSync(source, destination);
+    }
+
     renommerContenuVisiteRecursive(destination, nomAncien, nomNouveau);
     creerSousDossiersCategoriesVisite(destination, nouveauType || "");
 
     try {
       const parentAncien = path.dirname(source);
       if (
-        parentAncien !== parentDestination &&
+        path.resolve(parentAncien).toLowerCase() !==
+          path.resolve(parentDestination).toLowerCase() &&
         fs.existsSync(parentAncien) &&
         fs.readdirSync(parentAncien).length === 0
       ) {
         fs.rmdirSync(parentAncien);
       }
     } catch (nettoyageError) {
-      console.warn("Nettoyage ancien dossier ville impossible :", nettoyageError.message);
+      console.warn(
+        "Nettoyage ancien dossier ville impossible :",
+        nettoyageError.message
+      );
     }
 
     return res.json({
       success: true,
-      version: "v40.1",
+      version: "v40.3",
       chemin: destination,
+      stockageVille: villeNouvelleStockage,
+      ancienneVilleStockage: villeAncienneReelle,
       nom: nomNouveau,
       ville: nouvelleVille,
       type: nouveauType || "",
     });
   } catch (error) {
     console.error("ERREUR modification identité visite =", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res
+      .status(error.statusCode || 500)
+      .json({ success: false, error: error.message });
   }
 }
 
-// v40.1 : les deux formes sont acceptées pour éviter toute divergence de configuration frontend.
+// v40.3 : les deux formes sont acceptées pour éviter toute divergence de configuration frontend.
 app.post("/modifier-identite-visite", handlerModifierIdentiteVisite);
 app.post("/api/modifier-identite-visite", handlerModifierIdentiteVisite);
+
 
 app.post("/ranger-photos-visites", async (req, res) => {
   try {
@@ -438,7 +586,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v40.1",
+    version: "v40.3",
     message: "Route mode démonstration disponible",
   });
 });
