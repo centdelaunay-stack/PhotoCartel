@@ -1,4 +1,6 @@
-// PhotoCartel v38.7 — exposition du statut de modification des analyses ; reste du backend métier inchangé.
+// PhotoCartel v38.13 — serveur inchangé par rapport à la v38.12 validée.
+// La correction concerne exclusivement la gestion du handle Android dans App.jsx.
+// PhotoCartel v38.12 — le serveur vérifie le statut MODIFIEE par comparaison avec le résultat IA initial.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
 // Les modifications suivantes conservent ces noms et remplacent uniquement le JSON.
 // Multi-visite séquentiel : chaque visite possède sa propre fenêtre début/fin pour le rangement.
@@ -148,7 +150,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v38.7 — statut des analyses modifiées exposé au frontend");
+console.log("PhotoCartel v38.12 — statut MODIFIEE vérifié par comparaison serveur");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -171,7 +173,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v38.7",
+    version: "v38.12",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -329,7 +331,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v38.7",
+    version: "v38.12",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2205,15 +2207,24 @@ app.post("/finaliser-analyse-photo", upload.single("photo"), async (req, res) =>
     const dossierAAnalyser = dossierAnalysePhotoCartel(req.body.dossierRacine, "Photos à analyser");
     fs.mkdirSync(dossierDestination, { recursive: true });
     const timestampInitial = String(req.body.timestampInitial || genererTimestampAnalysePhoto(new Date()));
-    const baseNom = `${timestampInitial}_PHOTO_ANALYSEE`;
+    const analyse = parserJsonSouple(req.body.analyse, {});
+    const analyseInitiale = parserJsonSouple(req.body.analyseInitiale, {});
+    const modificationDeclareeParClient =
+      String(req.body.analyseModifiee || "").toLowerCase() === "true";
+    const analyseInitialeDisponible =
+      analyseInitiale && typeof analyseInitiale === "object" && Object.keys(analyseInitiale).length > 0;
+    const modificationConstateeParServeur =
+      analyseInitialeDisponible && JSON.stringify(analyse) !== JSON.stringify(analyseInitiale);
+    const analyseModifiee = modificationDeclareeParClient || modificationConstateeParServeur;
+    const suffixeAnalyse = analyseModifiee ? "PHOTO_ANALYSEE_MODIFIEE" : "PHOTO_ANALYSEE";
+    const baseNom = `${timestampInitial}_${suffixeAnalyse}`;
     const nomPhoto = rendreNomUnique(dossierDestination, `${baseNom}.jpeg`);
     const baseFinale = path.basename(nomPhoto, path.extname(nomPhoto));
     const nomJson = `${baseFinale}.json`;
-    const analyse = parserJsonSouple(req.body.analyse, {});
     const metadonnees = {
-      type_document: "PHOTO_ANALYSEE",
-      statut_analyse: "ANALYSEE",
-      version_photocartel: "v35.3",
+      type_document: analyseModifiee ? "PHOTO_ANALYSEE_MODIFIEE" : "PHOTO_ANALYSEE",
+      statut_analyse: analyseModifiee ? "MODIFIEE" : "ANALYSEE",
+      version_photocartel: "v38.12",
       timestamp_initial: timestampInitial,
       date_analyse_iso: new Date().toISOString(),
       date_analyse_locale: formaterDateHeureLocale(new Date()),
@@ -2245,6 +2256,9 @@ app.post("/finaliser-analyse-photo", upload.single("photo"), async (req, res) =>
       cheminJson,
       taillePhoto,
       tailleJson,
+      analyseModifiee,
+      modificationDeclareeParClient,
+      modificationConstateeParServeur,
     });
   } catch (error) {
     console.error("ERREUR /finaliser-analyse-photo =", error);
@@ -3486,6 +3500,19 @@ app.post("/modifier-analyse-galerie", async (req, res) => {
   }
 });
 
+
+function estAnalyseGalerieModifiee(contenu = {}, nomJson = "", nomPhoto = "") {
+  const statut = String(contenu?.statut_analyse || "").trim().toUpperCase();
+  const typeDocument = String(contenu?.type_document || "").trim().toUpperCase();
+  const noms = `${nomJson} ${nomPhoto} ${contenu?.nom_json_sauvegarde || ""} ${contenu?.nom_photo_sauvegardee || ""}`.toUpperCase();
+
+  return (
+    statut === "MODIFIEE" ||
+    typeDocument === "PHOTO_ANALYSEE_MODIFIEE" ||
+    noms.includes("_PHOTO_ANALYSEE_MODIFIEE")
+  );
+}
+
 app.get("/photos-analysees", async (req, res) => {
   try {
     const dossierRacine = req.query.dossierRacine || DOSSIER_RACINE_DONNEES;
@@ -3539,9 +3566,7 @@ app.get("/photos-analysees", async (req, res) => {
           imageUrl: `/photo-analysee/${encodeURIComponent(
             nomPhoto
           )}?dossierRacine=${encodeURIComponent(dossierRacine)}`,
-          analyseModifiee:
-            String(contenu.statut_analyse || "").toUpperCase() === "MODIFIEE" ||
-            /_MODIFIEE\.json$/i.test(nomJson),
+          analyseModifiee: estAnalyseGalerieModifiee(contenu, nomJson, nomPhoto),
           analyse: contenu.analyse || {},
         });
       } catch (error) {
