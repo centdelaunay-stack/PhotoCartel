@@ -1,4 +1,4 @@
-// PhotoCartel v40.6 — fiabilisation des visites rangées, sélection du type courant et finition du résumé de visite.
+// PhotoCartel v40.7 — distinction stricte Autre/visite rapide, déplacements fiables et restauration du bouton de modification.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
 // PhotoCartel v38.12 — le serveur vérifie le statut MODIFIEE par comparaison avec le résultat IA initial.
@@ -114,6 +114,7 @@ function categoriesPourTypeVisite(typeVisite = "Musée") {
       "Architecture",
       "Château",
       "Restaurant / Repas",
+      "Autre",
     ].includes(String(typeVisite || "").trim())
   ) {
     return [];
@@ -151,7 +152,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v40.6 — modification de l’identité des visites active");
+console.log("PhotoCartel v40.7 — modification de l’identité des visites active");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -174,7 +175,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v40.6",
+    version: "v40.7",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -216,8 +217,20 @@ function trouverVisitePourPhotoRangement(visites, nomFichier) {
 function nomDossierVilleStockagePourVisite(visite = {}) {
   const type = String(visite.type || visite.typeVisite || "").trim();
   const nom = String(visite.nom || visite.nomVisite || "").trim();
-  const estRapide = !type || nom.startsWith("Visite rapide_") || nom.startsWith("A_EN_COURS_");
-  return estRapide ? "Visites rapides" : String(visite.ville || visite.nomVille || "").trim();
+  const stockageVille = String(
+    visite.stockageVille || visite.dossierVilleStockage || ""
+  ).trim();
+  const indicateurRapide =
+    visite.estVisiteRapide === true ||
+    visite.visiteRapide === true ||
+    stockageVille === "Visites rapides";
+  const ancienFormatRapide =
+    !stockageVille &&
+    !type &&
+    (nom.startsWith("Visite rapide_") || nom.startsWith("A_EN_COURS_"));
+  return indicateurRapide || ancienFormatRapide
+    ? "Visites rapides"
+    : String(visite.ville || visite.nomVille || "").trim();
 }
 
 function cheminDestinationVisiteDepuisRangement(visite) {
@@ -401,14 +414,26 @@ function handlerModifierIdentiteVisite(req, res) {
     const nomVoyage = nettoyerSegmentCheminPhotoCartel(voyage);
     const nomAncien = nettoyerSegmentCheminPhotoCartel(ancienNom);
     const nomNouveau = nettoyerSegmentCheminPhotoCartel(nouveauNom);
+    const typeNouveau = String(nouveauType || "").trim();
+    const visiteRapideCible = nouvelleVisiteRapide === true;
+    const villeNouvelleSaisie = String(nouvelleVille || "").trim();
     const villeNouvelleStockage = nettoyerSegmentCheminPhotoCartel(
-      nouvelleVisiteRapide ? "Visites rapides" : nouvelleVille
+      visiteRapideCible ? "Visites rapides" : villeNouvelleSaisie
     );
 
-    if (!nomVoyage || !nomAncien || !nomNouveau || !villeNouvelleStockage) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Identité de visite incomplète." });
+    if (
+      !nomVoyage ||
+      !nomAncien ||
+      !nomNouveau ||
+      !villeNouvelleStockage ||
+      (!visiteRapideCible && (!typeNouveau || villeNouvelleSaisie === "Ville non renseignée"))
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: visiteRapideCible
+          ? "Identité de visite incomplète."
+          : "Une visite structurée doit posséder une ville réelle et un type de visite.",
+      });
     }
 
     const sourceResolue = resoudreSourceVisite({
@@ -450,7 +475,7 @@ function handlerModifierIdentiteVisite(req, res) {
     }
 
     renommerContenuVisiteRecursive(destination, nomAncien, nomNouveau);
-    creerSousDossiersCategoriesVisite(destination, nouveauType || "");
+    creerSousDossiersCategoriesVisite(destination, typeNouveau);
 
     try {
       const parentAncien = path.dirname(source);
@@ -471,13 +496,13 @@ function handlerModifierIdentiteVisite(req, res) {
 
     return res.json({
       success: true,
-      version: "v40.6",
+      version: "v40.7",
       chemin: destination,
       stockageVille: villeNouvelleStockage,
       ancienneVilleStockage: villeAncienneReelle,
       nom: nomNouveau,
       ville: nouvelleVille,
-      type: nouveauType || "",
+      type: typeNouveau,
     });
   } catch (error) {
     console.error("ERREUR modification identité visite =", error);
@@ -588,7 +613,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v40.6",
+    version: "v40.7",
     message: "Route mode démonstration disponible",
   });
 });
