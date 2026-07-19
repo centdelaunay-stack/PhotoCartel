@@ -1,4 +1,4 @@
-// PhotoCartel v40.3 — résolution robuste et persistance de l’emplacement réel des visites.
+// PhotoCartel v40.5 — finition du résumé de visite et cohérence des icônes de types.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
 // PhotoCartel v38.12 — le serveur vérifie le statut MODIFIEE par comparaison avec le résultat IA initial.
 // À la première modification, le JPEG et le JSON reçoivent ensemble le suffixe _MODIFIEE.
@@ -150,7 +150,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v40.3 — modification de l’identité des visites active");
+console.log("PhotoCartel v40.5 — modification de l’identité des visites active");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -173,7 +173,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v40.3",
+    version: "v40.5",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -292,26 +292,29 @@ function resoudreSourceVisite({
     nomVoyage
   );
 
-  const candidats = [];
-  const ajouterCandidat = (chemin, stockageVille) => {
-    if (!chemin) return;
+  const candidatValide = (chemin, stockageVille) => {
+    if (!chemin) return null;
     const normalise = path.normalize(chemin);
     if (
       fs.existsSync(normalise) &&
       fs.statSync(normalise).isDirectory() &&
       nettoyerSegmentCheminPhotoCartel(path.basename(normalise)) === nomAncien
     ) {
-      candidats.push({
+      return {
         chemin: normalise,
         stockageVille: stockageVille || path.basename(path.dirname(normalise)),
-      });
+      };
     }
+    return null;
   };
 
+  // v40.5 : un chemin précis valide identifie sans ambiguïté la visite.
+  // La recherche globale n'est qu'un mécanisme de secours.
   const cheminRecu = String(ancienChemin || "").trim();
   if (cheminRecu) {
+    let cheminCandidat = "";
     if (path.isAbsolute(cheminRecu)) {
-      ajouterCandidat(cheminRecu);
+      cheminCandidat = cheminRecu;
     } else {
       const segments = cheminRecu
         .replace(/\\/g, "/")
@@ -321,16 +324,19 @@ function resoudreSourceVisite({
       const indexVoyages = segments.findIndex(
         (segment) => segment.toLowerCase() === DOSSIER_METIER_VOYAGES.toLowerCase()
       );
-      const relatifs =
-        indexVoyages >= 0 ? segments.slice(indexVoyages + 1) : segments;
+      const relatifs = indexVoyages >= 0 ? segments.slice(indexVoyages + 1) : segments;
       if (relatifs.length >= 3) {
-        ajouterCandidat(
-          path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES, ...relatifs)
+        cheminCandidat = path.join(
+          DOSSIER_RACINE_DONNEES,
+          DOSSIER_METIER_VOYAGES,
+          ...relatifs
         );
       } else if (relatifs.length >= 2) {
-        ajouterCandidat(path.join(dossierVoyage, ...relatifs));
+        cheminCandidat = path.join(dossierVoyage, ...relatifs);
       }
     }
+    const exact = candidatValide(cheminCandidat);
+    if (exact) return exact;
   }
 
   const villePreferee = nettoyerSegmentCheminPhotoCartel(
@@ -338,22 +344,17 @@ function resoudreSourceVisite({
       (ancienneVisiteRapide ? "Visites rapides" : ancienneVille)
   );
   if (villePreferee) {
-    ajouterCandidat(
+    const prefere = candidatValide(
       path.join(dossierVoyage, villePreferee, nomAncien),
       villePreferee
     );
+    if (prefere) return prefere;
   }
 
-  for (const correspondance of trouverDossiersVisiteDansVoyage(
-    dossierVoyage,
-    nomAncien
-  )) {
-    ajouterCandidat(correspondance.chemin, correspondance.stockageVille);
-  }
-
+  const correspondances = trouverDossiersVisiteDansVoyage(dossierVoyage, nomAncien);
   const uniques = [];
   const vus = new Set();
-  for (const candidat of candidats) {
+  for (const candidat of correspondances) {
     const cle = path.resolve(candidat.chemin).toLowerCase();
     if (!vus.has(cle)) {
       vus.add(cle);
@@ -469,7 +470,7 @@ function handlerModifierIdentiteVisite(req, res) {
 
     return res.json({
       success: true,
-      version: "v40.3",
+      version: "v40.5",
       chemin: destination,
       stockageVille: villeNouvelleStockage,
       ancienneVilleStockage: villeAncienneReelle,
@@ -485,7 +486,7 @@ function handlerModifierIdentiteVisite(req, res) {
   }
 }
 
-// v40.3 : les deux formes sont acceptées pour éviter toute divergence de configuration frontend.
+// v40.5 : les deux formes sont acceptées pour éviter toute divergence de configuration frontend.
 app.post("/modifier-identite-visite", handlerModifierIdentiteVisite);
 app.post("/api/modifier-identite-visite", handlerModifierIdentiteVisite);
 
@@ -586,7 +587,7 @@ app.post("/ranger-photos-visites", async (req, res) => {
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v40.3",
+    version: "v40.5",
     message: "Route mode démonstration disponible",
   });
 });
