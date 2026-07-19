@@ -1,4 +1,5 @@
-// PhotoCartel v40.7 — distinction stricte Autre/visite rapide, déplacements fiables et restauration du bouton de modification.
+// PhotoCartel v40.10 — collecte métier unifiée : la prise de photo et le rangement utilisent toujours DOSSIER_RACINE_DONNEES.
+// Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
 // PhotoCartel v38.12 — le serveur vérifie le statut MODIFIEE par comparaison avec le résultat IA initial.
@@ -15,6 +16,7 @@ import OpenAI from "openai";
 import fs from "fs";
 import multer from "multer";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 import { exec } from "child_process";
@@ -152,7 +154,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v40.7 — modification de l’identité des visites active");
+console.log("PhotoCartel v40.10 — collecte métier unifiée et rangement sécurisé");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -175,7 +177,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v40.7",
+    version: "v40.10",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -496,7 +498,7 @@ function handlerModifierIdentiteVisite(req, res) {
 
     return res.json({
       success: true,
-      version: "v40.7",
+      version: "v40.10",
       chemin: destination,
       stockageVille: villeNouvelleStockage,
       ancienneVilleStockage: villeAncienneReelle,
@@ -517,31 +519,126 @@ app.post("/modifier-identite-visite", handlerModifierIdentiteVisite);
 app.post("/api/modifier-identite-visite", handlerModifierIdentiteVisite);
 
 
-app.post("/ranger-photos-visites", async (req, res) => {
+function empreinteSha256Fichier(cheminFichier) {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(cheminFichier));
+  return hash.digest("hex");
+}
+
+function copierPuisVerifierAvantSuppression({ cheminSource, cheminDestinationFinal }) {
+  const dossierDestination = path.dirname(cheminDestinationFinal);
+  const nomFinal = path.basename(cheminDestinationFinal);
+  const cheminTemporaire = path.join(
+    dossierDestination,
+    `.${nomFinal}.photocartel-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`
+  );
+
+  let finalCree = false;
+  try {
+    const statSourceAvant = fs.statSync(cheminSource);
+    const empreinteSource = empreinteSha256Fichier(cheminSource);
+
+    fs.copyFileSync(cheminSource, cheminTemporaire, fs.constants.COPYFILE_EXCL);
+
+    const statTemporaire = fs.statSync(cheminTemporaire);
+    if (statTemporaire.size !== statSourceAvant.size) {
+      throw new Error(
+        `Copie incomplète : ${statTemporaire.size} octet(s) au lieu de ${statSourceAvant.size}.`
+      );
+    }
+
+    const empreinteTemporaire = empreinteSha256Fichier(cheminTemporaire);
+    if (empreinteTemporaire !== empreinteSource) {
+      throw new Error("La copie ne possède pas la même empreinte que le fichier source.");
+    }
+
+    fs.renameSync(cheminTemporaire, cheminDestinationFinal);
+    finalCree = true;
+
+    const statDestination = fs.statSync(cheminDestinationFinal);
+    const empreinteDestination = empreinteSha256Fichier(cheminDestinationFinal);
+    if (
+      statDestination.size !== statSourceAvant.size ||
+      empreinteDestination !== empreinteSource
+    ) {
+      throw new Error("Le fichier destination n'est pas intègre après validation finale.");
+    }
+
+    fs.unlinkSync(cheminSource);
+
+    if (fs.existsSync(cheminSource)) {
+      throw new Error("Le fichier source est encore présent après suppression.");
+    }
+    if (!fs.existsSync(cheminDestinationFinal)) {
+      throw new Error("Le fichier destination a disparu après suppression de la source.");
+    }
+
+    return {
+      taille: statDestination.size,
+      empreinteSha256: empreinteDestination,
+    };
+  } catch (error) {
+    try {
+      if (fs.existsSync(cheminTemporaire)) fs.unlinkSync(cheminTemporaire);
+    } catch (nettoyageTempError) {
+      console.warn("Nettoyage copie temporaire impossible :", nettoyageTempError.message);
+    }
+
+    // Tant que la source existe, une destination créée pendant une opération incomplète
+    // peut être supprimée sans risque afin d'éviter un faux rangement ou un doublon.
+    try {
+      if (finalCree && fs.existsSync(cheminSource) && fs.existsSync(cheminDestinationFinal)) {
+        fs.unlinkSync(cheminDestinationFinal);
+      }
+    } catch (nettoyageFinalError) {
+      console.warn("Nettoyage destination incomplète impossible :", nettoyageFinalError.message);
+    }
+
+    throw error;
+  }
+}
+
+async function handlerRangerPhotosVisites(req, res) {
   try {
     const visites = Array.isArray(req.body.visites) ? req.body.visites : [];
 
     if (visites.length === 0) {
       return res.json({
         success: true,
+        rangementComplet: true,
         photosLues: 0,
         photosRangees: 0,
+        photosEchecs: 0,
         photosNonAttribuees: 0,
         visites: [],
       });
     }
 
-    const dossierRacine = req.body.dossierRacine || DOSSIER_RACINE_DONNEES;
+    // v40.10 : le rangement métier ne dépend plus d'une racine transmise
+    // par le frontend. Sa source unique est la collecte officielle du serveur.
+    const dossierRacineDemande = String(req.body.dossierRacine || "").trim();
     const dossierCollecte = path.join(
-      cheminDansRacineDonnees(dossierRacine),
+      DOSSIER_RACINE_DONNEES,
       "Collecte Photo en cours"
     );
 
     fs.mkdirSync(dossierCollecte, { recursive: true });
 
-    const statsParVisite = new Map(visites.map((visite) => [visite.id, { ...visite, photosRangees: 0 }]));
+    const statsParVisite = new Map(
+      visites.map((visite) => [
+        visite.id,
+        {
+          ...visite,
+          photosCandidates: 0,
+          photosRangees: 0,
+          photosEchecs: 0,
+          rangee: false,
+        },
+      ])
+    );
     let photosLues = 0;
     let photosRangees = 0;
+    let photosEchecs = 0;
     let photosNonAttribuees = 0;
     const resultats = [];
 
@@ -560,9 +657,13 @@ app.post("/ranger-photos-visites", async (req, res) => {
         continue;
       }
 
+      const statVisite = statsParVisite.get(visite.id);
+      if (statVisite) statVisite.photosCandidates += 1;
+
       const cheminDestination = cheminDestinationVisiteDepuisRangement(visite);
       if (!cheminDestination) {
-        photosNonAttribuees += 1;
+        photosEchecs += 1;
+        if (statVisite) statVisite.photosEchecs += 1;
         resultats.push({ fichier, success: false, raison: "Chemin destination invalide" });
         continue;
       }
@@ -573,30 +674,60 @@ app.post("/ranger-photos-visites", async (req, res) => {
       const nomDestination = rendreNomUnique(cheminDestination, fichier);
       const cheminFinal = path.join(cheminDestination, nomDestination);
 
-      fs.renameSync(cheminSource, cheminFinal);
+      try {
+        const verification = copierPuisVerifierAvantSuppression({
+          cheminSource,
+          cheminDestinationFinal: cheminFinal,
+        });
 
-      photosRangees += 1;
-      const stat = statsParVisite.get(visite.id);
-      if (stat) stat.photosRangees += 1;
+        photosRangees += 1;
+        if (statVisite) statVisite.photosRangees += 1;
 
-      resultats.push({
-        fichier,
-        fichierDestination: nomDestination,
-        visiteId: visite.id,
-        visiteNom: visite.nom,
-        success: true,
-      });
+        resultats.push({
+          fichier,
+          fichierDestination: nomDestination,
+          visiteId: visite.id,
+          visiteNom: visite.nom,
+          taille: verification.taille,
+          empreinteSha256: verification.empreinteSha256,
+          sourceSupprimeeApresVerification: true,
+          success: true,
+        });
+      } catch (error) {
+        photosEchecs += 1;
+        if (statVisite) statVisite.photosEchecs += 1;
+        resultats.push({
+          fichier,
+          visiteId: visite.id,
+          visiteNom: visite.nom,
+          sourceConservee: fs.existsSync(cheminSource),
+          success: false,
+          raison: error?.message || String(error),
+        });
+      }
     }
+
+    const visitesResultats = Array.from(statsParVisite.values()).map((visite) => ({
+      ...visite,
+      rangee:
+        visite.photosEchecs === 0 &&
+        visite.photosRangees === visite.photosCandidates,
+    }));
+    const rangementComplet = photosEchecs === 0;
 
     res.json({
       success: true,
+      rangementComplet,
       mode: "serveur",
+      dossierRacineDemande,
+      racineEffective: DOSSIER_RACINE_DONNEES,
       dossierCollecte,
       photosLues,
       photosRangees,
       deplaces: photosRangees,
+      photosEchecs,
       photosNonAttribuees,
-      visites: Array.from(statsParVisite.values()),
+      visites: visitesResultats,
       resultats,
       totalCollecteRestant: compterImagesDossier(dossierCollecte),
     });
@@ -607,13 +738,16 @@ app.post("/ranger-photos-visites", async (req, res) => {
       error: error.message,
     });
   }
-});
+}
+
+app.post("/ranger-photos-visites", handlerRangerPhotosVisites);
+app.post("/api/ranger-photos-visites", handlerRangerPhotosVisites);
 
 
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v40.7",
+    version: "v40.10",
     message: "Route mode démonstration disponible",
   });
 });
@@ -2896,11 +3030,74 @@ app.post("/classifier-dossier", async (req, res) => {
 });
 
 
-app.post("/enregistrer-photos-visite", upload.array("photos"), async (req, res) => {
+function extensionImageDepuisUpload(photo = {}) {
+  const nomOriginal = nettoyerNomFichier(photo.originalname || "");
+  const extensionNom = path.extname(nomOriginal).toLowerCase();
+  if (EXTENSIONS_IMAGE.includes(extensionNom)) return extensionNom;
+
+  const extensionsParMime = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+  };
+
+  return extensionsParMime[String(photo.mimetype || "").toLowerCase()] || "";
+}
+
+function ecrireEtVerifierPhotoCollecte({ dossierDestination, photo }) {
+  const extension = extensionImageDepuisUpload(photo);
+  if (!extension) {
+    throw new Error(
+      `Format image non reconnu (${photo?.mimetype || "type MIME absent"}, ` +
+      `${photo?.originalname || "nom absent"}).`
+    );
+  }
+
+  if (!Buffer.isBuffer(photo.buffer) || photo.buffer.length === 0) {
+    throw new Error("Le fichier image reçu est vide.");
+  }
+
+  const timestamp = genererTimestampAnalysePhoto(new Date());
+  const nomDestination = rendreNomUnique(
+    dossierDestination,
+    `${timestamp}_VISITE${extension}`
+  );
+  const cheminFinal = path.join(dossierDestination, nomDestination);
+  const empreinteAvant = crypto.createHash("sha256").update(photo.buffer).digest("hex");
+
+  fs.writeFileSync(cheminFinal, photo.buffer, { flag: "wx" });
+
+  if (!fs.existsSync(cheminFinal)) {
+    throw new Error("La photo n'existe pas dans Collecte Photo en cours après écriture.");
+  }
+
+  const stat = fs.statSync(cheminFinal);
+  const empreinteApres = empreinteSha256Fichier(cheminFinal);
+  if (stat.size !== photo.buffer.length || empreinteApres !== empreinteAvant) {
+    try {
+      fs.unlinkSync(cheminFinal);
+    } catch {}
+    throw new Error("La photo écrite dans Collecte Photo en cours n'est pas intègre.");
+  }
+
+  return {
+    nomDestination,
+    cheminFinal,
+    taille: stat.size,
+    empreinteSha256: empreinteApres,
+  };
+}
+
+async function handlerEnregistrerPhotosVisite(req, res) {
   try {
-    const dossierRacine = req.body.dossierRacine || DOSSIER_RACINE_DONNEES;
+    // v40.10 : une photo de visite est toujours écrite dans la collecte
+    // officielle du serveur. La racine d'analyse, le mode démonstration ou
+    // une ancienne valeur frontend ne peuvent plus détourner cette écriture.
+    const dossierRacineDemande = String(req.body.dossierRacine || "").trim();
+    const racineEffective = DOSSIER_RACINE_DONNEES;
     const dossierDestination = path.join(
-      cheminDansRacineDonnees(dossierRacine),
+      DOSSIER_RACINE_DONNEES,
       "Collecte Photo en cours"
     );
 
@@ -2916,61 +3113,56 @@ app.post("/enregistrer-photos-visite", upload.array("photos"), async (req, res) 
     const fichiersSauvegardes = [];
     const resultats = [];
     let copies = 0;
-    let ignores = 0;
+    let echecs = 0;
 
     for (const photo of req.files) {
       try {
-        const nomOriginal = nettoyerNomFichier(photo.originalname || "photo.jpg");
-        const extension = path.extname(nomOriginal).toLowerCase() || ".jpg";
-
-        if (!EXTENSIONS_IMAGE.includes(extension)) {
-          ignores += 1;
-          resultats.push({
-            fichier: nomOriginal,
-            success: false,
-            ignore: true,
-            raison: "Extension non image",
-          });
-          continue;
-        }
-
-        const timestamp = genererTimestampAnalysePhoto(new Date());
-        const nomDestination = rendreNomUnique(
+        const verification = ecrireEtVerifierPhotoCollecte({
           dossierDestination,
-          `${timestamp}_VISITE${extension}`
-        );
-        const cheminFinal = path.join(dossierDestination, nomDestination);
+          photo,
+        });
 
-        fs.writeFileSync(cheminFinal, photo.buffer);
-        fichiersSauvegardes.push(nomDestination);
+        fichiersSauvegardes.push(verification.nomDestination);
         copies += 1;
         resultats.push({
-          fichier: nomOriginal,
-          fichierDestination: nomDestination,
+          fichier: photo.originalname || "photo",
+          fichierDestination: verification.nomDestination,
+          cheminDestination: verification.cheminFinal,
+          taille: verification.taille,
+          empreinteSha256: verification.empreinteSha256,
           success: true,
-          ignore: false,
         });
       } catch (error) {
         console.error("ERREUR ENREGISTREMENT PHOTO VISITE =", error);
-        ignores += 1;
+        echecs += 1;
         resultats.push({
-          fichier: photo.originalname,
+          fichier: photo.originalname || "photo",
           success: false,
           error: error.message,
         });
       }
     }
 
-    res.json({
-      success: true,
+    const enregistrementComplet = copies === req.files.length && echecs === 0;
+    const totalDestination = compterImagesDossier(dossierDestination);
+
+    return res.status(enregistrementComplet ? 200 : 422).json({
+      success: enregistrementComplet,
+      enregistrementComplet,
+      dossierRacineDemande,
+      racineEffective,
       dossierDestination,
       cheminDestination: dossierDestination,
       recus: req.files.length,
       copies,
-      ignores,
+      echecs,
+      ignores: echecs,
       fichiersSauvegardes,
-      totalDestination: compterImagesDossier(dossierDestination),
+      totalDestination,
       resultats,
+      error: enregistrementComplet
+        ? undefined
+        : `${echecs} photo(s) sur ${req.files.length} n'ont pas été enregistrée(s).`,
     });
   } catch (error) {
     console.error("ERREUR /enregistrer-photos-visite =", error);
@@ -2979,7 +3171,10 @@ app.post("/enregistrer-photos-visite", upload.array("photos"), async (req, res) 
       error: error.message,
     });
   }
-});
+}
+
+app.post("/enregistrer-photos-visite", upload.array("photos"), handlerEnregistrerPhotosVisite);
+app.post("/api/enregistrer-photos-visite", upload.array("photos"), handlerEnregistrerPhotosVisite);
 
 app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) => {
   try {
