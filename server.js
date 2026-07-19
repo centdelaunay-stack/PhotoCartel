@@ -1,4 +1,4 @@
-// PhotoCartel v40.10 — collecte métier unifiée : la prise de photo et le rangement utilisent toujours DOSSIER_RACINE_DONNEES.
+// PhotoCartel v40.11 — collecte métier unifiée : la prise de photo et le rangement utilisent toujours DOSSIER_RACINE_DONNEES.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
@@ -154,7 +154,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v40.10 — collecte métier unifiée et rangement sécurisé");
+console.log("PhotoCartel v40.11 — collecte métier unifiée et rangement sécurisé");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -177,7 +177,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v40.10",
+    version: "v40.11",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -498,7 +498,7 @@ function handlerModifierIdentiteVisite(req, res) {
 
     return res.json({
       success: true,
-      version: "v40.10",
+      version: "v40.11",
       chemin: destination,
       stockageVille: villeNouvelleStockage,
       ancienneVilleStockage: villeAncienneReelle,
@@ -614,7 +614,7 @@ async function handlerRangerPhotosVisites(req, res) {
       });
     }
 
-    // v40.10 : le rangement métier ne dépend plus d'une racine transmise
+    // v40.11 : le rangement métier ne dépend plus d'une racine transmise
     // par le frontend. Sa source unique est la collecte officielle du serveur.
     const dossierRacineDemande = String(req.body.dossierRacine || "").trim();
     const dossierCollecte = path.join(
@@ -747,7 +747,7 @@ app.post("/api/ranger-photos-visites", handlerRangerPhotosVisites);
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v40.10",
+    version: "v40.11",
     message: "Route mode démonstration disponible",
   });
 });
@@ -3091,7 +3091,7 @@ function ecrireEtVerifierPhotoCollecte({ dossierDestination, photo }) {
 
 async function handlerEnregistrerPhotosVisite(req, res) {
   try {
-    // v40.10 : une photo de visite est toujours écrite dans la collecte
+    // v40.11 : une photo de visite est toujours écrite dans la collecte
     // officielle du serveur. La racine d'analyse, le mode démonstration ou
     // une ancienne valeur frontend ne peuvent plus détourner cette écriture.
     const dossierRacineDemande = String(req.body.dossierRacine || "").trim();
