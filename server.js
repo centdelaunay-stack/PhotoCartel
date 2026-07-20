@@ -1,4 +1,5 @@
-// PhotoCartel v41 — modification d’identité transactionnelle : la source reste intacte tant que la destination n’est pas entièrement prête.
+// PhotoCartel v42 — le disque est la source de vérité des voyages et des visites.
+// Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
@@ -154,7 +155,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v41 — modification d’identité transactionnelle et rangement sécurisé");
+console.log("PhotoCartel v42 — lecture physique des voyages et visites, index enrichisseur uniquement");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -177,7 +178,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v41",
+    version: "v42",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -204,6 +205,120 @@ function extraireMsDepuisNomPhotoCartel(nomFichier) {
   const valeur = new Date(annee, mois, jour, heures, minutes, secondes, Number(millisecondes)).getTime();
   return Number.isFinite(valeur) ? valeur : 0;
 }
+
+
+const EXTENSIONS_IMAGE_PHOTOCARTEL = new Set([
+  ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp", ".tif", ".tiff"
+]);
+
+function estFichierImagePhotoCartel(nomFichier) {
+  return EXTENSIONS_IMAGE_PHOTOCARTEL.has(path.extname(String(nomFichier || "")).toLowerCase());
+}
+
+function analyserContenuPhysiqueVisite(dossierVisite) {
+  let nombrePhotos = 0;
+  let debutMs = 0;
+  let finMs = 0;
+
+  const parcourir = (dossier) => {
+    let entrees = [];
+    try {
+      entrees = fs.readdirSync(dossier, { withFileTypes: true });
+    } catch (error) {
+      throw new Error(`Lecture impossible du dossier de visite « ${dossier} » : ${error.message}`);
+    }
+
+    for (const entree of entrees) {
+      const cheminEntree = path.join(dossier, entree.name);
+      if (entree.isDirectory()) {
+        parcourir(cheminEntree);
+        continue;
+      }
+      if (!entree.isFile() || !estFichierImagePhotoCartel(entree.name)) continue;
+
+      nombrePhotos += 1;
+      let datePhotoMs = extraireMsDepuisNomPhotoCartel(entree.name);
+      if (!datePhotoMs) {
+        try {
+          const stats = fs.statSync(cheminEntree);
+          datePhotoMs = Number(stats.mtimeMs || stats.birthtimeMs || 0);
+        } catch (error) {
+          datePhotoMs = 0;
+        }
+      }
+      if (datePhotoMs) {
+        debutMs = debutMs ? Math.min(debutMs, datePhotoMs) : datePhotoMs;
+        finMs = Math.max(finMs, datePhotoMs);
+      }
+    }
+  };
+
+  parcourir(dossierVisite);
+  return {
+    nombrePhotos,
+    debutMs: debutMs || null,
+    finMs: finMs || null,
+    dureeMs: debutMs && finMs && finMs >= debutMs ? finMs - debutMs : null,
+    datePhotoPlusRecenteMs: finMs || null,
+  };
+}
+
+function lireVisitesPhysiquesPhotoCartel() {
+  const dossierVoyages = path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES);
+  if (!fs.existsSync(dossierVoyages)) return [];
+
+  const visites = [];
+  for (const entreeVoyage of fs.readdirSync(dossierVoyages, { withFileTypes: true })) {
+    if (!entreeVoyage.isDirectory()) continue;
+    const dossierVoyage = path.join(dossierVoyages, entreeVoyage.name);
+
+    for (const entreeVille of fs.readdirSync(dossierVoyage, { withFileTypes: true })) {
+      if (!entreeVille.isDirectory()) continue;
+      const dossierVille = path.join(dossierVoyage, entreeVille.name);
+
+      for (const entreeVisite of fs.readdirSync(dossierVille, { withFileTypes: true })) {
+        if (!entreeVisite.isDirectory()) continue;
+        const dossierVisite = path.join(dossierVille, entreeVisite.name);
+        const mesures = analyserContenuPhysiqueVisite(dossierVisite);
+        const estVisiteRapide = entreeVille.name === "Visites rapides";
+        visites.push({
+          idPhysique: [entreeVoyage.name, entreeVille.name, entreeVisite.name].join("__"),
+          voyage: entreeVoyage.name,
+          ville: estVisiteRapide ? "Ville non renseignée" : entreeVille.name,
+          stockageVille: entreeVille.name,
+          nom: entreeVisite.name,
+          chemin: dossierVisite,
+          estVisiteRapide,
+          type: "",
+          statut: "Importée",
+          ...mesures,
+        });
+      }
+    }
+  }
+  return visites;
+}
+
+function handlerListerVisitesPhysiques(req, res) {
+  try {
+    const visites = lireVisitesPhysiquesPhotoCartel();
+    res.json({
+      success: true,
+      source: "disque",
+      racine: path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES),
+      visites,
+    });
+  } catch (error) {
+    console.error("ERREUR /visites-physiques =", error);
+    res.status(500).json({
+      success: false,
+      error: error?.message || String(error),
+    });
+  }
+}
+
+app.get("/visites-physiques", handlerListerVisitesPhysiques);
+app.get("/api/visites-physiques", handlerListerVisitesPhysiques);
 
 function trouverVisitePourPhotoRangement(visites, nomFichier) {
   const photoMs = extraireMsDepuisNomPhotoCartel(nomFichier);
