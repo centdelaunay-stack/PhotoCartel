@@ -1,4 +1,4 @@
-// PhotoCartel v40.12 — collecte métier unifiée : la prise de photo et le rangement utilisent toujours DOSSIER_RACINE_DONNEES.
+// PhotoCartel v41 — modification d’identité transactionnelle : la source reste intacte tant que la destination n’est pas entièrement prête.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
 // La correction v39 concerne le contexte de stockage Android/PWA et la reprise de visite dans App.jsx.
@@ -154,7 +154,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v40.12 — collecte métier unifiée et rangement sécurisé");
+console.log("PhotoCartel v41 — modification d’identité transactionnelle et rangement sécurisé");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -177,7 +177,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v40.12",
+    version: "v41",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
@@ -398,6 +398,93 @@ function resoudreSourceVisite({
   return uniques[0];
 }
 
+function copierDossierVisiteTransactionnel(source, destination, ancienNom, nouveauNom, nouveauType) {
+  const parentDestination = path.dirname(destination);
+  const nomDestination = path.basename(destination);
+  const dossierTemporaire = path.join(
+    parentDestination,
+    `.${nomDestination}.photocartel-v41-${process.pid}-${Date.now()}-${Math.random()
+      .toString(16)
+      .slice(2)}.tmp`
+  );
+
+  let destinationPubliee = false;
+  try {
+    fs.cpSync(source, dossierTemporaire, {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+    });
+
+    renommerContenuVisiteRecursive(dossierTemporaire, ancienNom, nouveauNom);
+    creerSousDossiersCategoriesVisite(dossierTemporaire, nouveauType);
+
+    if (!fs.existsSync(dossierTemporaire) || !fs.statSync(dossierTemporaire).isDirectory()) {
+      throw new Error("La copie temporaire de la visite n'a pas été créée correctement.");
+    }
+
+    fs.renameSync(dossierTemporaire, destination);
+    destinationPubliee = true;
+
+    if (!fs.existsSync(destination) || !fs.statSync(destination).isDirectory()) {
+      throw new Error("Le dossier destination n'est pas accessible après publication.");
+    }
+
+    // La source n'est supprimée qu'après publication et vérification de la destination.
+    fs.rmSync(source, { recursive: true, force: false });
+    return destination;
+  } catch (error) {
+    // Si la source existe encore, elle reste la référence. Toute destination
+    // incomplète ou dupliquée créée par cette transaction est supprimée.
+    try {
+      if (fs.existsSync(dossierTemporaire)) {
+        fs.rmSync(dossierTemporaire, { recursive: true, force: true });
+      }
+    } catch (nettoyageTempError) {
+      console.warn("Nettoyage transaction temporaire impossible :", nettoyageTempError.message);
+    }
+
+    try {
+      if (destinationPubliee && fs.existsSync(source) && fs.existsSync(destination)) {
+        fs.rmSync(destination, { recursive: true, force: true });
+      }
+    } catch (nettoyageDestinationError) {
+      console.warn(
+        "Nettoyage destination transactionnelle impossible :",
+        nettoyageDestinationError.message
+      );
+    }
+
+    throw error;
+  }
+}
+
+function ajouterCategoriesSansDeplacerVisite(dossierVisite, nouveauType) {
+  const categories = categoriesPourTypeVisite(nouveauType);
+  const creees = [];
+  try {
+    for (const categorie of categories) {
+      const cheminCategorie = path.join(dossierVisite, categorie);
+      if (!fs.existsSync(cheminCategorie)) {
+        fs.mkdirSync(cheminCategorie, { recursive: false });
+        creees.push(cheminCategorie);
+      }
+    }
+    return categories;
+  } catch (error) {
+    for (const cheminCategorie of creees.reverse()) {
+      try {
+        if (fs.existsSync(cheminCategorie) && fs.readdirSync(cheminCategorie).length === 0) {
+          fs.rmdirSync(cheminCategorie);
+        }
+      } catch (rollbackError) {
+        console.warn("Rollback catégorie impossible :", rollbackError.message);
+      }
+    }
+    throw error;
+  }
+}
+
 function handlerModifierIdentiteVisite(req, res) {
   try {
     const {
@@ -469,15 +556,24 @@ function handlerModifierIdentiteVisite(req, res) {
     }
 
     fs.mkdirSync(parentDestination, { recursive: true });
-    if (
-      path.resolve(source).toLowerCase() !==
-      path.resolve(destination).toLowerCase()
-    ) {
-      fs.renameSync(source, destination);
-    }
+    const memeChemin =
+      path.resolve(source).toLowerCase() ===
+      path.resolve(destination).toLowerCase();
 
-    renommerContenuVisiteRecursive(destination, nomAncien, nomNouveau);
-    creerSousDossiersCategoriesVisite(destination, typeNouveau);
+    if (memeChemin) {
+      // Changement de type uniquement : ajout contrôlé des catégories manquantes.
+      ajouterCategoriesSansDeplacerVisite(source, typeNouveau);
+    } else {
+      // v41 : copie préparée dans un dossier temporaire, publication atomique,
+      // puis seulement suppression de la source. Une erreur laisse la source intacte.
+      copierDossierVisiteTransactionnel(
+        source,
+        destination,
+        nomAncien,
+        nomNouveau,
+        typeNouveau
+      );
+    }
 
     try {
       const parentAncien = path.dirname(source);
@@ -498,7 +594,7 @@ function handlerModifierIdentiteVisite(req, res) {
 
     return res.json({
       success: true,
-      version: "v40.12",
+      version: "v41",
       chemin: destination,
       stockageVille: villeNouvelleStockage,
       ancienneVilleStockage: villeAncienneReelle,
@@ -747,7 +843,7 @@ app.post("/api/ranger-photos-visites", handlerRangerPhotosVisites);
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v40.12",
+    version: "v41",
     message: "Route mode démonstration disponible",
   });
 });
