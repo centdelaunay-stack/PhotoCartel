@@ -1,4 +1,4 @@
-// PhotoCartel v42.0.3 — serveur métier inchangé ; version alignée avec le compactage responsive PWA.
+// PhotoCartel v42.0.4 — serveur métier inchangé ; version alignée avec la correction PWA des dernières visites.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
@@ -155,7 +155,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v42.0.3 — lecture physique des voyages et visites, index enrichisseur uniquement");
+console.log("PhotoCartel v42.0.4 — lecture physique des voyages et visites, index enrichisseur uniquement");
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -178,7 +178,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v42.0.3",
+    version: "v42.0.4",
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
