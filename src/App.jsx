@@ -93,9 +93,9 @@ function App() {
       throw new Error(informations.error || "Le serveur PhotoCartel ne répond pas correctement.");
     }
 
-    if (String(informations.version || "") !== "v42.0.1") {
+    if (String(informations.version || "") !== "v42.0.5") {
       throw new Error(
-        `Le serveur actif annonce ${informations.version || "une version inconnue"}, pas v42.0.1. ` +
+        `Le serveur actif annonce ${informations.version || "une version inconnue"}, pas v42.0.5. ` +
           "Arrête puis redémarre le serveur avec le nouveau server.js avant d’enregistrer."
       );
     }
