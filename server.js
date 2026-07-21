@@ -1,4 +1,5 @@
-// PhotoCartel v42.0.6 — source unique de vérité pour la version serveur ; moteurs métier v42.0.5 conservés.
+// PhotoCartel v42.0.10 — version serveur alignée avec la correction Android/PWA de modification d’identité.
+ // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
@@ -25,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v42.0.6";
+const VERSION_PHOTOCARTEL = "v42.0.10";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -710,7 +711,7 @@ function handlerModifierIdentiteVisite(req, res) {
 
     return res.json({
       success: true,
-      version: "v41",
+      version: VERSION_PHOTOCARTEL,
       chemin: destination,
       stockageVille: villeNouvelleStockage,
       ancienneVilleStockage: villeAncienneReelle,
@@ -959,7 +960,7 @@ app.post("/api/ranger-photos-visites", handlerRangerPhotosVisites);
 app.get("/mode-demonstration/ping", (req, res) => {
   res.json({
     success: true,
-    version: "v41",
+    version: VERSION_PHOTOCARTEL,
     message: "Route mode démonstration disponible",
   });
 });
