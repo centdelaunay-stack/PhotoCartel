@@ -1,4 +1,4 @@
-// PhotoCartel v42.0.5 — serveur métier inchangé ; version alignée avec le cache des dernières visites.
+// PhotoCartel v42.0.6 — source unique de vérité pour la version serveur ; moteurs métier v42.0.5 conservés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
 // v40.6 conserve strictement les moteurs IA/OCR/classification/renommage existants.
@@ -25,6 +25,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
+const VERSION_PHOTOCARTEL = "v42.0.6";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,7 +156,7 @@ initialiserInfrastructurePhotoCartel();
 console.log("Dossier racine PhotoCartel =", DOSSIER_RACINE_DONNEES);
 console.log("Dossiers infrastructure PhotoCartel =", DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL.join(", "));
 console.log("Dossier Exports PhotoCartel =", DOSSIER_EXPORTS_PHOTOCARTEL);
-console.log("PhotoCartel v42.0.5 — lecture physique des voyages et visites, index enrichisseur uniquement");
+console.log(`PhotoCartel ${VERSION_PHOTOCARTEL} — lecture physique des voyages et visites, index enrichisseur uniquement`);
 
 const DOSSIER_MODE_DEMONSTRATION = path.join(
   DOSSIER_RACINE_DONNEES,
@@ -178,7 +179,7 @@ app.get(["/health", "/api/health"], (req, res) => {
   res.json({
     success: true,
     service: "PhotoCartel API",
-    version: "v42.0.5",
+    version: VERSION_PHOTOCARTEL,
     dataRoot: DOSSIER_RACINE_DONNEES,
     infrastructureDirs: DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL,
   });
