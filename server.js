@@ -1,4 +1,4 @@
-// PhotoCartel v42.0.15 — serveur aligné ; aucune modification métier, audit PWA réalisé dans App.jsx.
+// PhotoCartel v42.0.16 — serveur aligné avec la transaction PWA Android ; logique serveur locale inchangée.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v42.0.15";
+const VERSION_PHOTOCARTEL = "v42.0.16";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
