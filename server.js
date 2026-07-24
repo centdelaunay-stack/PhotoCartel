@@ -1,4 +1,4 @@
-// PhotoCartel v43.1 — serveur strictement inchangé hors numéro de version ; corrections de recette portées par App.jsx.
+// PhotoCartel v44.4 — création automatique du dossier « Visites à rattacher » ; galerie et moteurs métier strictement inchangés.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v43.1";
+const VERSION_PHOTOCARTEL = "v44.4";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +38,7 @@ const DOSSIER_RACINE_DONNEES =
     : path.join(__dirname, "photocartel-data"));
 const DOSSIERS_INFRASTRUCTURE_PHOTOCARTEL = [
   "Voyages",
+  "Visites à rattacher",
   "Classifications",
   "Œuvres renommées",
   "Exports",
@@ -320,7 +321,161 @@ function handlerListerVisitesPhysiques(req, res) {
 }
 
 app.get("/visites-physiques", handlerListerVisitesPhysiques);
+
 app.get("/api/visites-physiques", handlerListerVisitesPhysiques);
+
+function resoudreCheminVisiteGaleriePhotoCartel(cheminRecu = "") {
+  const racineVoyages = path.resolve(
+    DOSSIER_RACINE_DONNEES,
+    DOSSIER_METIER_VOYAGES
+  );
+  const cheminTexte = String(cheminRecu || "").trim();
+
+  if (!cheminTexte) {
+    throw Object.assign(new Error("Chemin de visite manquant."), { statusCode: 400 });
+  }
+
+  const cheminCandidat = path.resolve(
+    path.isAbsolute(cheminTexte)
+      ? cheminTexte
+      : path.join(racineVoyages, cheminTexte)
+  );
+  const relatif = path.relative(racineVoyages, cheminCandidat);
+
+  if (
+    relatif.startsWith("..") ||
+    path.isAbsolute(relatif) ||
+    cheminCandidat === racineVoyages
+  ) {
+    throw Object.assign(
+      new Error("Le dossier demandé n’appartient pas aux visites PhotoCartel."),
+      { statusCode: 403 }
+    );
+  }
+
+  if (
+    !fs.existsSync(cheminCandidat) ||
+    !fs.statSync(cheminCandidat).isDirectory()
+  ) {
+    throw Object.assign(new Error("Dossier de visite introuvable."), { statusCode: 404 });
+  }
+
+  return cheminCandidat;
+}
+
+function listerPhotosRecursivementPhotoCartel(dossierVisite) {
+  const photos = [];
+
+  const parcourir = (dossier) => {
+    const entrees = fs
+      .readdirSync(dossier, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name, "fr", { numeric: true }));
+
+    for (const entree of entrees) {
+      const cheminEntree = path.join(dossier, entree.name);
+
+      if (entree.isDirectory()) {
+        parcourir(cheminEntree);
+        continue;
+      }
+
+      if (!entree.isFile() || !estFichierImagePhotoCartel(entree.name)) continue;
+
+      const stats = fs.statSync(cheminEntree);
+      photos.push({
+        nom: entree.name,
+        chemin: cheminEntree,
+        cheminRelatif: path.relative(dossierVisite, cheminEntree),
+        tailleOctets: Number(stats.size || 0),
+        dateModificationMs: Number(stats.mtimeMs || 0),
+      });
+    }
+  };
+
+  parcourir(dossierVisite);
+
+  return photos.sort((a, b) => {
+    const dateA = extraireMsDepuisNomPhotoCartel(a.nom) || a.dateModificationMs || 0;
+    const dateB = extraireMsDepuisNomPhotoCartel(b.nom) || b.dateModificationMs || 0;
+    return dateA - dateB || a.cheminRelatif.localeCompare(b.cheminRelatif, "fr", { numeric: true });
+  });
+}
+
+function handlerListerPhotosVisite(req, res) {
+  try {
+    const dossierVisite = resoudreCheminVisiteGaleriePhotoCartel(req.query.chemin);
+    const photos = listerPhotosRecursivementPhotoCartel(dossierVisite).map(
+      (photo, index) => ({
+        id: `${index}-${crypto
+          .createHash("sha1")
+          .update(photo.chemin)
+          .digest("hex")
+          .slice(0, 12)}`,
+        nom: photo.nom,
+        cheminRelatif: photo.cheminRelatif,
+        tailleOctets: photo.tailleOctets,
+        dateModificationMs: photo.dateModificationMs,
+        url: `/api/photo-visite?chemin=${encodeURIComponent(photo.chemin)}`,
+      })
+    );
+
+    res.json({
+      success: true,
+      version: VERSION_PHOTOCARTEL,
+      dossier: dossierVisite,
+      nombrePhotos: photos.length,
+      photos,
+    });
+  } catch (error) {
+    console.error("ERREUR liste photos visite =", error);
+    res
+      .status(error.statusCode || 500)
+      .json({ success: false, error: error.message || String(error) });
+  }
+}
+
+function handlerLirePhotoVisite(req, res) {
+  try {
+    const racineVoyages = path.resolve(
+      DOSSIER_RACINE_DONNEES,
+      DOSSIER_METIER_VOYAGES
+    );
+    const cheminTexte = String(req.query.chemin || "").trim();
+
+    if (!cheminTexte) {
+      return res.status(400).json({ success: false, error: "Chemin photo manquant." });
+    }
+
+    const cheminPhoto = path.resolve(cheminTexte);
+    const relatif = path.relative(racineVoyages, cheminPhoto);
+
+    if (relatif.startsWith("..") || path.isAbsolute(relatif)) {
+      return res.status(403).json({
+        success: false,
+        error: "La photo demandée n’appartient pas aux voyages PhotoCartel.",
+      });
+    }
+
+    if (
+      !fs.existsSync(cheminPhoto) ||
+      !fs.statSync(cheminPhoto).isFile() ||
+      !estFichierImagePhotoCartel(cheminPhoto)
+    ) {
+      return res.status(404).json({ success: false, error: "Photo introuvable." });
+    }
+
+    res.setHeader("Cache-Control", "private, max-age=60");
+    return res.sendFile(cheminPhoto);
+  } catch (error) {
+    console.error("ERREUR lecture photo visite =", error);
+    return res.status(500).json({ success: false, error: error.message || String(error) });
+  }
+}
+
+app.get("/photos-visite", handlerListerPhotosVisite);
+app.get("/api/photos-visite", handlerListerPhotosVisite);
+app.get("/photo-visite", handlerLirePhotoVisite);
+app.get("/api/photo-visite", handlerLirePhotoVisite);
 
 function trouverVisitePourPhotoRangement(visites, nomFichier) {
   const photoMs = extraireMsDepuisNomPhotoCartel(nomFichier);
