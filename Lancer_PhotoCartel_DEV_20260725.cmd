@@ -3,17 +3,15 @@ setlocal EnableExtensions
 chcp 65001 >nul
 
 REM ===========================================
-REM PhotoCartel - Lanceur de l'environnement DEV
-REM v46
-REM Compatible avec App/Server PhotoCartel v45
+REM PhotoCartel - Lanceur universel DEV
+REM Aucun numero de version n'est code en dur.
 REM ===========================================
 
-set "EXPECTED_SERVER_VERSION=v45"
 set "SERVER_URL=http://127.0.0.1:3001/api/health"
 set "VITE_URL=http://127.0.0.1:5173"
 
 cls
-title PhotoCartel - Redemarrage DEV v46
+title PhotoCartel - Redemarrage DEV
 
 echo.
 echo ==========================================
@@ -37,15 +35,18 @@ echo [4/6] Demarrage du serveur PhotoCartel...
 start "PhotoCartel Server" cmd /k "cd /d ""%~dp0"" && node server.js"
 
 echo.
-echo Verification du serveur et de sa version...
+echo Attente du serveur PhotoCartel...
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-"$deadline=(Get-Date).AddSeconds(60); do { try { $r=Invoke-RestMethod -Uri '%SERVER_URL%' -TimeoutSec 2; if($r.version -eq '%EXPECTED_SERVER_VERSION%'){ exit 0 }; if($r.version){ Write-Host ('ERREUR : le serveur annonce ' + $r.version + ' au lieu de %EXPECTED_SERVER_VERSION%'); exit 2 } } catch {}; Start-Sleep -Milliseconds 500 } while((Get-Date) -lt $deadline); exit 1"
+"$deadline=(Get-Date).AddSeconds(60); while((Get-Date) -lt $deadline){ try { $r=Invoke-RestMethod -Uri '%SERVER_URL%' -TimeoutSec 2; if($null -ne $r){ exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
 
-if errorlevel 2 goto ERREUR_VERSION
 if errorlevel 1 goto ERREUR_SERVEUR
 
-echo Serveur pret. Version validee : %EXPECTED_SERVER_VERSION%
+set "SERVER_VERSION=Version non renseignee"
+for /f "usebackq delims=" %%V in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$r=Invoke-RestMethod -Uri '%SERVER_URL%' -TimeoutSec 5; if($r.version){$r.version}else{'Version non renseignee'}"`) do set "SERVER_VERSION=%%V"
+
+echo Serveur pret.
+echo Version detectee : %SERVER_VERSION%
 
 echo.
 echo [5/6] Demarrage de Vite...
@@ -55,14 +56,14 @@ echo.
 echo Attente du demarrage de Vite...
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-"$deadline=(Get-Date).AddSeconds(60); do { try { $r=Invoke-WebRequest -UseBasicParsing -Uri '%VITE_URL%' -TimeoutSec 2; if($r.StatusCode -ge 200 -and $r.StatusCode -lt 500){ exit 0 } } catch {}; Start-Sleep -Milliseconds 500 } while((Get-Date) -lt $deadline); exit 1"
+"$deadline=(Get-Date).AddSeconds(60); while((Get-Date) -lt $deadline){ try { $r=Invoke-WebRequest -UseBasicParsing -Uri '%VITE_URL%' -TimeoutSec 2; if($r.StatusCode -ge 200 -and $r.StatusCode -lt 500){ exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
 
 if errorlevel 1 goto ERREUR_VITE
 
 echo Vite est pret.
 
 echo.
-echo [6/6] Ouverture de PhotoCartel dans Google Chrome...
+echo [6/6] Recherche de Google Chrome...
 
 set "CHROME_PATH="
 
@@ -78,24 +79,15 @@ if not defined CHROME_PATH if exist "%LocalAppData%\Google\Chrome\Application\ch
     set "CHROME_PATH=%LocalAppData%\Google\Chrome\Application\chrome.exe"
 )
 
-if not defined CHROME_PATH (
-    echo.
-    echo ==========================================
-    echo   ECHEC : GOOGLE CHROME EST INTROUVABLE
-    echo   PhotoCartel ne sera pas ouvert.
-    echo ==========================================
-    echo.
-    pause
-    exit /b 1
-)
+if not defined CHROME_PATH goto ERREUR_CHROME
 
-start "" "%CHROME_PATH%" "%VITE_URL%"
+echo Ouverture de PhotoCartel dans Google Chrome...
+start "" "%CHROME_PATH%" --new-window "%VITE_URL%"
 
 echo.
 echo ==========================================
 echo   PhotoCartel DEV est pret.
-echo   Lanceur : v46
-echo   Serveur : %EXPECTED_SERVER_VERSION%
+echo   Version detectee : %SERVER_VERSION%
 echo   Adresse : %VITE_URL%
 echo   Navigateur : Google Chrome
 echo ==========================================
@@ -103,17 +95,6 @@ echo.
 
 timeout /t 3 /nobreak >nul
 exit /b 0
-
-:ERREUR_VERSION
-echo.
-echo ==========================================
-echo   ECHEC : VERSION SERVEUR INCORRECTE
-echo   Version attendue : %EXPECTED_SERVER_VERSION%
-echo   Le navigateur ne sera pas ouvert.
-echo ==========================================
-echo.
-pause
-exit /b 1
 
 :ERREUR_SERVEUR
 echo.
@@ -132,6 +113,16 @@ echo ==========================================
 echo   ECHEC : VITE NE REPOND PAS
 echo   Adresse testee : %VITE_URL%
 echo   Le navigateur ne sera pas ouvert.
+echo ==========================================
+echo.
+pause
+exit /b 1
+
+:ERREUR_CHROME
+echo.
+echo ==========================================
+echo   ECHEC : GOOGLE CHROME EST INTROUVABLE
+echo   PhotoCartel ne sera pas ouvert.
 echo ==========================================
 echo.
 pause

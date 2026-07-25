@@ -1,4 +1,4 @@
-// PhotoCartel v45 — consultation en lecture seule des anciennes visites présentes dans « Visites à rattacher ».
+// PhotoCartel v45.1 — alignement PC/PWA, cache d’index et galeries de visites optimisées.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v45";
+const VERSION_PHOTOCARTEL = "v45.1";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -267,7 +267,16 @@ function analyserContenuPhysiqueVisite(dossierVisite) {
   };
 }
 
-function lireVisitesPhysiquesPhotoCartel() {
+let cacheVisitesPhysiquesPhotoCartel = { dateMs: 0, visites: [] };
+const DUREE_CACHE_VISITES_PHYSIQUES_MS = 15000;
+
+function lireVisitesPhysiquesPhotoCartel({ forcer = false } = {}) {
+  const maintenant = Date.now();
+  if (!forcer && cacheVisitesPhysiquesPhotoCartel.visites.length &&
+      maintenant - cacheVisitesPhysiquesPhotoCartel.dateMs < DUREE_CACHE_VISITES_PHYSIQUES_MS) {
+    return cacheVisitesPhysiquesPhotoCartel.visites;
+  }
+
   const dossierVoyages = path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES);
   const dossierVisitesARattacher = path.join(
     DOSSIER_RACINE_DONNEES,
@@ -348,6 +357,7 @@ function lireVisitesPhysiquesPhotoCartel() {
     }
   }
 
+  cacheVisitesPhysiquesPhotoCartel = { dateMs: Date.now(), visites };
   return visites;
 }
 
