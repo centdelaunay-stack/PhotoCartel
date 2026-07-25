@@ -4,15 +4,16 @@ chcp 65001 >nul
 
 REM ===========================================
 REM PhotoCartel - Lanceur de l'environnement DEV
-REM v44.6
+REM v46
+REM Compatible avec App/Server PhotoCartel v45
 REM ===========================================
 
-set "EXPECTED_SERVER_VERSION=v44.4"
+set "EXPECTED_SERVER_VERSION=v45"
 set "SERVER_URL=http://127.0.0.1:3001/api/health"
 set "VITE_URL=http://127.0.0.1:5173"
 
 cls
-title PhotoCartel - Redemarrage DEV v44.6
+title PhotoCartel - Redemarrage DEV v46
 
 echo.
 echo ==========================================
@@ -81,7 +82,7 @@ if not defined CHROME_PATH (
     echo.
     echo ==========================================
     echo   ECHEC : GOOGLE CHROME EST INTROUVABLE
-    echo   PhotoCartel ne sera pas ouvert dans Firefox.
+    echo   PhotoCartel ne sera pas ouvert.
     echo ==========================================
     echo.
     pause
@@ -93,6 +94,7 @@ start "" "%CHROME_PATH%" "%VITE_URL%"
 echo.
 echo ==========================================
 echo   PhotoCartel DEV est pret.
+echo   Lanceur : v46
 echo   Serveur : %EXPECTED_SERVER_VERSION%
 echo   Adresse : %VITE_URL%
 echo   Navigateur : Google Chrome

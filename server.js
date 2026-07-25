@@ -1,4 +1,4 @@
-// PhotoCartel v44.4 — création automatique du dossier « Visites à rattacher » ; galerie et moteurs métier strictement inchangés.
+// PhotoCartel v45 — consultation en lecture seule des anciennes visites présentes dans « Visites à rattacher ».
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v44.4";
+const VERSION_PHOTOCARTEL = "v45";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,6 +56,7 @@ const DOSSIER_EXPORTS_PHOTOCARTEL = path.join(
 );
 
 const DOSSIER_METIER_VOYAGES = "Voyages";
+const DOSSIER_VISITES_A_RATTACHER = "Visites à rattacher";
 
 function construireCheminVoyageMetierPhotoCartel(nomVoyage) {
   // v28.2.4 : la création métier PC doit toujours partir de la racine officielle PhotoCartel.
@@ -268,37 +269,85 @@ function analyserContenuPhysiqueVisite(dossierVisite) {
 
 function lireVisitesPhysiquesPhotoCartel() {
   const dossierVoyages = path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES);
-  if (!fs.existsSync(dossierVoyages)) return [];
+  const dossierVisitesARattacher = path.join(
+    DOSSIER_RACINE_DONNEES,
+    DOSSIER_VISITES_A_RATTACHER
+  );
 
   const visites = [];
-  for (const entreeVoyage of fs.readdirSync(dossierVoyages, { withFileTypes: true })) {
-    if (!entreeVoyage.isDirectory()) continue;
-    const dossierVoyage = path.join(dossierVoyages, entreeVoyage.name);
 
-    for (const entreeVille of fs.readdirSync(dossierVoyage, { withFileTypes: true })) {
-      if (!entreeVille.isDirectory()) continue;
-      const dossierVille = path.join(dossierVoyage, entreeVille.name);
+  if (fs.existsSync(dossierVoyages)) {
+    for (const entreeVoyage of fs.readdirSync(dossierVoyages, { withFileTypes: true })) {
+      if (!entreeVoyage.isDirectory()) continue;
+      const dossierVoyage = path.join(dossierVoyages, entreeVoyage.name);
 
-      for (const entreeVisite of fs.readdirSync(dossierVille, { withFileTypes: true })) {
-        if (!entreeVisite.isDirectory()) continue;
-        const dossierVisite = path.join(dossierVille, entreeVisite.name);
-        const mesures = analyserContenuPhysiqueVisite(dossierVisite);
-        const estVisiteRapide = entreeVille.name === "Visites rapides";
-        visites.push({
-          idPhysique: [entreeVoyage.name, entreeVille.name, entreeVisite.name].join("__"),
-          voyage: entreeVoyage.name,
-          ville: estVisiteRapide ? "Ville non renseignée" : entreeVille.name,
-          stockageVille: entreeVille.name,
-          nom: entreeVisite.name,
-          chemin: dossierVisite,
-          estVisiteRapide,
-          type: "",
-          statut: "Importée",
-          ...mesures,
-        });
+      for (const entreeVille of fs.readdirSync(dossierVoyage, { withFileTypes: true })) {
+        if (!entreeVille.isDirectory()) continue;
+        const dossierVille = path.join(dossierVoyage, entreeVille.name);
+
+        for (const entreeVisite of fs.readdirSync(dossierVille, { withFileTypes: true })) {
+          if (!entreeVisite.isDirectory()) continue;
+          const dossierVisite = path.join(dossierVille, entreeVisite.name);
+          const mesures = analyserContenuPhysiqueVisite(dossierVisite);
+          const estVisiteRapide = entreeVille.name === "Visites rapides";
+          visites.push({
+            idPhysique: ["voyages", entreeVoyage.name, entreeVille.name, entreeVisite.name].join("__"),
+            originePhysique: "Voyages",
+            voyage: entreeVoyage.name,
+            ville: estVisiteRapide ? "Ville non renseignée" : entreeVille.name,
+            stockageVille: entreeVille.name,
+            nom: entreeVisite.name,
+            chemin: dossierVisite,
+            estVisiteRapide,
+            estARattacher: false,
+            type: "",
+            statut: "Importée",
+            ...mesures,
+          });
+        }
       }
     }
   }
+
+  if (fs.existsSync(dossierVisitesARattacher)) {
+    for (const entreeCandidate of fs.readdirSync(dossierVisitesARattacher, {
+      withFileTypes: true,
+    })) {
+      if (!entreeCandidate.isDirectory()) continue;
+
+      const dossierCandidat = path.join(
+        dossierVisitesARattacher,
+        entreeCandidate.name
+      );
+      const mesures = analyserContenuPhysiqueVisite(dossierCandidat);
+      let dateDossierMs = 0;
+      try {
+        const stats = fs.statSync(dossierCandidat);
+        dateDossierMs = Number(stats.mtimeMs || stats.birthtimeMs || 0);
+      } catch (error) {
+        dateDossierMs = 0;
+      }
+
+      visites.push({
+        idPhysique: ["a-rattacher", entreeCandidate.name].join("__"),
+        originePhysique: DOSSIER_VISITES_A_RATTACHER,
+        voyage: "",
+        ville: "",
+        stockageVille: "",
+        nom: entreeCandidate.name,
+        chemin: dossierCandidat,
+        estVisiteRapide: false,
+        estARattacher: true,
+        type: "",
+        statut: "À rattacher",
+        ...mesures,
+        dateDossierMs: dateDossierMs || null,
+        datePhotoPlusRecenteMs:
+          mesures.datePhotoPlusRecenteMs || dateDossierMs || null,
+      });
+    }
+  }
+
   return visites;
 }
 
@@ -308,7 +357,13 @@ function handlerListerVisitesPhysiques(req, res) {
     res.json({
       success: true,
       source: "disque",
-      racine: path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES),
+      racines: {
+        voyages: path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES),
+        visitesARattacher: path.join(
+          DOSSIER_RACINE_DONNEES,
+          DOSSIER_VISITES_A_RATTACHER
+        ),
+      },
       visites,
     });
   } catch (error) {
@@ -324,11 +379,24 @@ app.get("/visites-physiques", handlerListerVisitesPhysiques);
 
 app.get("/api/visites-physiques", handlerListerVisitesPhysiques);
 
-function resoudreCheminVisiteGaleriePhotoCartel(cheminRecu = "") {
-  const racineVoyages = path.resolve(
-    DOSSIER_RACINE_DONNEES,
-    DOSSIER_METIER_VOYAGES
+function racinesConsultablesGaleriePhotoCartel() {
+  return [
+    path.resolve(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES),
+    path.resolve(DOSSIER_RACINE_DONNEES, DOSSIER_VISITES_A_RATTACHER),
+  ];
+}
+
+function cheminEstDansRacinePhotoCartel(cheminCandidat, racine) {
+  const relatif = path.relative(racine, cheminCandidat);
+  return (
+    cheminCandidat !== racine &&
+    !relatif.startsWith("..") &&
+    !path.isAbsolute(relatif)
   );
+}
+
+function resoudreCheminVisiteGaleriePhotoCartel(cheminRecu = "") {
+  const racinesAutorisees = racinesConsultablesGaleriePhotoCartel();
   const cheminTexte = String(cheminRecu || "").trim();
 
   if (!cheminTexte) {
@@ -338,17 +406,16 @@ function resoudreCheminVisiteGaleriePhotoCartel(cheminRecu = "") {
   const cheminCandidat = path.resolve(
     path.isAbsolute(cheminTexte)
       ? cheminTexte
-      : path.join(racineVoyages, cheminTexte)
+      : path.join(racinesAutorisees[0], cheminTexte)
   );
-  const relatif = path.relative(racineVoyages, cheminCandidat);
 
   if (
-    relatif.startsWith("..") ||
-    path.isAbsolute(relatif) ||
-    cheminCandidat === racineVoyages
+    !racinesAutorisees.some((racine) =>
+      cheminEstDansRacinePhotoCartel(cheminCandidat, racine)
+    )
   ) {
     throw Object.assign(
-      new Error("Le dossier demandé n’appartient pas aux visites PhotoCartel."),
+      new Error("Le dossier demandé n’appartient pas aux visites consultables PhotoCartel."),
       { statusCode: 403 }
     );
   }
@@ -436,10 +503,7 @@ function handlerListerPhotosVisite(req, res) {
 
 function handlerLirePhotoVisite(req, res) {
   try {
-    const racineVoyages = path.resolve(
-      DOSSIER_RACINE_DONNEES,
-      DOSSIER_METIER_VOYAGES
-    );
+    const racinesAutorisees = racinesConsultablesGaleriePhotoCartel();
     const cheminTexte = String(req.query.chemin || "").trim();
 
     if (!cheminTexte) {
@@ -447,12 +511,15 @@ function handlerLirePhotoVisite(req, res) {
     }
 
     const cheminPhoto = path.resolve(cheminTexte);
-    const relatif = path.relative(racineVoyages, cheminPhoto);
 
-    if (relatif.startsWith("..") || path.isAbsolute(relatif)) {
+    if (
+      !racinesAutorisees.some((racine) =>
+        cheminEstDansRacinePhotoCartel(cheminPhoto, racine)
+      )
+    ) {
       return res.status(403).json({
         success: false,
-        error: "La photo demandée n’appartient pas aux voyages PhotoCartel.",
+        error: "La photo demandée n’appartient pas aux visites consultables PhotoCartel.",
       });
     }
 
