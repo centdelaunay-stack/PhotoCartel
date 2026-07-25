@@ -1,4 +1,4 @@
-// PhotoCartel v45.1 — alignement PC/PWA, cache d’index et galeries de visites optimisées.
+// PhotoCartel v45.2 — index persistant, réponses immédiates et galeries progressives.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v45.1";
+const VERSION_PHOTOCARTEL = "v45.2";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -267,8 +267,36 @@ function analyserContenuPhysiqueVisite(dossierVisite) {
   };
 }
 
-let cacheVisitesPhysiquesPhotoCartel = { dateMs: 0, visites: [] };
-const DUREE_CACHE_VISITES_PHYSIQUES_MS = 15000;
+const DOSSIER_INDEX_PHOTOCARTEL = path.join(DOSSIER_RACINE_DONNEES, "Paramètres", "Index");
+const FICHIER_INDEX_VISITES_PHOTOCARTEL = path.join(DOSSIER_INDEX_PHOTOCARTEL, "visites-physiques-v45.2.json");
+fs.mkdirSync(DOSSIER_INDEX_PHOTOCARTEL, { recursive: true });
+
+function chargerIndexVisitesPersistantPhotoCartel() {
+  try {
+    if (!fs.existsSync(FICHIER_INDEX_VISITES_PHOTOCARTEL)) return { dateMs: 0, visites: [] };
+    const contenu = JSON.parse(fs.readFileSync(FICHIER_INDEX_VISITES_PHOTOCARTEL, "utf8"));
+    return Array.isArray(contenu?.visites)
+      ? { dateMs: Number(contenu.dateMs || 0), visites: contenu.visites }
+      : { dateMs: 0, visites: [] };
+  } catch (error) {
+    console.warn("Index persistant des visites illisible :", error.message);
+    return { dateMs: 0, visites: [] };
+  }
+}
+
+function sauvegarderIndexVisitesPersistantPhotoCartel(index) {
+  try {
+    const temporaire = `${FICHIER_INDEX_VISITES_PHOTOCARTEL}.tmp`;
+    fs.writeFileSync(temporaire, JSON.stringify(index), "utf8");
+    fs.renameSync(temporaire, FICHIER_INDEX_VISITES_PHOTOCARTEL);
+  } catch (error) {
+    console.warn("Index persistant des visites non sauvegardé :", error.message);
+  }
+}
+
+let cacheVisitesPhysiquesPhotoCartel = chargerIndexVisitesPersistantPhotoCartel();
+let actualisationVisitesPhysiquesEnCours = null;
+const DUREE_CACHE_VISITES_PHYSIQUES_MS = 5 * 60 * 1000;
 
 function lireVisitesPhysiquesPhotoCartel({ forcer = false } = {}) {
   const maintenant = Date.now();
@@ -358,15 +386,39 @@ function lireVisitesPhysiquesPhotoCartel({ forcer = false } = {}) {
   }
 
   cacheVisitesPhysiquesPhotoCartel = { dateMs: Date.now(), visites };
+  sauvegarderIndexVisitesPersistantPhotoCartel(cacheVisitesPhysiquesPhotoCartel);
   return visites;
+}
+
+function programmerActualisationVisitesPhysiquesPhotoCartel() {
+  if (actualisationVisitesPhysiquesEnCours) return actualisationVisitesPhysiquesEnCours;
+  actualisationVisitesPhysiquesEnCours = new Promise((resolve) => {
+    setImmediate(() => {
+      try {
+        resolve(lireVisitesPhysiquesPhotoCartel({ forcer: true }));
+      } catch (error) {
+        console.error("Actualisation asynchrone de l'index visites impossible :", error);
+        resolve(cacheVisitesPhysiquesPhotoCartel.visites || []);
+      } finally {
+        actualisationVisitesPhysiquesEnCours = null;
+      }
+    });
+  });
+  return actualisationVisitesPhysiquesEnCours;
 }
 
 function handlerListerVisitesPhysiques(req, res) {
   try {
-    const visites = lireVisitesPhysiquesPhotoCartel();
+    let visites = cacheVisitesPhysiquesPhotoCartel.visites || [];
+    if (!visites.length) visites = lireVisitesPhysiquesPhotoCartel({ forcer: true });
+    else programmerActualisationVisitesPhysiquesPhotoCartel();
+
+    res.setHeader("Cache-Control", "private, max-age=15, stale-while-revalidate=300");
     res.json({
       success: true,
-      source: "disque",
+      source: "index-persistant",
+      indexDateMs: cacheVisitesPhysiquesPhotoCartel.dateMs,
+      actualisationEnArrierePlan: Boolean(actualisationVisitesPhysiquesEnCours),
       racines: {
         voyages: path.join(DOSSIER_RACINE_DONNEES, DOSSIER_METIER_VOYAGES),
         visitesARattacher: path.join(
@@ -440,6 +492,19 @@ function resoudreCheminVisiteGaleriePhotoCartel(cheminRecu = "") {
   return cheminCandidat;
 }
 
+const cachePhotosVisitesPhotoCartel = new Map();
+const DUREE_CACHE_PHOTOS_VISITE_MS = 10 * 60 * 1000;
+
+function listerPhotosVisiteAvecCachePhotoCartel(dossierVisite) {
+  const cle = path.resolve(dossierVisite);
+  const maintenant = Date.now();
+  const cache = cachePhotosVisitesPhotoCartel.get(cle);
+  if (cache && maintenant - cache.dateMs < DUREE_CACHE_PHOTOS_VISITE_MS) return cache.photos;
+  const photos = listerPhotosRecursivementPhotoCartel(dossierVisite);
+  cachePhotosVisitesPhotoCartel.set(cle, { dateMs: maintenant, photos });
+  return photos;
+}
+
 function listerPhotosRecursivementPhotoCartel(dossierVisite) {
   const photos = [];
 
@@ -481,33 +546,35 @@ function listerPhotosRecursivementPhotoCartel(dossierVisite) {
 function handlerListerPhotosVisite(req, res) {
   try {
     const dossierVisite = resoudreCheminVisiteGaleriePhotoCartel(req.query.chemin);
-    const photos = listerPhotosRecursivementPhotoCartel(dossierVisite).map(
-      (photo, index) => ({
-        id: `${index}-${crypto
-          .createHash("sha1")
-          .update(photo.chemin)
-          .digest("hex")
-          .slice(0, 12)}`,
-        nom: photo.nom,
-        cheminRelatif: photo.cheminRelatif,
-        tailleOctets: photo.tailleOctets,
-        dateModificationMs: photo.dateModificationMs,
-        url: `/api/photo-visite?chemin=${encodeURIComponent(photo.chemin)}`,
-      })
-    );
+    const toutesLesPhotos = listerPhotosVisiteAvecCachePhotoCartel(dossierVisite);
+    const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
+    const limiteDemandee = Number.parseInt(req.query.limit, 10) || 240;
+    const limit = Math.min(500, Math.max(1, limiteDemandee));
+    const tranche = toutesLesPhotos.slice(offset, offset + limit);
+    const photos = tranche.map((photo, index) => ({
+      id: `${offset + index}-${crypto.createHash("sha1").update(photo.chemin).digest("hex").slice(0, 12)}`,
+      nom: photo.nom,
+      cheminRelatif: photo.cheminRelatif,
+      tailleOctets: photo.tailleOctets,
+      dateModificationMs: photo.dateModificationMs,
+      url: `/api/photo-visite?chemin=${encodeURIComponent(photo.chemin)}`,
+      miniatureUrl: `/api/miniature-visite?chemin=${encodeURIComponent(photo.chemin)}&taille=360`,
+    }));
 
+    res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
     res.json({
       success: true,
       version: VERSION_PHOTOCARTEL,
       dossier: dossierVisite,
-      nombrePhotos: photos.length,
+      nombrePhotos: toutesLesPhotos.length,
+      offset,
+      limit,
+      suivantOffset: offset + photos.length < toutesLesPhotos.length ? offset + photos.length : null,
       photos,
     });
   } catch (error) {
     console.error("ERREUR liste photos visite =", error);
-    res
-      .status(error.statusCode || 500)
-      .json({ success: false, error: error.message || String(error) });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message || String(error) });
   }
 }
 
@@ -549,10 +616,63 @@ function handlerLirePhotoVisite(req, res) {
   }
 }
 
+const DOSSIER_MINIATURES_PHOTOCARTEL = path.join(DOSSIER_RACINE_DONNEES, "Paramètres", "Miniatures");
+fs.mkdirSync(DOSSIER_MINIATURES_PHOTOCARTEL, { recursive: true });
+let chargeurSharpPhotoCartel = null;
+
+async function obtenirSharpPhotoCartel() {
+  if (chargeurSharpPhotoCartel === false) return null;
+  if (chargeurSharpPhotoCartel) return chargeurSharpPhotoCartel;
+  try {
+    const moduleSharp = await import("sharp");
+    chargeurSharpPhotoCartel = moduleSharp.default || moduleSharp;
+    return chargeurSharpPhotoCartel;
+  } catch (error) {
+    chargeurSharpPhotoCartel = false;
+    console.warn("Module sharp absent : miniatures servies en image originale mise en cache.");
+    return null;
+  }
+}
+
+async function handlerMiniatureVisite(req, res) {
+  try {
+    const racinesAutorisees = racinesConsultablesGaleriePhotoCartel();
+    const cheminPhoto = path.resolve(String(req.query.chemin || "").trim());
+    if (!racinesAutorisees.some((racine) => cheminEstDansRacinePhotoCartel(cheminPhoto, racine))) {
+      return res.status(403).json({ success: false, error: "Photo hors des visites consultables." });
+    }
+    if (!fs.existsSync(cheminPhoto) || !fs.statSync(cheminPhoto).isFile() || !estFichierImagePhotoCartel(cheminPhoto)) {
+      return res.status(404).json({ success: false, error: "Photo introuvable." });
+    }
+
+    const taille = Math.min(720, Math.max(160, Number.parseInt(req.query.taille, 10) || 360));
+    const stats = fs.statSync(cheminPhoto);
+    const cle = crypto.createHash("sha1").update(`${cheminPhoto}|${stats.size}|${stats.mtimeMs}|${taille}`).digest("hex");
+    const cheminMiniature = path.join(DOSSIER_MINIATURES_PHOTOCARTEL, `${cle}.webp`);
+    const sharp = await obtenirSharpPhotoCartel();
+
+    if (sharp) {
+      if (!fs.existsSync(cheminMiniature)) {
+        await sharp(cheminPhoto).rotate().resize({ width: taille, height: taille, fit: "cover", withoutEnlargement: true }).webp({ quality: 72 }).toFile(cheminMiniature);
+      }
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      return res.sendFile(cheminMiniature);
+    }
+
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.sendFile(cheminPhoto);
+  } catch (error) {
+    console.error("ERREUR miniature visite =", error);
+    return res.status(500).json({ success: false, error: error.message || String(error) });
+  }
+}
+
 app.get("/photos-visite", handlerListerPhotosVisite);
 app.get("/api/photos-visite", handlerListerPhotosVisite);
 app.get("/photo-visite", handlerLirePhotoVisite);
 app.get("/api/photo-visite", handlerLirePhotoVisite);
+app.get("/miniature-visite", handlerMiniatureVisite);
+app.get("/api/miniature-visite", handlerMiniatureVisite);
 
 function trouverVisitePourPhotoRangement(visites, nomFichier) {
   const photoMs = extraireMsDepuisNomPhotoCartel(nomFichier);
