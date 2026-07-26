@@ -1,4 +1,4 @@
-// PhotoCartel v45.3 — index persistant, miniatures bornées et génération non bloquante.
+// PhotoCartel v45.6 — serveur aligné avec le correctif de rangement Android/PWA.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v45.3";
+const VERSION_PHOTOCARTEL = "v45.6";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
