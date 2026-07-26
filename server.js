@@ -1,4 +1,4 @@
-// PhotoCartel v42.5.2 — compatibilité avec le frontend drapeaux étendus et Recherches.
+// PhotoCartel v45.3 — index persistant, miniatures bornées et génération non bloquante.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v42.5.2";
+const VERSION_PHOTOCARTEL = "v45.3";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -268,7 +268,7 @@ function analyserContenuPhysiqueVisite(dossierVisite) {
 }
 
 const DOSSIER_INDEX_PHOTOCARTEL = path.join(DOSSIER_RACINE_DONNEES, "Paramètres", "Index");
-const FICHIER_INDEX_VISITES_PHOTOCARTEL = path.join(DOSSIER_INDEX_PHOTOCARTEL, "visites-physiques-v45.2.json");
+const FICHIER_INDEX_VISITES_PHOTOCARTEL = path.join(DOSSIER_INDEX_PHOTOCARTEL, "visites-physiques-v45.3.json");
 fs.mkdirSync(DOSSIER_INDEX_PHOTOCARTEL, { recursive: true });
 
 function chargerIndexVisitesPersistantPhotoCartel() {
@@ -558,7 +558,7 @@ function handlerListerPhotosVisite(req, res) {
       tailleOctets: photo.tailleOctets,
       dateModificationMs: photo.dateModificationMs,
       url: `/api/photo-visite?chemin=${encodeURIComponent(photo.chemin)}`,
-      miniatureUrl: `/api/miniature-visite?chemin=${encodeURIComponent(photo.chemin)}&taille=360`,
+      miniatureUrl: `/api/miniature-visite?chemin=${encodeURIComponent(photo.chemin)}&taille=240`,
     }));
 
     res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
@@ -634,6 +634,35 @@ async function obtenirSharpPhotoCartel() {
   }
 }
 
+const generationsMiniaturesEnCoursPhotoCartel = new Map();
+let nombreGenerationsMiniaturesActivesPhotoCartel = 0;
+const fileAttenteMiniaturesPhotoCartel = [];
+const MAX_GENERATIONS_MINIATURES_CONCURRENTES_PHOTOCARTEL = 2;
+
+function executerFileMiniaturesPhotoCartel() {
+  while (nombreGenerationsMiniaturesActivesPhotoCartel < MAX_GENERATIONS_MINIATURES_CONCURRENTES_PHOTOCARTEL && fileAttenteMiniaturesPhotoCartel.length) {
+    const travail = fileAttenteMiniaturesPhotoCartel.shift();
+    nombreGenerationsMiniaturesActivesPhotoCartel += 1;
+    Promise.resolve()
+      .then(travail.executer)
+      .then(travail.resolve, travail.reject)
+      .finally(() => {
+        nombreGenerationsMiniaturesActivesPhotoCartel -= 1;
+        setImmediate(executerFileMiniaturesPhotoCartel);
+      });
+  }
+}
+
+function planifierGenerationMiniaturePhotoCartel(cle, executer) {
+  if (generationsMiniaturesEnCoursPhotoCartel.has(cle)) return generationsMiniaturesEnCoursPhotoCartel.get(cle);
+  const promesse = new Promise((resolve, reject) => {
+    fileAttenteMiniaturesPhotoCartel.push({ executer, resolve, reject });
+    executerFileMiniaturesPhotoCartel();
+  }).finally(() => generationsMiniaturesEnCoursPhotoCartel.delete(cle));
+  generationsMiniaturesEnCoursPhotoCartel.set(cle, promesse);
+  return promesse;
+}
+
 async function handlerMiniatureVisite(req, res) {
   try {
     const racinesAutorisees = racinesConsultablesGaleriePhotoCartel();
@@ -645,7 +674,7 @@ async function handlerMiniatureVisite(req, res) {
       return res.status(404).json({ success: false, error: "Photo introuvable." });
     }
 
-    const taille = Math.min(720, Math.max(160, Number.parseInt(req.query.taille, 10) || 360));
+    const taille = Math.min(720, Math.max(160, Number.parseInt(req.query.taille, 10) || 240));
     const stats = fs.statSync(cheminPhoto);
     const cle = crypto.createHash("sha1").update(`${cheminPhoto}|${stats.size}|${stats.mtimeMs}|${taille}`).digest("hex");
     const cheminMiniature = path.join(DOSSIER_MINIATURES_PHOTOCARTEL, `${cle}.webp`);
@@ -653,7 +682,22 @@ async function handlerMiniatureVisite(req, res) {
 
     if (sharp) {
       if (!fs.existsSync(cheminMiniature)) {
-        await sharp(cheminPhoto).rotate().resize({ width: taille, height: taille, fit: "cover", withoutEnlargement: true }).webp({ quality: 72 }).toFile(cheminMiniature);
+        await planifierGenerationMiniaturePhotoCartel(cle, async () => {
+          if (fs.existsSync(cheminMiniature)) return;
+          const temporaire = `${cheminMiniature}.${process.pid}.${Date.now()}.tmp`;
+          try {
+            await sharp(cheminPhoto)
+              .rotate()
+              .resize({ width: taille, height: taille, fit: "cover", withoutEnlargement: true })
+              .webp({ quality: 70, effort: 3 })
+              .toFile(temporaire);
+            if (!fs.existsSync(cheminMiniature)) fs.renameSync(temporaire, cheminMiniature);
+            else if (fs.existsSync(temporaire)) fs.unlinkSync(temporaire);
+          } catch (error) {
+            try { if (fs.existsSync(temporaire)) fs.unlinkSync(temporaire); } catch (_) {}
+            throw error;
+          }
+        });
       }
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(cheminMiniature);
