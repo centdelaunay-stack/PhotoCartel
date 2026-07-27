@@ -1,4 +1,4 @@
-// PhotoCartel v45.7.2 — corrections graphiques de recette PWA ; moteurs métier inchangés.
+// PhotoCartel v45.7.3 — correction des régressions de rangement ; moteurs métier IA inchangés.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -26,7 +26,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v45.7.2";
+const VERSION_PHOTOCARTEL = "v45.7.3";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1262,6 +1262,7 @@ async function handlerRangerPhotosVisites(req, res) {
 
       if (!visite) {
         photosNonAttribuees += 1;
+        photosEchecs += 1;
         resultats.push({ fichier, success: false, raison: "Aucune visite correspondante" });
         continue;
       }
@@ -1319,10 +1320,11 @@ async function handlerRangerPhotosVisites(req, res) {
     const visitesResultats = Array.from(statsParVisite.values()).map((visite) => ({
       ...visite,
       rangee:
+        visite.photosCandidates > 0 &&
         visite.photosEchecs === 0 &&
         visite.photosRangees === visite.photosCandidates,
     }));
-    const rangementComplet = photosEchecs === 0;
+    const rangementComplet = photosEchecs === 0 && photosNonAttribuees === 0;
 
     res.json({
       success: true,
