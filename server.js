@@ -1,4 +1,4 @@
-// PhotoCartel v47.2 — autorisation galerie PWA corrigée côté App ; serveur métier inchangé.
+// PhotoCartel v47.3 — suppression physique sécurisée des photos de visite et invalidation des caches.
 // Le serveur ne relance plus un parcours physique complet à chaque consultation de la liste.
 // L’actualisation lourde est espacée et reste strictement en arrière-plan.
 // Les routes de galerie et tous les moteurs métier restent inchangés.
@@ -29,7 +29,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v47.2";
+const VERSION_PHOTOCARTEL = "v47.3";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -626,6 +626,53 @@ function handlerLirePhotoVisite(req, res) {
     return res.status(500).json({ success: false, error: error.message || String(error) });
   }
 }
+
+function handlerSupprimerPhotoVisite(req, res) {
+  try {
+    const racinesAutorisees = racinesConsultablesGaleriePhotoCartel();
+    const cheminTexte = String(req.query.chemin || "").trim();
+    if (!cheminTexte) {
+      return res.status(400).json({ success: false, error: "Chemin photo manquant." });
+    }
+
+    const cheminPhoto = path.resolve(cheminTexte);
+    if (!racinesAutorisees.some((racine) => cheminEstDansRacinePhotoCartel(cheminPhoto, racine))) {
+      return res.status(403).json({ success: false, error: "La photo demandée n’appartient pas aux visites consultables PhotoCartel." });
+    }
+    if (!fs.existsSync(cheminPhoto) || !fs.statSync(cheminPhoto).isFile() || !estFichierImagePhotoCartel(cheminPhoto)) {
+      return res.status(404).json({ success: false, error: "Photo introuvable." });
+    }
+
+    fs.unlinkSync(cheminPhoto);
+    if (fs.existsSync(cheminPhoto)) {
+      throw new Error("La suppression physique de la photo n’a pas été confirmée.");
+    }
+
+    cachePhotosVisitesPhotoCartel.clear();
+    let visiteMiseAJour = null;
+    const visites = (cacheVisitesPhysiquesPhotoCartel.visites || []).map((visite) => {
+      const dossierVisite = path.resolve(String(visite.chemin || ""));
+      if (!dossierVisite || !cheminEstDansRacinePhotoCartel(cheminPhoto, dossierVisite)) return visite;
+      const mesures = analyserContenuPhysiqueVisite(dossierVisite);
+      visiteMiseAJour = { ...visite, ...mesures };
+      return visiteMiseAJour;
+    });
+    cacheVisitesPhysiquesPhotoCartel = { dateMs: Date.now(), visites };
+    sauvegarderIndexVisitesPersistantPhotoCartel(cacheVisitesPhysiquesPhotoCartel);
+
+    return res.json({
+      success: true,
+      version: VERSION_PHOTOCARTEL,
+      photoSupprimee: cheminPhoto,
+      nombrePhotos: visiteMiseAJour?.nombrePhotos ?? null,
+    });
+  } catch (error) {
+    console.error("ERREUR suppression photo visite =", error);
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message || String(error) });
+  }
+}
+
+app.delete(["/photo-visite", "/api/photo-visite"], handlerSupprimerPhotoVisite);
 
 const DOSSIER_MINIATURES_PHOTOCARTEL = path.join(DOSSIER_RACINE_DONNEES, "Paramètres", "Miniatures");
 fs.mkdirSync(DOSSIER_MINIATURES_PHOTOCARTEL, { recursive: true });
