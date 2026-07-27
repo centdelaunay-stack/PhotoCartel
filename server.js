@@ -1,6 +1,7 @@
-// PhotoCartel v46.2 — optimisation de la galerie PWA ; routes métier inchangées.
- // Le frontend limite désormais les chargements simultanés et réutilise les miniatures déjà décodées.
- // Les routes de lecture des visites, photos et miniatures restent strictement identiques.
+// PhotoCartel v47 — réponse immédiate de la liste des visites depuis l’index persistant.
+// Le serveur ne relance plus un parcours physique complet à chaque consultation de la liste.
+// L’actualisation lourde est espacée et reste strictement en arrière-plan.
+// Les routes de galerie et tous les moteurs métier restent inchangés.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
 // Le serveur vérifie physiquement chaque écriture avant de confirmer au compteur frontend.
@@ -28,7 +29,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v46.2";
+const VERSION_PHOTOCARTEL = "v47";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -298,7 +299,7 @@ function sauvegarderIndexVisitesPersistantPhotoCartel(index) {
 
 let cacheVisitesPhysiquesPhotoCartel = chargerIndexVisitesPersistantPhotoCartel();
 let actualisationVisitesPhysiquesEnCours = null;
-const DUREE_CACHE_VISITES_PHYSIQUES_MS = 5 * 60 * 1000;
+const DUREE_CACHE_VISITES_PHYSIQUES_MS = 30 * 60 * 1000;
 
 function lireVisitesPhysiquesPhotoCartel({ forcer = false } = {}) {
   const maintenant = Date.now();
@@ -412,8 +413,16 @@ function programmerActualisationVisitesPhysiquesPhotoCartel() {
 function handlerListerVisitesPhysiques(req, res) {
   try {
     let visites = cacheVisitesPhysiquesPhotoCartel.visites || [];
-    if (!visites.length) visites = lireVisitesPhysiquesPhotoCartel({ forcer: true });
-    else programmerActualisationVisitesPhysiquesPhotoCartel();
+    if (!visites.length) {
+      visites = lireVisitesPhysiquesPhotoCartel({ forcer: true });
+    } else if (
+      Date.now() - Number(cacheVisitesPhysiquesPhotoCartel.dateMs || 0) >
+      DUREE_CACHE_VISITES_PHYSIQUES_MS
+    ) {
+      // v47 : une consultation ordinaire répond depuis l'index. Le parcours disque
+      // complet n'est relancé qu'après expiration du cache, sans bloquer la réponse.
+      programmerActualisationVisitesPhysiquesPhotoCartel();
+    }
 
     res.setHeader("Cache-Control", "private, max-age=15, stale-while-revalidate=300");
     res.json({
