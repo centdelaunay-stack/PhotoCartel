@@ -1,4 +1,5 @@
-// PhotoCartel v46.1 — correction frontend du défilement et miniatures adaptatives ; serveur métier inchangé.
+// PhotoCartel v46.2 — optimisation de la galerie PWA ; routes métier inchangées.
+ // Le frontend limite désormais les chargements simultanés et réutilise les miniatures déjà décodées.
  // Les routes de lecture des visites, photos et miniatures restent strictement identiques.
  // Les moteurs métier IA/OCR/classification/renommage restent strictement inchangés.
 // Les index et métadonnées locales enrichissent l'affichage sans décider de l'existence physique.
@@ -27,7 +28,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v46.1";
+const VERSION_PHOTOCARTEL = "v46.2";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
