@@ -1,4 +1,4 @@
-// PhotoCartel v47 — réponse immédiate de la liste des visites depuis l’index persistant.
+// PhotoCartel v47.2 — autorisation galerie PWA corrigée côté App ; serveur métier inchangé.
 // Le serveur ne relance plus un parcours physique complet à chaque consultation de la liste.
 // L’actualisation lourde est espacée et reste strictement en arrière-plan.
 // Les routes de galerie et tous les moteurs métier restent inchangés.
@@ -29,7 +29,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v47";
+const VERSION_PHOTOCARTEL = "v47.2";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
