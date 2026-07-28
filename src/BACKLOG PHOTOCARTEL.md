@@ -106,3 +106,8 @@ faire une bibliothèque des visite --> changer le nom de l'icone 'bibilotheque d
 Dans le moteur de recherche : crer un moteur classique (on selectionne dans des champs distincts certains attributs) mais aussi une entrée style conversation bot ou l'on pourrait s'exprimer 'sors moi toutes les peintues de Matisse que j'ai photographiées en Allemangne)
 
 pour plus tard créer une GROSSE fonctionalité "Dégrossir un voyage" (nom meilleur à trouver) . On -> on soumet à PhotoCartel un fichier de 1000 photos non renommées (elles ont chacune le timestand dans leur nom). PhotoCartel idenfit intelligemment les 1000 photos grâce à la proximité ou eloignement des timestand identifie des "visites" et crée ainsi des sous-dossiers où il regroupent les photos d'une même visite
+
+
+28 juillet 2026
+1) pouvoir réouvrir un voyage, pouvoir renommer une voyage, pourvoir ajouter des visits et des Photos à un voyage
+2) pouvoir réouvrir une visite, pourvoir ajouter des Photos à une visite

@@ -1,4 +1,4 @@
-// PhotoCartel v47.3 — suppression physique sécurisée des photos de visite et invalidation des caches.
+// PhotoCartel v47.5 — résolution fiable de la visite physique lors d’une modification d’identité.
 // Le serveur ne relance plus un parcours physique complet à chaque consultation de la liste.
 // L’actualisation lourde est espacée et reste strictement en arrière-plan.
 // Les routes de galerie et tous les moteurs métier restent inchangés.
@@ -29,7 +29,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v47.3";
+const VERSION_PHOTOCARTEL = "v47.5";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -674,6 +674,36 @@ function handlerSupprimerPhotoVisite(req, res) {
 
 app.delete(["/photo-visite", "/api/photo-visite"], handlerSupprimerPhotoVisite);
 
+function handlerSupprimerVisite(req, res) {
+  try {
+    const dossierVisite = resoudreCheminVisiteGaleriePhotoCartel(req.query.chemin);
+    const photosAvant = listerPhotosRecursivementPhotoCartel(dossierVisite).length;
+    fs.rmSync(dossierVisite, { recursive: true, force: false });
+    if (fs.existsSync(dossierVisite)) {
+      throw new Error("La suppression physique de la visite n’a pas été confirmée.");
+    }
+
+    cachePhotosVisitesPhotoCartel.delete(path.resolve(dossierVisite));
+    const visites = (cacheVisitesPhysiquesPhotoCartel.visites || []).filter(
+      (visite) => path.resolve(String(visite.chemin || "")) !== path.resolve(dossierVisite)
+    );
+    cacheVisitesPhysiquesPhotoCartel = { dateMs: Date.now(), visites };
+    sauvegarderIndexVisitesPersistantPhotoCartel(cacheVisitesPhysiquesPhotoCartel);
+
+    return res.json({
+      success: true,
+      version: VERSION_PHOTOCARTEL,
+      visiteSupprimee: dossierVisite,
+      nombrePhotosSupprimees: photosAvant,
+    });
+  } catch (error) {
+    console.error("ERREUR suppression visite =", error);
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message || String(error) });
+  }
+}
+
+app.delete(["/visite", "/api/visite"], handlerSupprimerVisite);
+
 const DOSSIER_MINIATURES_PHOTOCARTEL = path.join(DOSSIER_RACINE_DONNEES, "Paramètres", "Miniatures");
 fs.mkdirSync(DOSSIER_MINIATURES_PHOTOCARTEL, { recursive: true });
 let chargeurSharpPhotoCartel = null;
@@ -869,6 +899,7 @@ function resoudreSourceVisite({
   nomVoyage,
   nomAncien,
   ancienChemin,
+  ancienIdPhysique,
   ancienStockageVille,
   ancienneVille,
   ancienneVisiteRapide,
@@ -894,6 +925,37 @@ function resoudreSourceVisite({
     }
     return null;
   };
+
+  // v47.5 : l'identifiant physique issu de la liste réelle est prioritaire.
+  // Il évite qu'une ancienne métadonnée locale reconstruise un chemin obsolète.
+  const idPhysiqueRecu = String(ancienIdPhysique || "").trim();
+  if (idPhysiqueRecu) {
+    const segmentsId = idPhysiqueRecu.split("__");
+    if (
+      segmentsId.length >= 4 &&
+      String(segmentsId[0] || "").toLowerCase() === "voyages"
+    ) {
+      const voyageId = nettoyerSegmentCheminPhotoCartel(segmentsId[1]);
+      const villeId = nettoyerSegmentCheminPhotoCartel(segmentsId[2]);
+      const visiteId = nettoyerSegmentCheminPhotoCartel(segmentsId.slice(3).join("__"));
+      if (
+        voyageId === nomVoyage &&
+        visiteId === nomAncien
+      ) {
+        const parId = candidatValide(
+          path.join(
+            DOSSIER_RACINE_DONNEES,
+            DOSSIER_METIER_VOYAGES,
+            voyageId,
+            villeId,
+            visiteId
+          ),
+          villeId
+        );
+        if (parId) return parId;
+      }
+    }
+  }
 
   // v40.5 : un chemin précis valide identifie sans ambiguïté la visite.
   // La recherche globale n'est qu'un mécanisme de secours.
@@ -1064,6 +1126,7 @@ function handlerModifierIdentiteVisite(req, res) {
       ancienneVille,
       ancienneVisiteRapide,
       ancienChemin,
+      ancienIdPhysique,
       ancienStockageVille,
       nouveauNom,
       nouvelleVille,
@@ -1100,6 +1163,7 @@ function handlerModifierIdentiteVisite(req, res) {
       nomVoyage,
       nomAncien,
       ancienChemin,
+      ancienIdPhysique,
       ancienStockageVille,
       ancienneVille,
       ancienneVisiteRapide,
