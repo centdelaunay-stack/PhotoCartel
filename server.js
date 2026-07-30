@@ -1,4 +1,3 @@
-// PhotoCartel v49 — écriture/mise à jour de Résumé de visite.json (identité physique de chaque visite).
 // PhotoCartel v47.5 — résolution fiable de la visite physique lors d’une modification d’identité.
 // Le serveur ne relance plus un parcours physique complet à chaque consultation de la liste.
 // L’actualisation lourde est espacée et reste strictement en arrière-plan.
@@ -30,7 +29,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v49";
+const VERSION_PHOTOCARTEL = "v47.5";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -149,38 +148,6 @@ function creerSousDossiersCategoriesVisite(cheminVisite, typeVisite = "Musée") 
   }
 
   return categories;
-}
-
-// v49 — Résumé de visite.json côté serveur local. Même contrat que la version
-// Android : identité physique minimale, écrite à côté de Oeuvres/Cartels/etc.
-const NOM_FICHIER_RESUME_VISITE = "Résumé de visite.json";
-
-function construireResumeVisite({ nom, voyage, ville, type, debutMs, finMs, nombrePhotos }) {
-  return {
-    type_document: "RESUME_VISITE",
-    version_photocartel: VERSION_PHOTOCARTEL,
-    date_ecriture_iso: new Date().toISOString(),
-    nom: nom || "",
-    voyage: voyage || "",
-    ville: ville || "",
-    type: type || "",
-    debutMs: debutMs || null,
-    finMs: finMs || null,
-    nombrePhotos: Number(nombrePhotos || 0),
-  };
-}
-
-function ecrireResumeVisiteServeur(cheminVisite, donnees) {
-  try {
-    fs.mkdirSync(cheminVisite, { recursive: true });
-    fs.writeFileSync(
-      path.join(cheminVisite, NOM_FICHIER_RESUME_VISITE),
-      JSON.stringify(construireResumeVisite(donnees), null, 2),
-      "utf-8"
-    );
-  } catch (error) {
-    console.warn("Résumé de visite.json non écrit :", cheminVisite, error.message);
-  }
 }
 
 function initialiserInfrastructurePhotoCartel() {
@@ -307,6 +274,19 @@ const DOSSIER_INDEX_PHOTOCARTEL = path.join(DOSSIER_RACINE_DONNEES, "Paramètres
 const FICHIER_INDEX_VISITES_PHOTOCARTEL = path.join(DOSSIER_INDEX_PHOTOCARTEL, "visites-physiques-v45.3.json");
 fs.mkdirSync(DOSSIER_INDEX_PHOTOCARTEL, { recursive: true });
 
+function chargerIndexVisitesPersistantPhotoCartel() {
+  try {
+    if (!fs.existsSync(FICHIER_INDEX_VISITES_PHOTOCARTEL)) return { dateMs: 0, visites: [] };
+    const contenu = JSON.parse(fs.readFileSync(FICHIER_INDEX_VISITES_PHOTOCARTEL, "utf8"));
+    return Array.isArray(contenu?.visites)
+      ? { dateMs: Number(contenu.dateMs || 0), visites: contenu.visites }
+      : { dateMs: 0, visites: [] };
+  } catch (error) {
+    console.warn("Index persistant des visites illisible :", error.message);
+    return { dateMs: 0, visites: [] };
+  }
+}
+
 function sauvegarderIndexVisitesPersistantPhotoCartel(index) {
   try {
     const temporaire = `${FICHIER_INDEX_VISITES_PHOTOCARTEL}.tmp`;
@@ -317,7 +297,7 @@ function sauvegarderIndexVisitesPersistantPhotoCartel(index) {
   }
 }
 
-let cacheVisitesPhysiquesPhotoCartel = { dateMs: 0, visites: [] };
+let cacheVisitesPhysiquesPhotoCartel = chargerIndexVisitesPersistantPhotoCartel();
 let actualisationVisitesPhysiquesEnCours = null;
 const DUREE_CACHE_VISITES_PHYSIQUES_MS = 30 * 60 * 1000;
 
@@ -412,13 +392,6 @@ function lireVisitesPhysiquesPhotoCartel({ forcer = false } = {}) {
   sauvegarderIndexVisitesPersistantPhotoCartel(cacheVisitesPhysiquesPhotoCartel);
   return visites;
 }
-
-// v49.1 : à chaque démarrage du serveur (donc à chaque relance du script), une
-// vraie lecture disque est effectuée immédiatement — le serveur ne fait jamais
-// confiance à un ancien fichier d'index potentiellement périmé. C'est le seul
-// moment où ce coût est payé ; pendant la session qui suit, le cache reste
-// rapide comme avant, exactement comme le travail d'optimisation l'a prévu.
-lireVisitesPhysiquesPhotoCartel({ forcer: true });
 
 function programmerActualisationVisitesPhysiquesPhotoCartel() {
   if (actualisationVisitesPhysiquesEnCours) return actualisationVisitesPhysiquesEnCours;
@@ -1159,9 +1132,6 @@ function handlerModifierIdentiteVisite(req, res) {
       nouvelleVille,
       nouveauType,
       nouvelleVisiteRapide,
-      debutMs,
-      finMs,
-      nombrePhotos,
     } = req.body || {};
 
     const nomVoyage = nettoyerSegmentCheminPhotoCartel(voyage);
@@ -1239,16 +1209,6 @@ function handlerModifierIdentiteVisite(req, res) {
         typeNouveau
       );
     }
-
-    ecrireResumeVisiteServeur(destination, {
-      nom: nomNouveau,
-      voyage: nomVoyage,
-      ville: nouvelleVille,
-      type: typeNouveau,
-      debutMs,
-      finMs,
-      nombrePhotos,
-    });
 
     try {
       const parentAncien = path.dirname(source);
@@ -1486,24 +1446,6 @@ async function handlerRangerPhotosVisites(req, res) {
         visite.photosEchecs === 0 &&
         visite.photosRangees === visite.photosCandidates,
     }));
-
-    // v49 : comme côté Android, le rangement fige nombrePhotos et finMs dans
-    // Résumé de visite.json, pour chaque visite effectivement traitée ici.
-    for (const visite of visitesResultats) {
-      if (!visite.photosCandidates) continue;
-      const cheminVisiteDestination = cheminDestinationVisiteDepuisRangement(visite);
-      if (!cheminVisiteDestination) continue;
-      ecrireResumeVisiteServeur(cheminVisiteDestination, {
-        nom: visite.nom,
-        voyage: visite.voyage,
-        ville: visite.ville,
-        type: visite.type,
-        debutMs: visite.debutMs,
-        finMs: visite.finMs,
-        nombrePhotos: visite.photosRangees,
-      });
-    }
-
     const rangementComplet = photosEchecs === 0 && photosNonAttribuees === 0;
 
     res.json({
@@ -4288,19 +4230,6 @@ async function handlerCreerVisiteMetier(req, res) {
     }
 
     const categoriesCreees = creerSousDossiersCategoriesVisite(chemin, typeVisite);
-
-    // v49 : ville affichée normalisée, comme côté Android — "Visites rapides"
-    // est un nom de dossier de stockage, jamais une ville à afficher.
-    const villeAffichee = nomVille === "Visites rapides" ? "Ville non renseignée" : nomVille;
-    ecrireResumeVisiteServeur(chemin, {
-      nom: nomVisite,
-      voyage: nomVoyage,
-      ville: villeAffichee,
-      type: typeVisite,
-      debutMs: Date.now(),
-      finMs: null,
-      nombrePhotos: 0,
-    });
 
     res.json({
       success: true,
