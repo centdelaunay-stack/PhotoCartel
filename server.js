@@ -1,3 +1,37 @@
+// PhotoCartel v62 — Resynchronisation de version uniquement. Aucun changement de code serveur.
+// PhotoCartel v61 — Resynchronisation de version uniquement (ce fichier serveur affichait encore
+// v60 alors qu'App.jsx était passé à v61 après un correctif d'affichage côté client — vignettes
+// photo/cartel + nom proposé sur l'écran de propositions de renommage). Aucun changement de code
+// serveur ce tour-ci.
+// PhotoCartel v60 — CORRECTIF CRITIQUE côté App.jsx : le bouton "Renommer un dossier" avait été
+// silencieusement débranché (revenu au placeholder). Détails complets dans App.jsx et le rapport
+// joint. Aucun changement dans ce fichier serveur ce tour-ci (déjà vérifié à jour en v59).
+// PhotoCartel v59 — AUCUN changement de code applicatif depuis v58 (revérifié, 0 bug trouvé dans
+// Server.js/App.jsx sur ce tour). Ce qui a changé : l'intégrité de mes propres outils de test.
+// 6 modules de test extraits avant les correctifs v57/v58 n'avaient jamais été régénérés et
+// validaient un code périmé — le pire cas, un test qui vérifiait sa propre constante tapée à la
+// main au lieu de celle du vrai fichier ("CORRECTIF CONFIRMÉ" annoncé à tort sur cette base.
+// Pire : un module validait activement l'ANCIEN comportement (repli silencieux d'une fonction
+// que j'avais corrigée pour lever une erreur), contredisant le vrai code. Tous régénérés et
+// revérifiés automatiquement (comparaison fonction par fonction contre le fichier actuel, pas
+// juste des dates) : 0 anomalie restante, 278/278 assertions sur du code réellement à jour.
+// PhotoCartel v58 — correctif critique : les 3 fonctions envoyant une image à OpenAI etiquetaient tout "image/jpeg" sans verifier le format reel, ce qui devenait dangereux depuis l'elargissement EXTENSIONS_IMAGE en v57 (un .heic aurait ete envoye mal etiquete). Normalisation reelle via sharp avant tout envoi, ECHEC EXPLICITE si la conversion echoue (jamais un envoi silencieux mal etiquete). LIMITE VERIFIEE : sharp ici ne decode pas le HEVC (vrai codec des .heic de telephone), seul AVIF fonctionne - confirme avec un vrai flux HEVC genere par ffmpeg. Etat inconnu sur l'environnement de Vincent. PhotoCartel v57 — correctif demandé par Vincent : EXTENSIONS_IMAGE (flux de renommage) unifiée sur EXTENSIONS_IMAGE_PHOTOCARTEL. Le renommage ignorait silencieusement les formats .heic/.heif/.gif/.bmp/.tif/.tiff. Vérifié par exécution réelle (10 assertions dédiées, dont un dossier de test avec photo .heic effectivement listée). PhotoCartel v56 — correctif : 4 versions codées en dur (v32.3 DEV, v38.12, v35.3, v37) dans les métadonnées de photos analysées, remplacées par VERSION_PHOTOCARTEL dynamique. Le schéma v18.5.3 de la fiche patrimoniale n'est PAS touché (numéro de schéma, pas de version appli). Correctif vérifié par exécution réelle : le JSON écrit contient désormais la vraie version. :
+// FAIT PAR CLAUDE : tests unitaires réels exécutés en Node sur la logique exacte des deux
+// nouvelles routes (/renommer-oeuvres/analyser et /renommer-oeuvres/confirmer), avec de vrais
+// fichiers sur disque temporaire et l'appel IA mocké (pas d'accès réseau ici). 11 assertions,
+// toutes passent : pause manuelle respectée, matching œuvre/cartel, édition manuelle prise en
+// compte, copie du cartel, gestion des doublons en cas de double-clic.
+// PAS FAIT, reste à faire par Vincent : démarrer le vrai serveur Express, cliquer réellement
+// dans l'appli (navigateur), et vérifier un vrai appel OpenAI (clé API, réseau réel).
+// Resynchronisation : ce fichier affichait encore VERSION_PHOTOCARTEL = "v47.5" alors qu'App.jsx
+// était à "v50.4" — les deux sont désormais alignés sur v50.5.
+// Ajout de deux routes pour le flux "Renommer un dossier" : /renommer-oeuvres/analyser (propose
+// un nom par œuvre via analyse IA, sans rien écrire sur disque) et /renommer-oeuvres/confirmer
+// (renomme uniquement les propositions validées côté client). L'ancienne route /renommer-oeuvres
+// (tout-automatique) reste présente, mais n'est plus appelée par le nouveau parcours.
+// Correctif suite à test réel (vrais fichiers, IA mockée) : un second appel à
+// /renommer-oeuvres/confirmer sur une œuvre déjà classée "à vérifier" créait un doublon dans
+// A_verifier_renommage au lieu d'être ignoré. Corrigé : idempotent désormais.
 // PhotoCartel v47.5 — résolution fiable de la visite physique lors d’une modification d’identité.
 // Le serveur ne relance plus un parcours physique complet à chaque consultation de la liste.
 // L’actualisation lourde est espacée et reste strictement en arrière-plan.
@@ -29,7 +63,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v47.5";
+const VERSION_PHOTOCARTEL = "v67";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1511,7 +1545,10 @@ const CATEGORIES_EGLISE = [
   "A_verifier_classification",
 ];
 
-const EXTENSIONS_IMAGE = [".jpg", ".jpeg", ".png", ".webp"];
+// Unifiée avec EXTENSIONS_IMAGE_PHOTOCARTEL (v56) : le flux de renommage ignorait
+// silencieusement les formats .heic/.heif/.gif/.bmp/.tif/.tiff, reconnus partout ailleurs
+// dans l'appli. Une seule liste de formats image désormais, pas deux qui divergent.
+const EXTENSIONS_IMAGE = Array.from(EXTENSIONS_IMAGE_PHOTOCARTEL);
 
 function estImage(fichier) {
   return EXTENSIONS_IMAGE.includes(path.extname(fichier).toLowerCase());
@@ -2552,8 +2589,46 @@ function normaliserAnalysePhoto(analyse) {
   };
 }
 
+// v57 — les trois fonctions ci-dessous envoyaient le buffer brut à OpenAI en l'étiquetant
+// systématiquement "image/jpeg", quel que soit le format réel (bug révélé par l'élargissement
+// de EXTENSIONS_IMAGE aux formats .heic/.heif/.gif/.bmp/.tif/.tiff : un cartel ou une photo dans
+// un de ces formats était envoyé à OpenAI avec une étiquette MIME fausse, ce qui pouvait faire
+// échouer l'analyse silencieusement). Normalisation en JPEG réel via sharp avant tout envoi.
+// LIMITE CONNUE ET VÉRIFIÉE : la version de sharp installée ici échoue à décoder le HEVC (le
+// codec réellement utilisé par les .heic de téléphone, Samsung comme iPhone) — seul AVIF/AV1
+// fonctionne. Sans savoir si la version de sharp chez Vincent a le même défaut, cette fonction
+// vérifie le résultat après conversion : si ce n'est PAS un vrai JPEG, elle lève une erreur
+// explicite plutôt que d'envoyer un buffer mal étiqueté à OpenAI en silence.
+async function normaliserBufferImagePourIA(buffer) {
+  const sharp = await obtenirSharpPhotoCartel();
+  if (!sharp) {
+    throw new Error(
+      "Impossible de vérifier/convertir le format de l'image (module sharp indisponible) : envoi à l'IA refusé par sécurité."
+    );
+  }
+  let bufferNormalise;
+  try {
+    bufferNormalise = await sharp(buffer).jpeg({ quality: 90 }).toBuffer();
+  } catch (error) {
+    throw new Error(
+      `Format d'image non décodable pour l'analyse IA (${error.message}). ` +
+      `Vérifie que sharp supporte ce format sur ce serveur (HEIC/HEVC notamment).`
+    );
+  }
+  const estUnVraiJpeg =
+    bufferNormalise.length > 3 &&
+    bufferNormalise[0] === 0xff &&
+    bufferNormalise[1] === 0xd8 &&
+    bufferNormalise[2] === 0xff;
+  if (!estUnVraiJpeg) {
+    throw new Error("La conversion en JPEG a échoué silencieusement : envoi à l'IA refusé par sécurité.");
+  }
+  return bufferNormalise;
+}
+
 async function classifierImageBuffer(buffer) {
-  const imageBase64 = buffer.toString("base64");
+  const bufferNormalise = await normaliserBufferImagePourIA(buffer);
+  const imageBase64 = bufferNormalise.toString("base64");
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -2667,7 +2742,8 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination) {
 }
 
 async function analyserCartelImageBuffer(buffer) {
-  const imageBase64 = buffer.toString("base64");
+  const bufferNormalise = await normaliserBufferImagePourIA(buffer);
+  const imageBase64 = bufferNormalise.toString("base64");
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -2741,7 +2817,8 @@ Format attendu :
 }
 
 async function analyserPhotoOneShotBuffer(buffer) {
-  const imageBase64 = buffer.toString("base64");
+  const bufferNormalise = await normaliserBufferImagePourIA(buffer);
+  const imageBase64 = bufferNormalise.toString("base64");
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -3264,7 +3341,7 @@ app.post("/sauvegarder-analyse-photo", upload.single("photo"), async (req, res) 
 
     const metadonnees = {
       type_document: "PHOTO_ANALYSEE",
-      version_photocartel: "v32.3 DEV",
+      version_photocartel: VERSION_PHOTOCARTEL,
       date_analyse_iso: new Date().toISOString(),
       date_analyse_locale: formaterDateHeureLocale(new Date()),
       nom_photo_original: req.file.originalname || "",
@@ -3373,7 +3450,7 @@ app.post("/finaliser-analyse-photo", upload.single("photo"), async (req, res) =>
     const metadonnees = {
       type_document: analyseModifiee ? "PHOTO_ANALYSEE_MODIFIEE" : "PHOTO_ANALYSEE",
       statut_analyse: analyseModifiee ? "MODIFIEE" : "ANALYSEE",
-      version_photocartel: "v38.12",
+      version_photocartel: VERSION_PHOTOCARTEL,
       timestamp_initial: timestampInitial,
       date_analyse_iso: new Date().toISOString(),
       date_analyse_locale: formaterDateHeureLocale(new Date()),
@@ -3430,7 +3507,7 @@ app.post("/modifier-analyse-photo", upload.single("photo"), async (req, res) => 
     const metadonnees = {
       type_document: "PHOTO_ANALYSEE_MODIFIEE",
       statut_analyse: "MODIFIEE",
-      version_photocartel: "v35.3",
+      version_photocartel: VERSION_PHOTOCARTEL,
       timestamp_initial: timestampInitial,
       date_modification_iso: new Date().toISOString(),
       date_modification_locale: formaterDateHeureLocale(new Date()),
@@ -4008,14 +4085,6 @@ app.post("/actualiser-photos-visite", upload.array("photos"), async (req, res) =
 });
 
 
-app.get("/mode-demonstration/ping", (req, res) => {
-  res.json({
-    success: true,
-    version: "v34",
-    message: "Route mode démonstration disponible",
-  });
-});
-
 async function handlerLancerModeDemonstration(req, res) {
   try {
     const dossierRacine = req.body?.dossierRacine || DOSSIER_RACINE_DONNEES;
@@ -4091,11 +4160,6 @@ async function handlerExporterModeDemonstration(req, res) {
     res.status(500).json({ success: false, error: error.message });
   }
 }
-
-app.post("/mode-demonstration/lancer", handlerLancerModeDemonstration);
-app.post("/api/mode-demonstration/lancer", handlerLancerModeDemonstration);
-app.post("/mode-demonstration/exporter", handlerExporterModeDemonstration);
-app.post("/api/mode-demonstration/exporter", handlerExporterModeDemonstration);
 
 app.post("/creer-voyage", async (req, res) => {
   try {
@@ -4392,6 +4456,222 @@ app.post("/analyser-dossier", async (req, res) => {
   }
 });
 
+// v50.5 — étape manuelle : analyse IA + proposition de nom SANS renommer sur disque.
+// Le renommage effectif n'a lieu que via /renommer-oeuvres/confirmer, après validation humaine.
+app.post("/renommer-oeuvres/analyser", async (req, res) => {
+  try {
+    console.log("APPEL BACKEND /renommer-oeuvres/analyser =", req.body);
+
+    const { cheminVisite } = req.body;
+
+    if (!cheminVisite) {
+      return res.status(400).json({ success: false, error: "cheminVisite manquant" });
+    }
+
+    if (!fs.existsSync(cheminVisite)) {
+      return res.status(400).json({
+        success: false,
+        error: "Le dossier de visite n'existe pas : " + cheminVisite,
+      });
+    }
+
+    const cheminOeuvres = path.join(cheminVisite, "Oeuvres");
+    const cheminCartels = path.join(cheminVisite, "Cartels");
+
+    if (!fs.existsSync(cheminOeuvres)) {
+      return res.status(400).json({
+        success: false,
+        error: "Le dossier Oeuvres n'existe pas : " + cheminOeuvres,
+      });
+    }
+
+    if (!fs.existsSync(cheminCartels)) {
+      return res.status(400).json({
+        success: false,
+        error: "Le dossier Cartels n'existe pas : " + cheminCartels,
+      });
+    }
+
+    const oeuvres = listerImagesDossier(cheminOeuvres);
+    const cartels = listerImagesDossier(cheminCartels);
+
+    const propositions = [];
+
+    for (const oeuvre of oeuvres) {
+      const cartel = trouverCartelLePlusProche(oeuvre, cartels);
+
+      if (!cartel) {
+        propositions.push({
+          oeuvre,
+          cartel: null,
+          aVerifier: true,
+          raison: "Aucun cartel proche",
+          nomPropose: oeuvre,
+          analyse: null,
+        });
+        continue;
+      }
+
+      try {
+        const cheminCartel = path.join(cheminCartels, cartel);
+        const bufferCartel = fs.readFileSync(cheminCartel);
+        const analyse = await analyserCartelImageBuffer(bufferCartel);
+        const nomPropose = construireNomIntelligentDepuisAnalyse(oeuvre, analyse);
+
+        propositions.push({
+          oeuvre,
+          cartel,
+          aVerifier: nomPropose.includes("A_VERIFIER_RENOMMAGE"),
+          raison: nomPropose.includes("A_VERIFIER_RENOMMAGE") ? "Analyse peu fiable" : "",
+          nomPropose,
+          analyse,
+        });
+      } catch (error) {
+        console.error("ERREUR ANALYSE PROPOSITION =", error);
+        propositions.push({
+          oeuvre,
+          cartel,
+          aVerifier: true,
+          raison: error.message,
+          nomPropose: oeuvre,
+          analyse: null,
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      cheminVisite,
+      total: oeuvres.length,
+      propositions,
+    });
+  } catch (error) {
+    console.error("ERREUR /renommer-oeuvres/analyser =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// v50.5 — étape manuelle : applique réellement le renommage, uniquement sur ce que
+// l'utilisateur a validé (propositions reçues, éventuellement éditées côté client).
+app.post("/renommer-oeuvres/confirmer", async (req, res) => {
+  try {
+    console.log("APPEL BACKEND /renommer-oeuvres/confirmer =", req.body);
+
+    const dateDebutRenommage = new Date();
+    const { cheminVisite, propositions } = req.body;
+
+    if (!cheminVisite) {
+      return res.status(400).json({ success: false, error: "cheminVisite manquant" });
+    }
+
+    if (!Array.isArray(propositions) || propositions.length === 0) {
+      return res.status(400).json({ success: false, error: "Aucune proposition à confirmer" });
+    }
+
+    const cheminOeuvres = path.join(cheminVisite, "Oeuvres");
+    const cheminCartels = path.join(cheminVisite, "Cartels");
+    const cheminVerification = path.join(cheminVisite, "A_verifier_renommage");
+
+    fs.mkdirSync(cheminVerification, { recursive: true });
+
+    let renommes = 0;
+    let aVerifier = 0;
+    const resultats = [];
+
+    for (const proposition of propositions) {
+      const { oeuvre, cartel, nomFinal, aVerifier: aVerifierDemande } = proposition;
+      const cheminOeuvre = path.join(cheminOeuvres, oeuvre);
+
+      if (!fs.existsSync(cheminOeuvre)) {
+        aVerifier += 1;
+        resultats.push({ oeuvre, success: false, raison: "Fichier introuvable" });
+        continue;
+      }
+
+      if (aVerifierDemande || !nomFinal) {
+        const cheminDejaVerifie = path.join(cheminVerification, oeuvre);
+        if (fs.existsSync(cheminDejaVerifie)) {
+          // Idempotence : déjà copié lors d'un appel précédent (double-clic, retry après
+          // erreur réseau...). On ne recrée pas de doublon "(2)".
+          aVerifier += 1;
+          resultats.push({ oeuvre, success: false, raison: "Déjà marqué à vérifier" });
+          continue;
+        }
+        const nomVerification = rendreNomUnique(cheminVerification, oeuvre);
+        fs.copyFileSync(cheminOeuvre, path.join(cheminVerification, nomVerification));
+        aVerifier += 1;
+        resultats.push({ oeuvre, success: false, raison: "Marqué à vérifier" });
+        continue;
+      }
+
+      try {
+        const nomOeuvreFinal = rendreNomUnique(cheminOeuvres, nomFinal);
+        const cheminOeuvreFinal = path.join(cheminOeuvres, nomOeuvreFinal);
+
+        fs.renameSync(cheminOeuvre, cheminOeuvreFinal);
+
+        if (cartel) {
+          const cheminCartel = path.join(cheminCartels, cartel);
+          const nomCartelFinal = nomOeuvreFinal.replace(/\.[^.]+$/i, "_CARTEL.jpg");
+          if (fs.existsSync(cheminCartel)) {
+            fs.copyFileSync(cheminCartel, path.join(cheminCartels, nomCartelFinal));
+          }
+        }
+
+        renommes += 1;
+        resultats.push({ oeuvre, nomOeuvreFinal, success: true });
+      } catch (error) {
+        console.error("ERREUR CONFIRMATION RENOMMAGE =", error);
+        const nomVerification = rendreNomUnique(cheminVerification, oeuvre);
+        fs.copyFileSync(cheminOeuvre, path.join(cheminVerification, nomVerification));
+        aVerifier += 1;
+        resultats.push({ oeuvre, success: false, error: error.message });
+      }
+    }
+
+    const dateFinRenommage = new Date();
+    const tempsRenommageSecondes = Math.round(
+      (dateFinRenommage.getTime() - dateDebutRenommage.getTime()) / 1000
+    );
+
+    const fichiersAVerifierReels = compterImagesDossier(cheminVerification);
+    const photosAnalysees = propositions.length;
+    const tauxReussite =
+      photosAnalysees > 0 ? Math.round((renommes / photosAnalysees) * 100) : 0;
+
+    const nomDossierResultat = path.basename(cheminVisite);
+    const infosCreation = extraireCreationDossierDepuisNom(nomDossierResultat);
+
+    const dashboardRenommage = {
+      statut: "RENOMMAGE TERMINÉ",
+      dossierSource: nomDossierResultat,
+      cheminResultat: cheminVisite,
+      photosAnalysees,
+      oeuvresRenommees: renommes,
+      fichiersAVerifier: fichiersAVerifierReels,
+      tauxReussite,
+      tempsRenommageSecondes,
+      debutTraitement: formaterDateHeureLocale(dateDebutRenommage),
+      finTraitement: formaterDateHeureLocale(dateFinRenommage),
+      creationDossierLocale: infosCreation.creationDossierLocale,
+      creationDossierUTC: infosCreation.creationDossierUTC,
+    };
+
+    res.json({
+      success: true,
+      total: photosAnalysees,
+      renommes,
+      aVerifier: fichiersAVerifierReels,
+      tauxReussite,
+      dashboardRenommage,
+      resultats,
+    });
+  } catch (error) {
+    console.error("ERREUR /renommer-oeuvres/confirmer =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post("/renommer-oeuvres", async (req, res) => {
   try {
     console.log("APPEL BACKEND /renommer-oeuvres =", req.body);
@@ -4670,7 +4950,7 @@ app.post("/modifier-analyse-galerie", async (req, res) => {
     const contenuModifie = {
       ...contenuExistant,
       statut_analyse: "MODIFIEE",
-      version_photocartel: "v37",
+      version_photocartel: VERSION_PHOTOCARTEL,
       date_analyse_iso: dateAnalyseIso,
       date_analyse_locale: dateAnalyseLocale,
       date_modification_iso: dateAnalyseIso,
@@ -5198,39 +5478,11 @@ app.get("/photo-analysee/:nomPhoto", async (req, res) => {
 // PhotoCartel v20.3 — filet de sécurité final Mode Démonstration.
 // Placé juste avant app.listen pour garantir que ces routes répondent en JSON.
 // Si ces réponses ne sont pas visibles dans Chrome, ce n'est pas ce server.js qui tourne.
-app.use((req, res, next) => {
-  const methode = String(req.method || "").toUpperCase();
-  const route = String(req.path || "");
-
-  if (route === "/mode-demonstration/ping" || route === "/api/mode-demonstration/ping") {
-    console.log("PING MODE DEMONSTRATION RECU =", methode, route);
-    return res.json({
-      success: true,
-      version: "v34",
-      message: "Mode démonstration disponible",
-      route,
-      methode
-    });
-  }
-
-  if (
-    methode === "POST" &&
-    (route === "/mode-demonstration/lancer" || route === "/api/mode-demonstration/lancer")
-  ) {
-    console.log("LANCER MODE DEMONSTRATION RECU =", route);
-    return handlerLancerModeDemonstration(req, res);
-  }
-
-  if (
-    methode === "POST" &&
-    (route === "/mode-demonstration/exporter" || route === "/api/mode-demonstration/exporter")
-  ) {
-    console.log("EXPORTER MODE DEMONSTRATION RECU =", route);
-    return handlerExporterModeDemonstration(req, res);
-  }
-
-  return next();
-});
+// v64 — filet de sécurité "mode démonstration" supprimé : confirmé code mort. Le client
+// (App.jsx) n'appelle jamais /mode-demonstration/ping, et lancer/exporter sont toujours
+// appelés en POST, déjà interceptés par les app.post déclarés plus haut (ligne ~1522) qui
+// répondent en premier. Ce middleware ne pouvait donc jamais s'exécuter dans un flux réel,
+// et sa branche ping répondait de toute façon une version "v34" codée en dur, obsolète.
 
 const DOSSIER_FRONTEND_DIST = path.join(__dirname, "dist");
 
