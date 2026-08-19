@@ -7,7 +7,7 @@ REM PhotoCartel - Lanceur universel DEV
 REM Aucun numero de version n'est code en dur.
 REM ===========================================
 
-set "SERVER_URL=http://127.0.0.1:3001/api/health"
+set "SERVER_URL=http://127.0.0.1:3002/api/health"
 set "VITE_URL=http://127.0.0.1:5173"
 
 cls

@@ -283,7 +283,7 @@ function App() {
   const API_BASE = (
     import.meta.env.VITE_PHOTOCARTEL_API_BASE ||
     (estServeurLocal
-      ? `http://${window.location.hostname}:3001`
+      ? `http://${window.location.hostname}:3002`
       : "https://photocartel.onrender.com")
   ).replace(/\/$/, "");
 
@@ -310,7 +310,7 @@ function App() {
       response = await fetch(API_BASE + "/health", { cache: "no-store" });
     } catch (error) {
       throw new Error(
-        `Serveur PhotoCartel inaccessible sur ${API_BASE}. Vérifie qu’il est démarré sur le port 3001.`
+        `Serveur PhotoCartel inaccessible sur ${API_BASE}. Vérifie qu’il est démarré sur le port 3002.`
       );
     }
 
