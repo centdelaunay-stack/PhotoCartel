@@ -63,7 +63,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v67";
+const VERSION_PHOTOCARTEL = "v68";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4495,10 +4495,19 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
     const oeuvres = listerImagesDossier(cheminOeuvres);
     const cartels = listerImagesDossier(cheminCartels);
 
+    // Cas simple validé le 01/09/2026 : quand le lot classifié ne contient qu'une seule
+    // œuvre et qu'un seul cartel, on les associe directement sans vérification
+    // d'horodatage (la classification IA a déjà distingué l'un de l'autre, indépendamment
+    // du nom de fichier ou de l'ordre d'envoi). Au-delà d'une seule paire, le comportement
+    // existant (matching par horodatage) reste inchangé — hors périmètre de cette version.
+    const associationDirecteLotUnique = oeuvres.length === 1 && cartels.length === 1;
+
     const propositions = [];
 
     for (const oeuvre of oeuvres) {
-      const cartel = trouverCartelLePlusProche(oeuvre, cartels);
+      const cartel = associationDirecteLotUnique
+        ? cartels[0]
+        : trouverCartelLePlusProche(oeuvre, cartels);
 
       if (!cartel) {
         propositions.push({
