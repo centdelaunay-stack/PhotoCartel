@@ -1,3 +1,14 @@
+// PhotoCartel v69 — GALERIE DES PHOTOS ANALYSÉES : index durable, côté serveur.
+// La route /photos-analysees lit et écrit le MÊME fichier d'index que la PWA
+// (_PhotoCartel_index_galerie.json, posé dans « Photos analysées »), au même
+// format, avec la même règle de tri et la même comparaison index/dossier. Le bloc
+// de logique partagée est identique caractère pour caractère à celui d'App.jsx.
+// Un seul readdirSync sert désormais à la comparaison ET au calcul de imageExiste
+// (qui coûtait un existsSync par fiche).
+// Le fichier d'index est un .json du dossier sans être une fiche : les trois
+// endroits qui filtraient sur « .json » passent maintenant par
+// estNomJsonFicheGalerie — export CSV, comptage annoncé par cette route, et
+// validation de /modifier-analyse-galerie.
 // PhotoCartel v62 — Resynchronisation de version uniquement. Aucun changement de code serveur.
 // PhotoCartel v61 — Resynchronisation de version uniquement (ce fichier serveur affichait encore
 // v60 alors qu'App.jsx était passé à v61 après un correctif d'affichage côté client — vignettes
@@ -63,7 +74,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v68";
+const VERSION_PHOTOCARTEL = "v69";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4912,7 +4923,9 @@ app.post("/modifier-analyse-galerie", async (req, res) => {
     const nomJsonInitial = path.basename(String(req.body?.nomJson || ""));
     const analyse = req.body?.analyse;
 
-    if (!nomJsonInitial || !nomJsonInitial.toLowerCase().endsWith(".json")) {
+    // v69 — estNomJsonFicheGalerie exclut le fichier d'index : une requete portant
+    // son nom aurait sinon ete traitee comme une fiche et aurait ecrase l'index.
+    if (!nomJsonInitial || !estNomJsonFicheGalerie(nomJsonInitial)) {
       return res.status(400).json({ success: false, error: "Nom du fichier JSON invalide" });
     }
 
@@ -5000,6 +5013,162 @@ app.post("/modifier-analyse-galerie", async (req, res) => {
 });
 
 
+
+// ————————————————————————————————————————————————————————————————————————
+// v69 — INDEX DE LA GALERIE DES PHOTOS ANALYSÉES
+//
+// Un fichier d'index unique, posé dans le dossier « Photos analysées » lui-même,
+// agrège les métadonnées de toutes les fiches. Il suit donc le dossier quand
+// celui-ci est copié entre C:\PhotoCartel et DCIM/PhotoCartel.
+//
+// Le bloc ci-dessous est VOLONTAIREMENT IDENTIQUE, caractère pour caractère,
+// dans App.jsx et dans server.js : c'est ce qui garantit qu'un index écrit d'un
+// côté est lu à l'identique de l'autre, et que la règle métier (quelles fiches,
+// dans quel ordre) est posée des deux côtés et pas d'un seul.
+//
+// Principe de resynchronisation : lister les noms de fichiers d'un dossier coûte
+// infiniment moins cher que d'ouvrir chaque fiche. La comparaison entre les noms
+// annoncés par l'index et les noms réellement présents suffit à détecter un
+// écart ; seules les fiches absentes de l'index sont réellement lues.
+//
+// LIMITE ASSUMÉE ET CONNUE : la comparaison porte sur les NOMS. Une fiche
+// remplacée sur place par un fichier de même nom et de contenu différent (copie
+// manuelle par câble USB par-dessus une fiche existante) n'est pas détectée.
+// ————————————————————————————————————————————————————————————————————————
+
+const NOM_FICHIER_INDEX_GALERIE = "_PhotoCartel_index_galerie.json";
+const TYPE_DOCUMENT_INDEX_GALERIE = "PHOTOCARTEL_INDEX_GALERIE";
+const VERSION_FORMAT_INDEX_GALERIE = 1;
+const DOSSIER_DESTINATION_GALERIE_ANDROID = "DCIM / PhotoCartel / Photos analysées";
+
+function estNomFichierIndexGalerie(nomFichier) {
+  return (
+    String(nomFichier || "").toLowerCase() ===
+    NOM_FICHIER_INDEX_GALERIE.toLowerCase()
+  );
+}
+
+// L'index est lui-même un .json posé dans le dossier : il ne doit JAMAIS être lu
+// comme une fiche, sous peine d'apparaître comme une entrée de la galerie.
+function estNomJsonFicheGalerie(nomFichier) {
+  const nom = String(nomFichier || "");
+  return nom.toLowerCase().endsWith(".json") && !estNomFichierIndexGalerie(nom);
+}
+
+// Forme stockée dans l'index. Volontairement dépourvue de tout ce qui dépend de
+// la plateforme (dossierDestination, imageUrl, imageUrlLocale) et de tout ce qui
+// est recalculé à chaque lecture (imageExiste) : l'index reste ainsi le même
+// fichier, quel que soit le côté qui l'a écrit.
+function normaliserFichePourIndexGalerie(fiche) {
+  return {
+    nomJson: String(fiche?.nomJson || ""),
+    nomPhoto: String(fiche?.nomPhoto || ""),
+    datePhotoIso: String(fiche?.datePhotoIso || ""),
+    datePhotoLocale: String(fiche?.datePhotoLocale || ""),
+    dateAnalyseIso: String(fiche?.dateAnalyseIso || ""),
+    dateAnalyseLocale: String(fiche?.dateAnalyseLocale || ""),
+    analyseModifiee: Boolean(fiche?.analyseModifiee),
+    analyse: fiche?.analyse || {},
+  };
+}
+
+function construireContenuIndexGalerie(fiches, versionApplication) {
+  const liste = Array.isArray(fiches) ? fiches : [];
+  return {
+    type_document: TYPE_DOCUMENT_INDEX_GALERIE,
+    version_format_index: VERSION_FORMAT_INDEX_GALERIE,
+    version_photocartel: String(versionApplication || ""),
+    date_index_iso: new Date().toISOString(),
+    nombre_fiches: liste.length,
+    fiches: liste.map(normaliserFichePourIndexGalerie),
+  };
+}
+
+// Renvoie null (et non un tableau vide) dès que l'index est absent, illisible,
+// d'un autre type ou d'un format plus ancien : un index non exploitable doit
+// conduire à une lecture complète, jamais à une galerie vide.
+function lireFichesDepuisContenuIndexGalerie(contenu) {
+  if (!contenu || typeof contenu !== "object") return null;
+  if (contenu.type_document !== TYPE_DOCUMENT_INDEX_GALERIE) return null;
+  if (Number(contenu.version_format_index) !== VERSION_FORMAT_INDEX_GALERIE) return null;
+  if (!Array.isArray(contenu.fiches)) return null;
+  return contenu.fiches
+    .filter((fiche) => fiche && estNomJsonFicheGalerie(fiche.nomJson))
+    .map(normaliserFichePourIndexGalerie);
+}
+
+// Cœur de la resynchronisation : ce que l'index annonce contre ce que le dossier
+// contient réellement. Ne lit aucun fichier.
+function comparerIndexEtDossierGalerie(fichesIndex, nomsJsonDossier) {
+  const nomsDossier = (Array.isArray(nomsJsonDossier) ? nomsJsonDossier : []).filter(
+    estNomJsonFicheGalerie
+  );
+  const ensembleDossier = new Set(nomsDossier);
+  const fiches = Array.isArray(fichesIndex) ? fichesIndex : [];
+
+  const nomsConserves = new Set();
+  const fichesConservees = [];
+  const nomsSupprimes = [];
+
+  for (const fiche of fiches) {
+    const nom = String(fiche?.nomJson || "");
+    if (!ensembleDossier.has(nom)) {
+      nomsSupprimes.push(nom);
+      continue;
+    }
+    if (nomsConserves.has(nom)) continue;
+    nomsConserves.add(nom);
+    fichesConservees.push(fiche);
+  }
+
+  const nomsAAjouter = nomsDossier.filter((nom) => !nomsConserves.has(nom));
+
+  return { fichesConservees, nomsAAjouter, nomsSupprimes };
+}
+
+// imageExiste n'est jamais lu depuis l'index : il est recalculé à partir du même
+// listing de noms qui a servi à la comparaison, donc sans aucun accès disque
+// supplémentaire, et reste exact des deux côtés.
+function appliquerPresencePhotosGalerie(fiches, nomsFichiersDossier) {
+  const ensemble = new Set(
+    Array.isArray(nomsFichiersDossier) ? nomsFichiersDossier : []
+  );
+  return (Array.isArray(fiches) ? fiches : []).map((fiche) => ({
+    ...fiche,
+    imageExiste: Boolean(fiche?.nomPhoto) && ensemble.has(fiche.nomPhoto),
+  }));
+}
+
+function trierFichesGalerie(fiches) {
+  return (Array.isArray(fiches) ? fiches : []).slice().sort((a, b) =>
+    String(b?.dateAnalyseIso || b?.nomJson || "").localeCompare(
+      String(a?.dateAnalyseIso || a?.nomJson || ""),
+      "fr",
+      { numeric: true }
+    )
+  );
+}
+
+// Signature du CONTENU STOCKÉ : sert uniquement à décider s'il faut réécrire le
+// fichier d'index. Elle ignore délibérément imageExiste, qui n'y est pas stocké.
+function signatureIndexGalerie(fiches) {
+  return JSON.stringify(
+    (Array.isArray(fiches) ? fiches : []).map(normaliserFichePourIndexGalerie)
+  );
+}
+
+// Signature de CE QUI EST AFFICHÉ : sert à décider s'il faut rafraîchir l'écran.
+// Inclut imageExiste, qui change ce que l'utilisateur voit.
+function signatureAffichageGalerie(fiches) {
+  return (Array.isArray(fiches) ? fiches : [])
+    .map(
+      (fiche) =>
+        `${fiche?.nomJson || ""}::${fiche?.dateAnalyseIso || ""}::${
+          fiche?.analyseModifiee ? "1" : "0"
+        }::${fiche?.imageExiste ? "1" : "0"}`
+    )
+    .join("|");
+}
 function estAnalyseGalerieModifiee(contenu = {}, nomJson = "", nomPhoto = "") {
   const statut = String(contenu?.statut_analyse || "").trim().toUpperCase();
   const typeDocument = String(contenu?.type_document || "").trim().toUpperCase();
@@ -5010,6 +5179,68 @@ function estAnalyseGalerieModifiee(contenu = {}, nomJson = "", nomPhoto = "") {
     typeDocument === "PHOTO_ANALYSEE_MODIFIEE" ||
     noms.includes("_PHOTO_ANALYSEE_MODIFIEE")
   );
+}
+
+// v69 — Lecture d'une fiche de la galerie côté serveur. Miroir exact de
+// construireFicheGalerieDepuisContenuJson() d'App.jsx : mêmes champs, mêmes replis.
+function lireFicheGalerieServeur(dossierDestination, nomJson) {
+  try {
+    const contenu = JSON.parse(
+      fs.readFileSync(path.join(dossierDestination, nomJson), "utf-8")
+    );
+    const nomPhoto =
+      contenu.nom_photo_sauvegardee ||
+      path.basename(nomJson, path.extname(nomJson)) + ".jpeg";
+
+    return {
+      nomJson,
+      nomPhoto,
+      datePhotoIso: contenu.date_photo_iso || "",
+      datePhotoLocale: contenu.date_photo_locale || "",
+      dateAnalyseIso: contenu.date_analyse_iso || contenu.date_modification_iso || "",
+      dateAnalyseLocale:
+        contenu.date_analyse_locale || contenu.date_modification_locale || "",
+      analyseModifiee: estAnalyseGalerieModifiee(contenu, nomJson, nomPhoto),
+      analyse: contenu.analyse || {},
+    };
+  } catch (error) {
+    console.error("ERREUR LECTURE JSON GALERIE =", nomJson, error);
+    return null;
+  }
+}
+
+function lireIndexGalerieServeur(dossierDestination) {
+  try {
+    const cheminIndex = path.join(dossierDestination, NOM_FICHIER_INDEX_GALERIE);
+    if (!fs.existsSync(cheminIndex)) return null;
+    return lireFichesDepuisContenuIndexGalerie(
+      JSON.parse(fs.readFileSync(cheminIndex, "utf-8"))
+    );
+  } catch (error) {
+    // Index absent, illisible ou d'un autre format : lecture complète.
+    console.warn("Index de la galerie non exploitable :", error.message);
+    return null;
+  }
+}
+
+function ecrireIndexGalerieServeur(dossierDestination, fiches) {
+  try {
+    fs.writeFileSync(
+      path.join(dossierDestination, NOM_FICHIER_INDEX_GALERIE),
+      JSON.stringify(
+        construireContenuIndexGalerie(fiches, VERSION_PHOTOCARTEL),
+        null,
+        2
+      ),
+      "utf-8"
+    );
+    return true;
+  } catch (error) {
+    // L'index est une optimisation : son écriture ne doit jamais faire échouer
+    // la réponse de la galerie.
+    console.warn("Écriture de l'index de la galerie impossible :", error.message);
+    return false;
+  }
 }
 
 app.get("/photos-analysees", async (req, res) => {
@@ -5030,48 +5261,45 @@ app.get("/photos-analysees", async (req, res) => {
       });
     }
 
-    const fichiersJson = fs
-      .readdirSync(dossierDestination)
-      .filter((fichier) => fichier.toLowerCase().endsWith(".json"))
-      .sort((a, b) => b.localeCompare(a, "fr", { numeric: true }));
+    // v69 — un seul listing du dossier : il sert à la fois à la comparaison avec
+    // l'index et au calcul de imageExiste (qui coûtait jusqu'ici un existsSync
+    // par fiche). Le fichier d'index est exclu des fiches par estNomJsonFicheGalerie.
+    const nomsFichiers = fs.readdirSync(dossierDestination);
+    const nomsJson = nomsFichiers.filter(estNomJsonFicheGalerie);
 
-    const photos = [];
+    const fichesIndex = lireIndexGalerieServeur(dossierDestination);
+    const { fichesConservees, nomsAAjouter } = comparerIndexEtDossierGalerie(
+      fichesIndex,
+      nomsJson
+    );
 
-    for (const nomJson of fichiersJson) {
-      try {
-        const cheminJson = path.join(dossierDestination, nomJson);
-        const contenu = JSON.parse(fs.readFileSync(cheminJson, "utf-8"));
-        const nomPhoto =
-          contenu.nom_photo_sauvegardee ||
-          path.basename(nomJson, path.extname(nomJson)) + ".jpeg";
+    const fichesAjoutees = [];
 
-        const cheminPhoto = path.join(dossierDestination, nomPhoto);
-
-        photos.push({
-          nomJson,
-          nomPhoto,
-          datePhotoIso: contenu.date_photo_iso || "",
-          datePhotoLocale: contenu.date_photo_locale || "",
-          dateAnalyseIso:
-            contenu.date_analyse_iso ||
-            contenu.date_modification_iso ||
-            "",
-          dateAnalyseLocale:
-            contenu.date_analyse_locale ||
-            contenu.date_modification_locale ||
-            "",
-          dossierDestination,
-          imageExiste: fs.existsSync(cheminPhoto),
-          imageUrl: `/photo-analysee/${encodeURIComponent(
-            nomPhoto
-          )}?dossierRacine=${encodeURIComponent(dossierRacine)}`,
-          analyseModifiee: estAnalyseGalerieModifiee(contenu, nomJson, nomPhoto),
-          analyse: contenu.analyse || {},
-        });
-      } catch (error) {
-        console.error("ERREUR LECTURE JSON GALERIE =", nomJson, error);
-      }
+    for (const nomJson of nomsAAjouter) {
+      const fiche = lireFicheGalerieServeur(dossierDestination, nomJson);
+      if (fiche) fichesAjoutees.push(fiche);
     }
+
+    const fiches = trierFichesGalerie(
+      appliquerPresencePhotosGalerie(
+        [...fichesConservees, ...fichesAjoutees],
+        nomsFichiers
+      )
+    );
+
+    if (signatureIndexGalerie(fiches) !== signatureIndexGalerie(fichesIndex)) {
+      ecrireIndexGalerieServeur(dossierDestination, fiches);
+    }
+
+    // dossierDestination et imageUrl dépendent de la machine : ils ne sont pas
+    // stockés dans l'index, ils sont reconstruits ici à chaque réponse.
+    const photos = fiches.map((fiche) => ({
+      ...fiche,
+      dossierDestination,
+      imageUrl: `/photo-analysee/${encodeURIComponent(
+        fiche.nomPhoto
+      )}?dossierRacine=${encodeURIComponent(dossierRacine)}`,
+    }));
 
     res.json({
       success: true,
@@ -5398,9 +5626,11 @@ function genererCsvAnalyses(dossierDestination) {
     return "\ufeff" + lignes.join("\r\n") + "\r\n";
   }
 
+  // v69 — le fichier d'index est un .json du dossier : il ne doit jamais produire
+  // une ligne d'export.
   const fichiersJson = fs
     .readdirSync(dossierDestination)
-    .filter((fichier) => fichier.toLowerCase().endsWith(".json"))
+    .filter(estNomJsonFicheGalerie)
     .sort((a, b) => a.localeCompare(b, "fr", { numeric: true }));
 
   for (const nomJson of fichiersJson) {
@@ -5449,7 +5679,7 @@ fs.mkdirSync(DOSSIER_EXPORTS_PHOTOCARTEL, { recursive: true });
       nombreJson: fs.existsSync(dossierDestination)
         ? fs
             .readdirSync(dossierDestination)
-            .filter((fichier) => fichier.toLowerCase().endsWith(".json")).length
+            .filter(estNomJsonFicheGalerie).length
         : 0,
     });
   } catch (error) {
