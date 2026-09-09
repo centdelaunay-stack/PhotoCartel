@@ -74,7 +74,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v74";
+const VERSION_PHOTOCARTEL = "v75";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5048,11 +5048,21 @@ function estNomFichierIndexGalerie(nomFichier) {
   );
 }
 
-// L'index est lui-même un .json posé dans le dossier : il ne doit JAMAIS être lu
-// comme une fiche, sous peine d'apparaître comme une entrée de la galerie.
+// Un index est lui-même un .json posé dans le dossier : il ne doit JAMAIS être
+// lu comme une fiche, sous peine d'apparaître comme une entrée de la galerie.
+// v75 — il y a désormais DEUX index dans « Photos analysées » (galerie et
+// recherche) : les deux sont exclus ici. Recherche exhaustive faite avant
+// correction — les six points de filtrage d'App.jsx et les huit de server.js
+// (export CSV, comptage, validation de /modifier-analyse-galerie, lecture de
+// l'index, construction de l'index de recherche) passent tous par cette seule
+// fonction, il n'existe aucun autre filtre sur « .json » dans les deux fichiers.
 function estNomJsonFicheGalerie(nomFichier) {
   const nom = String(nomFichier || "");
-  return nom.toLowerCase().endsWith(".json") && !estNomFichierIndexGalerie(nom);
+  return (
+    nom.toLowerCase().endsWith(".json") &&
+    !estNomFichierIndexGalerie(nom) &&
+    !estNomFichierIndexRecherche(nom)
+  );
 }
 
 // Forme stockée dans l'index. Volontairement dépourvue de tout ce qui dépend de
@@ -5169,6 +5179,416 @@ function signatureAffichageGalerie(fiches) {
     )
     .join("|");
 }
+
+// ————————————————————————————————————————————————————————————————————————
+// v75 — INDEX DE RECHERCHE (photos et visites)
+//
+// L'index de la galerie embarque le bloc « analyse » entier de chaque fiche :
+// une cinquantaine de champs, dont des descriptions longues. À 81 fiches c'est
+// sans conséquence ; à 20 000 photos, le parser à chaque ouverture ne tient pas
+// dans le budget de temps posé pour une recherche.
+//
+// L'index de recherche est donc un SECOND fichier, volontairement pauvre : par
+// photo, ce qui sert à filtrer et à afficher une ligne de résultat, rien de
+// plus. Le texte cherchable y est déjà normalisé (accents retirés, minuscules)
+// AU MOMENT DE L'ÉCRITURE : chercher revient alors à un includes sur une chaîne
+// courte, jamais à re-normaliser 20 000 fiches.
+//
+// Deux natures d'entrées cohabitent dans le même index :
+//   - une photo analysée porte un texte cherchable ;
+//   - une photo simplement présente dans une visite n'a ni fiche ni texte : elle
+//     reste atteignable par sa visite, sa date et son nom, jamais par mot-clé.
+// C'est le champ « analysee » qui les distingue, et l'écran de résultats affiche
+// le dénominateur pour qu'un résultat vide ne soit jamais lu comme un défaut.
+//
+// Ce bloc est VOLONTAIREMENT IDENTIQUE, caractère pour caractère, dans App.jsx
+// et dans server.js, au même titre que le bloc de l'index de la galerie : c'est
+// ce qui garantit qu'un index écrit d'un côté est lu à l'identique de l'autre.
+// ————————————————————————————————————————————————————————————————————————
+
+const NOM_FICHIER_INDEX_RECHERCHE = "_PhotoCartel_index_recherche.json";
+const TYPE_DOCUMENT_INDEX_RECHERCHE = "PHOTOCARTEL_INDEX_RECHERCHE";
+const VERSION_FORMAT_INDEX_RECHERCHE = 1;
+
+// Les deux index sont des .json posés dans le dossier sans être des fiches :
+// aucun des deux ne doit jamais être lu comme une entrée de galerie.
+function estNomFichierIndexRecherche(nomFichier) {
+  return (
+    String(nomFichier || "").toLowerCase() ===
+    NOM_FICHIER_INDEX_RECHERCHE.toLowerCase()
+  );
+}
+
+// Champs de l'analyse retenus pour le texte cherchable. Liste FERMÉE et
+// assumée : description_detaillee en est volontairement absente (c'est le champ
+// le plus lourd de la fiche, et description_courte porte déjà le même sujet).
+// Chaque entrée est un chemin « sousObjet.champ », ou un nom simple pour les
+// champs à plat des fiches anciennes.
+const CHAMPS_TEXTE_RECHERCHE = [
+  "identification.nom_ou_titre",
+  "identification.titre_original",
+  "identification.auteur_createur_architecte",
+  "identification.attribution",
+  "identification.objet_principal",
+  "identification.type_general",
+  "identification.categorie",
+  "identification.sous_type",
+  "identification.mouvement_style",
+  "identification.culture_civilisation",
+  "identification.fonction_origine",
+  "identification.pays_origine",
+  "datation.date_precise",
+  "datation.periode",
+  "datation.siecle",
+  "localisation.musee_institution",
+  "localisation.site_lieu",
+  "localisation.salle_galerie_zone",
+  "localisation.ville",
+  "localisation.region",
+  "localisation.pays",
+  "materiaux_techniques.technique",
+  "materiaux_techniques.support",
+  "materiaux_techniques.materiaux",
+  "description_visuelle.description_courte",
+  "description_visuelle.elements_visibles",
+  "description_visuelle.mots_cles",
+  "informations_museographiques.musee",
+  "informations_museographiques.numero_inventaire",
+  "analyse_patrimoniale.style",
+  "contexte_photo.pays_photo",
+  "contexte_photo.ville_photo",
+  "titre_fr",
+  "titre_en",
+  "auteur_ou_createur",
+  "musee_ou_institution",
+  "type_detecte",
+  "objet_principal",
+  "categorie",
+  "sous_type",
+  "style_ou_mouvement",
+  "technique",
+  "support",
+  "materiaux",
+  "description",
+  "elements_visibles",
+  "mots_cles",
+  "pays_origine",
+  "pays",
+  "ville",
+  "lieu_probable",
+  "pays_photo",
+  "ville_photo",
+];
+
+// Normalisation unique, employée à l'écriture de l'index ET à la saisie d'un
+// mot-clé : accents retirés, minuscules, espaces réduits. Les deux côtés
+// doivent employer exactement celle-ci, sans quoi un texte indexé et un mot
+// tapé ne se rencontrent jamais.
+function normaliserTexteRecherchePhotoCartel(texte) {
+  return String(texte || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function lireValeurAnalyseParChemin(analyse, chemin) {
+  const segments = String(chemin || "").split(".");
+  let courant = analyse;
+  for (let i = 0; i < segments.length; i += 1) {
+    if (!courant || typeof courant !== "object") return "";
+    courant = courant[segments[i]];
+  }
+  if (courant === null || courant === undefined) return "";
+  if (Array.isArray(courant)) {
+    return courant.map((element) => String(element || "")).join(" ");
+  }
+  if (typeof courant === "object") return "";
+  return String(courant);
+}
+
+// Concatène les champs retenus en une seule chaîne normalisée, sans doublon de
+// mot : c'est ce qui borne le poids de l'index, une même valeur revenant très
+// souvent dans plusieurs champs d'une même fiche.
+function construireTexteCherchable(analyse) {
+  const morceaux = [];
+  for (let i = 0; i < CHAMPS_TEXTE_RECHERCHE.length; i += 1) {
+    const valeur = lireValeurAnalyseParChemin(analyse, CHAMPS_TEXTE_RECHERCHE[i]);
+    if (valeur) morceaux.push(valeur);
+  }
+  const motsVus = new Set();
+  const mots = [];
+  const tousLesMots = normaliserTexteRecherchePhotoCartel(morceaux.join(" ")).split(" ");
+  for (let i = 0; i < tousLesMots.length; i += 1) {
+    const mot = tousLesMots[i];
+    if (!mot || motsVus.has(mot)) continue;
+    motsVus.add(mot);
+    mots.push(mot);
+  }
+  return mots.join(" ");
+}
+
+// Valeur d'affichage NON normalisée d'un champ : le tableau de résultats doit
+// montrer « Rembrandt », pas « rembrandt ». Premier chemin renseigné gagne.
+function premiereValeurAnalyseRecherche(analyse, chemins) {
+  for (let i = 0; i < chemins.length; i += 1) {
+    const valeur = lireValeurAnalyseParChemin(analyse, chemins[i]).trim();
+    if (valeur) return valeur;
+  }
+  return "";
+}
+
+// Une entrée de photo. Volontairement plate et courte — c'est ce poids-là qui
+// est multiplié par le nombre de photos.
+function construireEntreeRecherchePhoto(source) {
+  const analyse = source?.analyse || {};
+  const analysee = Boolean(source?.analysee);
+  return {
+    nomPhoto: String(source?.nomPhoto || ""),
+    nomJson: String(source?.nomJson || ""),
+    visite: String(source?.visite || ""),
+    voyage: String(source?.voyage || ""),
+    ville: String(source?.ville || ""),
+    dateIso: String(source?.dateIso || ""),
+    analysee,
+    titre: analysee
+      ? premiereValeurAnalyseRecherche(analyse, [
+          "identification.nom_ou_titre",
+          "titre_fr",
+          "identification.objet_principal",
+          "objet_principal",
+        ])
+      : "",
+    auteur: analysee
+      ? premiereValeurAnalyseRecherche(analyse, [
+          "identification.auteur_createur_architecte",
+          "auteur_ou_createur",
+        ])
+      : "",
+    institution: analysee
+      ? premiereValeurAnalyseRecherche(analyse, [
+          "localisation.musee_institution",
+          "informations_museographiques.musee",
+          "musee_ou_institution",
+        ])
+      : "",
+    type: analysee
+      ? premiereValeurAnalyseRecherche(analyse, [
+          "identification.type_general",
+          "type_detecte",
+          "identification.categorie",
+          "categorie",
+        ])
+      : "",
+    texte: analysee ? construireTexteCherchable(analyse) : "",
+  };
+}
+
+// Découpe une saisie libre en mots normalisés. Tous les mots doivent être
+// présents (ET) : « peinture rembrandt » ne ramène pas toutes les peintures.
+//
+// Deux règles indispensables, établies par un test réel sur la formulation
+// même du besoin (« toutes mes peintures de Rembrandt ») :
+//  - le « s » final d'un mot saisi est retiré, sinon « peintures » ne trouve
+//    jamais une fiche dont le type est « Peinture ». Le sens inverse marche
+//    déjà seul, la recherche étant une inclusion de sous-chaîne ;
+//  - les mots de deux lettres ou moins sont ignorés (« de », « la », « et ») :
+//    ils ne discriminent rien et, exigés en ET, feraient rendre zéro résultat
+//    à une phrase parfaitement légitime.
+function decouperMotsClesRecherche(saisie) {
+  const mots = [];
+  const bruts = normaliserTexteRecherchePhotoCartel(saisie).split(" ");
+  for (let i = 0; i < bruts.length; i += 1) {
+    const brut = bruts[i];
+    if (!brut || brut.length <= 2) continue;
+    const sansPluriel = brut.endsWith("s") && brut.length > 3 ? brut.slice(0, -1) : brut;
+    if (!mots.includes(sansPluriel)) mots.push(sansPluriel);
+  }
+  return mots;
+}
+
+// ET entre critères, OU à l'intérieur d'un critère — même règle que le moteur
+// d'EuroCartel. Les mots-clés s'additionnent en ET aux autres critères.
+function entreeCorrespondCriteresRecherche(entree, criteres) {
+  const listeVisites = Array.isArray(criteres?.visites) ? criteres.visites : [];
+  if (listeVisites.length > 0 && !listeVisites.includes(entree?.visite || "")) {
+    return false;
+  }
+
+  const listeAnnees = Array.isArray(criteres?.annees) ? criteres.annees : [];
+  if (listeAnnees.length > 0 && !listeAnnees.includes(anneeRecherchePourEntree(entree))) {
+    return false;
+  }
+
+  if (criteres?.analyseesSeulement && !entree?.analysee) return false;
+
+  const mots = Array.isArray(criteres?.mots) ? criteres.mots : [];
+  if (mots.length > 0) {
+    if (!entree?.analysee) return false;
+    const texte = String(entree?.texte || "");
+    for (let i = 0; i < mots.length; i += 1) {
+      if (!texte.includes(mots[i])) return false;
+    }
+  }
+
+  return true;
+}
+
+function filtrerEntreesRecherche(entrees, criteres) {
+  const liste = Array.isArray(entrees) ? entrees : [];
+  const resultats = [];
+  for (let i = 0; i < liste.length; i += 1) {
+    if (entreeCorrespondCriteresRecherche(liste[i], criteres)) {
+      resultats.push(liste[i]);
+    }
+  }
+  return resultats;
+}
+
+// Recherche par visite : les entrées de photos sont agrégées par visite, une
+// seule fois, à l'écriture de l'index. « Les visites où j'ai vu du Rembrandt »
+// se répond alors sur quelques centaines d'entrées, sans jamais parcourir les
+// photos.
+function construireEntreesRechercheVisites(entreesPhotos) {
+  const liste = Array.isArray(entreesPhotos) ? entreesPhotos : [];
+  const parVisite = new Map();
+
+  for (let i = 0; i < liste.length; i += 1) {
+    const entree = liste[i];
+    const cle = String(entree?.visite || "");
+    if (!cle) continue;
+    if (!parVisite.has(cle)) {
+      parVisite.set(cle, {
+        visite: cle,
+        voyage: String(entree?.voyage || ""),
+        ville: String(entree?.ville || ""),
+        nombrePhotos: 0,
+        nombreAnalysees: 0,
+        dateDebutIso: "",
+        dateFinIso: "",
+        motsVus: new Set(),
+      });
+    }
+    const agregat = parVisite.get(cle);
+    agregat.nombrePhotos += 1;
+    if (entree?.analysee) agregat.nombreAnalysees += 1;
+
+    const date = String(entree?.dateIso || "");
+    if (date) {
+      if (!agregat.dateDebutIso || date < agregat.dateDebutIso) agregat.dateDebutIso = date;
+      if (!agregat.dateFinIso || date > agregat.dateFinIso) agregat.dateFinIso = date;
+    }
+
+    const mots = String(entree?.texte || "").split(" ");
+    for (let j = 0; j < mots.length; j += 1) {
+      if (mots[j]) agregat.motsVus.add(mots[j]);
+    }
+  }
+
+  const resultat = [];
+  parVisite.forEach((agregat) => {
+    resultat.push({
+      visite: agregat.visite,
+      voyage: agregat.voyage,
+      ville: agregat.ville,
+      nombrePhotos: agregat.nombrePhotos,
+      nombreAnalysees: agregat.nombreAnalysees,
+      dateDebutIso: agregat.dateDebutIso,
+      dateFinIso: agregat.dateFinIso,
+      analysee: agregat.nombreAnalysees > 0,
+      dateIso: agregat.dateDebutIso,
+      texte: Array.from(agregat.motsVus).join(" "),
+    });
+  });
+  return resultat;
+}
+
+function construireContenuIndexRecherche(entreesPhotos, versionApplication) {
+  const photos = (Array.isArray(entreesPhotos) ? entreesPhotos : []).map(
+    construireEntreeRecherchePhoto
+  );
+  return {
+    type_document: TYPE_DOCUMENT_INDEX_RECHERCHE,
+    version_format_index: VERSION_FORMAT_INDEX_RECHERCHE,
+    version_photocartel: String(versionApplication || ""),
+    date_index_iso: new Date().toISOString(),
+    nombre_photos: photos.length,
+    nombre_photos_analysees: photos.filter((entree) => entree.analysee).length,
+    photos,
+    visites: construireEntreesRechercheVisites(photos),
+  };
+}
+
+// Renvoie null (et non un tableau vide) dès que l'index est absent, illisible,
+// d'un autre type ou d'un format plus ancien : un index inexploitable doit
+// conduire à une reconstruction, jamais à une recherche silencieusement vide.
+function lireEntreesDepuisContenuIndexRecherche(contenu) {
+  if (!contenu || typeof contenu !== "object") return null;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_INDEX_RECHERCHE) return null;
+  if (Number(contenu.version_format_index) !== VERSION_FORMAT_INDEX_RECHERCHE) return null;
+  if (!Array.isArray(contenu.photos)) return null;
+
+  const photos = contenu.photos
+    .filter((entree) => entree && typeof entree === "object")
+    .map(relireEntreeRecherchePhoto);
+
+  return {
+    photos,
+    visites: Array.isArray(contenu.visites)
+      ? contenu.visites
+      : construireEntreesRechercheVisites(photos),
+  };
+}
+
+// Relecture d'une entrée DÉJÀ indexée : le texte cherchable y est stocké tel
+// quel et ne doit surtout pas être reconstruit (l'analyse n'est plus là).
+function relireEntreeRecherchePhoto(entree) {
+  return {
+    nomPhoto: String(entree?.nomPhoto || ""),
+    nomJson: String(entree?.nomJson || ""),
+    visite: String(entree?.visite || ""),
+    voyage: String(entree?.voyage || ""),
+    ville: String(entree?.ville || ""),
+    dateIso: String(entree?.dateIso || ""),
+    analysee: Boolean(entree?.analysee),
+    titre: String(entree?.titre || ""),
+    auteur: String(entree?.auteur || ""),
+    institution: String(entree?.institution || ""),
+    type: String(entree?.type || ""),
+    texte: String(entree?.texte || ""),
+  };
+}
+
+// Extensions d'image reconnues par l'index de recherche. Même liste que celle
+// déjà employée par le flux de renommage, posée ici pour que le chemin PC et le
+// chemin Android appliquent exactement la même règle.
+const EXTENSIONS_IMAGE_INDEX_RECHERCHE = [
+  ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp", ".tif", ".tiff",
+];
+
+function estFichierImageRecherche(nomFichier) {
+  const nom = String(nomFichier || "").toLowerCase();
+  return EXTENSIONS_IMAGE_INDEX_RECHERCHE.some((extension) => nom.endsWith(extension));
+}
+
+// L'année d'une entrée : celle de sa date quand elle est connue, sinon celle
+// que porte le nom de fichier des photos prises à l'appareil
+// (IMG_20260809_114601.jpg). Une photo de visite jamais analysée n'a pas de
+// date lue — l'ouvrir pour la connaître coûterait exactement ce que l'index est
+// censé éviter.
+function anneeRecherchePourEntree(entree) {
+  const date = String(entree?.dateIso || "");
+  if (date.length >= 4) return date.slice(0, 4);
+  const correspondance = String(entree?.nomPhoto || "").match(/(19|20)\d{6}/);
+  return correspondance ? correspondance[0].slice(0, 4) : "";
+}
+
+function signatureIndexRecherche(entrees) {
+  return (Array.isArray(entrees) ? entrees : [])
+    .map((entree) => `${entree?.nomPhoto || ""}::${entree?.analysee ? "1" : "0"}`)
+    .join("|");
+}
 function estAnalyseGalerieModifiee(contenu = {}, nomJson = "", nomPhoto = "") {
   const statut = String(contenu?.statut_analyse || "").trim().toUpperCase();
   const typeDocument = String(contenu?.type_document || "").trim().toUpperCase();
@@ -5202,6 +5622,9 @@ function lireFicheGalerieServeur(dossierDestination, nomJson) {
         contenu.date_analyse_locale || contenu.date_modification_locale || "",
       analyseModifiee: estAnalyseGalerieModifiee(contenu, nomJson, nomPhoto),
       analyse: contenu.analyse || {},
+      // v75 — nom de la photo d'origine, employé pour rattacher la fiche à sa
+      // visite par comparaison de noms. Non stocké dans l'index de la galerie.
+      nomPhotoOriginal: contenu.nom_photo_original || "",
     };
   } catch (error) {
     console.error("ERREUR LECTURE JSON GALERIE =", nomJson, error);
@@ -5242,6 +5665,170 @@ function ecrireIndexGalerieServeur(dossierDestination, fiches) {
     return false;
   }
 }
+
+
+// ————————————————————————————————————————————————————————————————————————
+// v75 — INDEX DE RECHERCHE, CHEMIN PC
+//
+// Même fichier d'index que celui écrit par le téléphone, au même format et lu
+// par le même bloc de code : un index construit d'un côté est exploitable de
+// l'autre. Le dossier reste l'unique source ; l'index n'est qu'une avance.
+// ————————————————————————————————————————————————————————————————————————
+
+function cheminFichierIndexRechercheServeur(dossierDestination) {
+  return path.join(dossierDestination, NOM_FICHIER_INDEX_RECHERCHE);
+}
+
+function lireIndexRechercheServeur(dossierDestination) {
+  try {
+    const chemin = cheminFichierIndexRechercheServeur(dossierDestination);
+    if (!fs.existsSync(chemin)) return null;
+    return JSON.parse(fs.readFileSync(chemin, "utf-8"));
+  } catch (error) {
+    return null;
+  }
+}
+
+function ecrireIndexRechercheServeur(dossierDestination, contenuIndex) {
+  try {
+    fs.writeFileSync(
+      cheminFichierIndexRechercheServeur(dossierDestination),
+      JSON.stringify(contenuIndex),
+      "utf-8"
+    );
+    return true;
+  } catch (error) {
+    console.warn("Écriture de l'index de recherche impossible :", error.message);
+    return false;
+  }
+}
+
+// Parcourt Voyages/<voyage>/<ville>/<visite> et « Visites à rattacher » en ne
+// lisant QUE des noms de fichiers, jamais leur contenu.
+function listerPhotosVisitesServeur(racineEffective) {
+  const photos = [];
+
+  const listerVisite = (cheminVisite, nomVisite, nomVoyage, nomVille) => {
+    let entrees = [];
+    try {
+      entrees = fs.readdirSync(cheminVisite, { withFileTypes: true });
+    } catch (error) {
+      return;
+    }
+    for (const entree of entrees) {
+      if (!entree.isFile()) continue;
+      if (!estFichierImageRecherche(entree.name)) continue;
+      photos.push({
+        nomPhoto: entree.name,
+        nomJson: "",
+        visite: nomVisite,
+        voyage: nomVoyage,
+        ville: nomVille,
+        dateIso: "",
+        analysee: false,
+      });
+    }
+  };
+
+  const cheminVoyages = path.join(racineEffective, "Voyages");
+  if (fs.existsSync(cheminVoyages)) {
+    for (const voyage of fs.readdirSync(cheminVoyages, { withFileTypes: true })) {
+      if (!voyage.isDirectory()) continue;
+      const cheminVoyage = path.join(cheminVoyages, voyage.name);
+      for (const ville of fs.readdirSync(cheminVoyage, { withFileTypes: true })) {
+        if (!ville.isDirectory()) continue;
+        const cheminVille = path.join(cheminVoyage, ville.name);
+        for (const visite of fs.readdirSync(cheminVille, { withFileTypes: true })) {
+          if (!visite.isDirectory()) continue;
+          listerVisite(
+            path.join(cheminVille, visite.name),
+            visite.name,
+            voyage.name,
+            ville.name
+          );
+        }
+      }
+    }
+  }
+
+  const cheminARattacher = path.join(racineEffective, "Visites à rattacher");
+  if (fs.existsSync(cheminARattacher)) {
+    for (const visite of fs.readdirSync(cheminARattacher, { withFileTypes: true })) {
+      if (!visite.isDirectory()) continue;
+      listerVisite(path.join(cheminARattacher, visite.name), visite.name, "", "");
+    }
+  }
+
+  return photos;
+}
+
+function construireIndexRechercheServeur(racineEffective, dossierDestination) {
+  const fiches = [];
+  if (fs.existsSync(dossierDestination)) {
+    for (const nomJson of fs.readdirSync(dossierDestination).filter(estNomJsonFicheGalerie)) {
+      const fiche = lireFicheGalerieServeur(dossierDestination, nomJson);
+      if (fiche) fiches.push(fiche);
+    }
+  }
+
+  const photosVisites = listerPhotosVisitesServeur(racineEffective);
+
+  const visiteParNomPhoto = new Map();
+  for (const photo of photosVisites) {
+    if (!visiteParNomPhoto.has(photo.nomPhoto)) visiteParNomPhoto.set(photo.nomPhoto, photo);
+  }
+
+  const nomsPhotosAnalysees = new Set();
+  const sources = [];
+
+  for (const fiche of fiches) {
+    const origine = visiteParNomPhoto.get(String(fiche.nomPhotoOriginal || "")) || null;
+    if (fiche.nomPhotoOriginal) nomsPhotosAnalysees.add(fiche.nomPhotoOriginal);
+    sources.push({
+      nomPhoto: fiche.nomPhoto,
+      nomJson: fiche.nomJson,
+      visite: origine?.visite || "",
+      voyage: origine?.voyage || "",
+      ville: origine?.ville || "",
+      dateIso: fiche.datePhotoIso || fiche.dateAnalyseIso || "",
+      analysee: true,
+      analyse: fiche.analyse || {},
+    });
+  }
+
+  for (const photo of photosVisites) {
+    if (nomsPhotosAnalysees.has(photo.nomPhoto)) continue;
+    sources.push(photo);
+  }
+
+  return construireContenuIndexRecherche(sources, VERSION_PHOTOCARTEL);
+}
+
+app.get("/index-recherche", async (req, res) => {
+  try {
+    const dossierRacine = req.query.dossierRacine || DOSSIER_RACINE_DONNEES;
+    const racineEffective = cheminDansRacineDonnees(dossierRacine) || DOSSIER_RACINE_DONNEES;
+    const dossierDestination = path.join(racineEffective, "Photos analysées");
+    const reconstruire = String(req.query.reconstruire || "") === "1";
+
+    if (!reconstruire) {
+      const existant = lireIndexRechercheServeur(dossierDestination);
+      if (lireEntreesDepuisContenuIndexRecherche(existant)) {
+        return res.json({ success: true, version: VERSION_PHOTOCARTEL, index: existant });
+      }
+    }
+
+    const index = construireIndexRechercheServeur(racineEffective, dossierDestination);
+    if (fs.existsSync(dossierDestination)) {
+      ecrireIndexRechercheServeur(dossierDestination, index);
+    }
+
+    return res.json({ success: true, version: VERSION_PHOTOCARTEL, index });
+  } catch (error) {
+    console.error("ERREUR /index-recherche =", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 app.get("/photos-analysees", async (req, res) => {
   try {
