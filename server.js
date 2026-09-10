@@ -1,3 +1,18 @@
+
+// PhotoCartel v77 — RÉPARATION : UN APPEL À L'IA NE PEUT PLUS BLOQUER LE RENOMMAGE.
+// Reproduit sur la v75 (vrai processus, service IA local qui ne répond pas) : le tri
+// de deux photos n'avait toujours rien renvoyé au bout de 150 s. Cause : les appels
+// à l'IA du tri et de l'analyse des cartels n'avaient aucune borne propre et
+// héritaient de celle du SDK OpenAI, 10 minutes par tentative et deux relances,
+// soit jusqu'à 30 minutes par photo. Désormais, pour classifierImageBuffer et
+// analyserCartelImageBuffer seulement : 40 s par appel et une seule relance
+// (OPTIONS_APPEL_IA_BORNE). « Analyser une photo » n'est pas concerné.
+// Une photo dont l'IA ne répond pas à temps est rangée « à vérifier », comme
+// avant, mais sa raison est maintenant renvoyée à l'app en langage courant
+// (erreursTri) au lieu d'être perdue dans le journal. Le journal du serveur
+// indique la durée de chaque étape du tri, pour que le prochain incident sur
+// Render nomme sa cause.
+//
 // PhotoCartel v69 — GALERIE DES PHOTOS ANALYSÉES : index durable, côté serveur.
 // La route /photos-analysees lit et écrit le MÊME fichier d'index que la PWA
 // (_PhotoCartel_index_galerie.json, posé dans « Photos analysées »), au même
@@ -74,7 +89,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v75";
+const VERSION_PHOTOCARTEL = "v77";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1540,6 +1555,24 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// v77 — borne propre aux appels IA du tri et de l'analyse des cartels (renommage,
+// classification). Sans elle, le SDK attend 10 minutes par tentative et relance deux fois.
+const DELAI_MAX_APPEL_IA_MS = 40000;
+const OPTIONS_APPEL_IA_BORNE = { timeout: DELAI_MAX_APPEL_IA_MS, maxRetries: 1 };
+
+// v77 — raison d'échec d'un appel IA dite en langage courant (affichée dans l'app).
+function raisonLisibleErreurIA(error) {
+  const nom = String(error?.constructor?.name || error?.name || "");
+  const message = String(error?.message || error || "");
+  if (/Timeout/i.test(nom) || /timed out|timeout/i.test(message)) {
+    return "l'analyse IA n'a pas répondu à temps";
+  }
+  if (/APIConnectionError/.test(nom) || /^Connection error/i.test(message)) {
+    return "le service d'analyse IA est injoignable";
+  }
+  return message || "erreur inconnue";
+}
+
 const CATEGORIES_MUSEE = [
   "Oeuvres",
   "Cartels",
@@ -2684,12 +2717,12 @@ Ne réponds que par le nom exact de la catégorie.
       },
     ],
     temperature: 0,
-  });
+  }, OPTIONS_APPEL_IA_BORNE);
 
   return nettoyerCategorie(response.choices[0].message.content);
 }
 
-async function trierMinimalPourRenommage(fichiers, cheminDestination) {
+async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri = []) {
   const cheminOeuvres = path.join(cheminDestination, "Oeuvres");
   const cheminCartels = path.join(cheminDestination, "Cartels");
   const cheminVerification = path.join(cheminDestination, "A_verifier_renommage");
@@ -2713,8 +2746,13 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination) {
   };
 
   for (const fichier of fichiers) {
+    const debutPhotoMs = Date.now();
     try {
       const categorie = await classifierImageBuffer(fichier.buffer);
+      console.log(
+        `TRI RENOMMAGE ${fichier.originalname} : ${categorie} en ${Date.now() - debutPhotoMs} ms ` +
+        `(${fichier.buffer?.length || 0} octets)`
+      );
 
       if (categorie === "Oeuvres") {
         stats.Oeuvres += 1;
@@ -2736,8 +2774,10 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination) {
       console.error("ERREUR TRI MINIMAL =", error);
       console.error("FICHIER EN ERREUR =", fichier.originalname);
       console.error("DOSSIER VERIFICATION =", cheminVerification);
+      console.error(`TRI RENOMMAGE ${fichier.originalname} : échec après ${Date.now() - debutPhotoMs} ms`);
 
       stats.A_verifier_renommage += 1;
+      erreursTri.push({ fichier: fichier.originalname, raison: raisonLisibleErreurIA(error) });
 
       const nomFinal = rendreNomUnique(cheminVerification, fichier.originalname);
       const cheminFinalErreur = path.join(cheminVerification, nomFinal);
@@ -2821,7 +2861,7 @@ Format attendu :
       },
     ],
     temperature: 0,
-  });
+  }, OPTIONS_APPEL_IA_BORNE);
 
   const contenu = response.choices[0].message.content;
   return extraireJsonDepuisTexte(contenu);
@@ -3728,10 +3768,14 @@ app.post("/renommer-oeuvres-fichiers", upload.array("oeuvres"), async (req, res)
 
     fs.mkdirSync(cheminDestination, { recursive: true });
 
+    const debutTriMs = Date.now();
+    const erreursTri = [];
     const statsTri = await trierMinimalPourRenommage(
       req.files,
-      cheminDestination
+      cheminDestination,
+      erreursTri
     );
+    console.log(`TRI RENOMMAGE terminé : ${req.files.length} photo(s) en ${Date.now() - debutTriMs} ms`);
 
     res.json({
       success: true,
@@ -3739,6 +3783,7 @@ app.post("/renommer-oeuvres-fichiers", upload.array("oeuvres"), async (req, res)
       cheminDestination,
       dossierSortie: nomDossierSortie,
       statsTri,
+      erreursTri,
     });
   } catch (error) {
     console.error("ERREUR /renommer-oeuvres-fichiers =", error);
@@ -4552,7 +4597,7 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
           oeuvre,
           cartel,
           aVerifier: true,
-          raison: error.message,
+          raison: raisonLisibleErreurIA(error),
           nomPropose: oeuvre,
           analyse: null,
         });
