@@ -1,3 +1,5 @@
+// PhotoCartel v79 — serveur inchangé depuis la v78 hormis le numéro de version.
+//
 // PhotoCartel v78 — RECHERCHE : l'index couvre toute la racine (toutes profondeurs,
 // dossiers techniques exclus) et se pose à la racine, où il voyage avec la copie vers
 // DCIM. Nouveaux : /mots-ajoutes-recherche (lecture C, fichier durable à la racine) et
@@ -94,7 +96,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v78";
+const VERSION_PHOTOCARTEL = "v79";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
