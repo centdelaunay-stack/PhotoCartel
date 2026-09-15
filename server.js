@@ -96,7 +96,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v81";
+const VERSION_PHOTOCARTEL = "v82";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1567,6 +1567,35 @@ const openai = new OpenAI({
 const DELAI_MAX_APPEL_IA_MS = 40000;
 const OPTIONS_APPEL_IA_BORNE = { timeout: DELAI_MAX_APPEL_IA_MS, maxRetries: 1 };
 
+// v82 — P1 : taille maximale envoyee a l'IA, mesuree sur les photos reelles de Vincent
+// (paires oeuvre + cartel, 4000x3000). 768 px suffit a repondre "oeuvre ou cartel" ;
+// 1536 px garde lisibles les lignes secondaires d'un cartel dense ou mal eclaire.
+// "Analyser une photo" (analyserPhotoOneShotBuffer) n'est PAS concerne : pleine resolution.
+const TAILLE_IA_TRI_PX = 768;
+const TAILLE_IA_CARTEL_PX = 1536;
+
+// v82 — P2 : les appels IA du tri et de l'analyse des cartels partent ensemble au lieu
+// de s'enchainer. L'ordre des resultats est conserve, les ecritures restent sequentielles.
+const LIMITE_APPELS_IA_PARALLELES = 4;
+
+// v82 — execute traiter() sur chaque element avec au plus "limite" appels en vol,
+// et renvoie les resultats dans l'ordre des elements. traiter() ne doit jamais lever.
+async function executerEnParalleleOrdonne(elements, limite, traiter) {
+  const resultats = new Array(elements.length);
+  let prochainIndex = 0;
+  const travailleur = async () => {
+    while (true) {
+      const index = prochainIndex;
+      prochainIndex += 1;
+      if (index >= elements.length) return;
+      resultats[index] = await traiter(elements[index], index);
+    }
+  };
+  const nombreTravailleurs = Math.max(1, Math.min(limite, elements.length));
+  await Promise.all(Array.from({ length: nombreTravailleurs }, () => travailleur()));
+  return resultats;
+}
+
 // v77 — raison d'échec d'un appel IA dite en langage courant (affichée dans l'app).
 function raisonLisibleErreurIA(error) {
   const nom = String(error?.constructor?.name || error?.name || "");
@@ -2650,7 +2679,7 @@ function normaliserAnalysePhoto(analyse) {
 // fonctionne. Sans savoir si la version de sharp chez Vincent a le même défaut, cette fonction
 // vérifie le résultat après conversion : si ce n'est PAS un vrai JPEG, elle lève une erreur
 // explicite plutôt que d'envoyer un buffer mal étiqueté à OpenAI en silence.
-async function normaliserBufferImagePourIA(buffer) {
+async function normaliserBufferImagePourIA(buffer, tailleMaxPixels = null) {
   const sharp = await obtenirSharpPhotoCartel();
   if (!sharp) {
     throw new Error(
@@ -2659,7 +2688,16 @@ async function normaliserBufferImagePourIA(buffer) {
   }
   let bufferNormalise;
   try {
-    bufferNormalise = await sharp(buffer).jpeg({ quality: 90 }).toBuffer();
+    const traitement = sharp(buffer);
+    const traitementDimensionne = tailleMaxPixels
+      ? traitement.resize({
+          width: tailleMaxPixels,
+          height: tailleMaxPixels,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+      : traitement;
+    bufferNormalise = await traitementDimensionne.jpeg({ quality: 90 }).toBuffer();
   } catch (error) {
     throw new Error(
       `Format d'image non décodable pour l'analyse IA (${error.message}). ` +
@@ -2678,7 +2716,7 @@ async function normaliserBufferImagePourIA(buffer) {
 }
 
 async function classifierImageBuffer(buffer) {
-  const bufferNormalise = await normaliserBufferImagePourIA(buffer);
+  const bufferNormalise = await normaliserBufferImagePourIA(buffer, TAILLE_IA_TRI_PX);
   const imageBase64 = bufferNormalise.toString("base64");
 
   const response = await openai.chat.completions.create({
@@ -2752,14 +2790,39 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri
     A_verifier_renommage: 0,
   };
 
-  for (const fichier of fichiers) {
-    const debutPhotoMs = Date.now();
+  // v82 — P2 : les appels IA de tri partent ensemble (au plus LIMITE_APPELS_IA_PARALLELES
+  // en vol). Les ecritures et la numerotation restent sequentielles et dans l'ordre d'origine,
+  // sans quoi rendreNomUnique verrait un dossier incomplet.
+  const debutTriMs = Date.now();
+  const classementsParFichier = await executerEnParalleleOrdonne(
+    fichiers,
+    LIMITE_APPELS_IA_PARALLELES,
+    async (fichier) => {
+      const debutPhotoMs = Date.now();
+      try {
+        const categorie = await classifierImageBuffer(fichier.buffer);
+        console.log(
+          `TRI RENOMMAGE ${fichier.originalname} : ${categorie} en ${Date.now() - debutPhotoMs} ms ` +
+          `(${fichier.buffer?.length || 0} octets)`
+        );
+        return { categorie, erreur: null, dureeMs: Date.now() - debutPhotoMs };
+      } catch (error) {
+        return { categorie: null, erreur: error, dureeMs: Date.now() - debutPhotoMs };
+      }
+    }
+  );
+  console.log(
+    `TRI RENOMMAGE : ${fichiers.length} photo(s) classées en ${Date.now() - debutTriMs} ms ` +
+    `(${LIMITE_APPELS_IA_PARALLELES} appels IA en parallèle au plus)`
+  );
+
+  for (let indexFichier = 0; indexFichier < fichiers.length; indexFichier += 1) {
+    const fichier = fichiers[indexFichier];
+    const classement = classementsParFichier[indexFichier];
+    const debutPhotoMs = Date.now() - (classement?.dureeMs || 0);
     try {
-      const categorie = await classifierImageBuffer(fichier.buffer);
-      console.log(
-        `TRI RENOMMAGE ${fichier.originalname} : ${categorie} en ${Date.now() - debutPhotoMs} ms ` +
-        `(${fichier.buffer?.length || 0} octets)`
-      );
+      if (classement?.erreur) throw classement.erreur;
+      const categorie = classement.categorie;
 
       if (categorie === "Oeuvres") {
         stats.Oeuvres += 1;
@@ -2800,7 +2863,7 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri
 }
 
 async function analyserCartelImageBuffer(buffer) {
-  const bufferNormalise = await normaliserBufferImagePourIA(buffer);
+  const bufferNormalise = await normaliserBufferImagePourIA(buffer, TAILLE_IA_CARTEL_PX);
   const imageBase64 = bufferNormalise.toString("base64");
 
   const response = await openai.chat.completions.create({
@@ -4567,10 +4630,46 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
 
     const propositions = [];
 
-    for (const oeuvre of oeuvres) {
-      const cartel = associationDirecteLotUnique
+    // v82 — P2 : les associations sont calculees d'abord, puis les analyses de cartels
+    // partent ensemble. Les propositions sont assemblees ensuite, dans l'ordre des oeuvres.
+    const associations = oeuvres.map((oeuvre) => ({
+      oeuvre,
+      cartel: associationDirecteLotUnique
         ? cartels[0]
-        : trouverCartelLePlusProche(oeuvre, cartels);
+        : trouverCartelLePlusProche(oeuvre, cartels),
+    }));
+
+    const debutAnalysesMs = Date.now();
+    const analysesParOeuvre = await executerEnParalleleOrdonne(
+      associations,
+      LIMITE_APPELS_IA_PARALLELES,
+      async ({ oeuvre, cartel }) => {
+        if (!cartel) return { analyse: null, erreur: null };
+        const debutAnalyseMs = Date.now();
+        try {
+          const cheminCartel = path.join(cheminCartels, cartel);
+          const bufferCartel = fs.readFileSync(cheminCartel);
+          const analyse = await analyserCartelImageBuffer(bufferCartel);
+          console.log(
+            `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : ${Date.now() - debutAnalyseMs} ms`
+          );
+          return { analyse, erreur: null };
+        } catch (error) {
+          console.error(
+            `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : échec après ${Date.now() - debutAnalyseMs} ms`
+          );
+          return { analyse: null, erreur: error };
+        }
+      }
+    );
+    console.log(
+      `ANALYSE CARTELS : ${associations.length} oeuvre(s) traitée(s) en ${Date.now() - debutAnalysesMs} ms ` +
+      `(${LIMITE_APPELS_IA_PARALLELES} appels IA en parallèle au plus)`
+    );
+
+    for (let indexOeuvre = 0; indexOeuvre < associations.length; indexOeuvre += 1) {
+      const { oeuvre, cartel } = associations[indexOeuvre];
+      const resultatAnalyse = analysesParOeuvre[indexOeuvre];
 
       if (!cartel) {
         propositions.push({
@@ -4585,9 +4684,8 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
       }
 
       try {
-        const cheminCartel = path.join(cheminCartels, cartel);
-        const bufferCartel = fs.readFileSync(cheminCartel);
-        const analyse = await analyserCartelImageBuffer(bufferCartel);
+        if (resultatAnalyse.erreur) throw resultatAnalyse.erreur;
+        const analyse = resultatAnalyse.analyse;
         const nomPropose = construireNomIntelligentDepuisAnalyse(oeuvre, analyse);
 
         propositions.push({
