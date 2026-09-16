@@ -96,7 +96,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v83";
+const VERSION_PHOTOCARTEL = "v85";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2862,6 +2862,123 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri
   return stats;
 }
 
+// v84 — lecture du cartel par OCR local, puis appel IA sur le TEXTE seul.
+// v85 — plus AUCUNE image n'est envoyee par le renommage. Sous le seuil de caracteres,
+// la photo part en A_VERIFIER_RENOMMAGE avec sa raison, sans aucun appel IA.
+const LANGUES_OCR_CARTEL = process.env.PHOTOCARTEL_OCR_LANGUES || "fra+eng+deu+por";
+const SEUIL_CARACTERES_OCR_CARTEL = Number(process.env.PHOTOCARTEL_OCR_SEUIL_CARACTERES || 15);
+const CHEMIN_LANGUES_OCR_CARTEL = process.env.PHOTOCARTEL_OCR_CHEMIN_LANGUES || "";
+
+let chargeurTesseractPhotoCartel = null;
+let travailleurOcrPhotoCartel = null;
+let fileOcrPhotoCartel = Promise.resolve();
+
+// Meme forme que obtenirSharpPhotoCartel : absent = on le dit une fois et on continue sans.
+async function obtenirTesseractPhotoCartel() {
+  if (chargeurTesseractPhotoCartel === false) return null;
+  if (chargeurTesseractPhotoCartel) return chargeurTesseractPhotoCartel;
+  try {
+    const moduleTesseract = await import("tesseract.js");
+    chargeurTesseractPhotoCartel = moduleTesseract.default || moduleTesseract;
+    return chargeurTesseractPhotoCartel;
+  } catch (error) {
+    chargeurTesseractPhotoCartel = false;
+    console.warn(
+      "Module tesseract.js absent : aucun cartel ne sera lu, les photos partiront en A_VERIFIER_RENOMMAGE."
+    );
+    return null;
+  }
+}
+
+// Un seul travailleur OCR, cree a la premiere demande et garde ensuite.
+// Trois protections, toutes exigees par des echecs reproduits en recette :
+//  - errorHandler, sans lequel tesseract.js relance l'erreur hors promesse et arrete le serveur ;
+//  - une borne de demarrage, car un echec de chargement de langue ne resout jamais la promesse ;
+//  - un drapeau definitif, pour ne pas retenter a chaque cartel.
+const DELAI_MAX_DEMARRAGE_OCR_MS = 20000;
+let ocrCartelIndisponible = false;
+let demarrageOcrPhotoCartel = null;
+
+async function obtenirTravailleurOcrPhotoCartel() {
+  if (ocrCartelIndisponible) return null;
+  if (travailleurOcrPhotoCartel) return travailleurOcrPhotoCartel;
+  if (demarrageOcrPhotoCartel) return demarrageOcrPhotoCartel;
+
+  demarrageOcrPhotoCartel = (async () => {
+    const tesseract = await obtenirTesseractPhotoCartel();
+    if (!tesseract?.createWorker) {
+      ocrCartelIndisponible = true;
+      return null;
+    }
+
+    const langues = LANGUES_OCR_CARTEL.split("+").map((langue) => langue.trim()).filter(Boolean);
+    const options = {
+      errorHandler: (erreur) => {
+        ocrCartelIndisponible = true;
+        console.error(`OCR CARTEL : travailleur indisponible — ${erreur?.message || erreur}`);
+      },
+      ...(CHEMIN_LANGUES_OCR_CARTEL ? { langPath: CHEMIN_LANGUES_OCR_CARTEL, gzip: false } : {}),
+    };
+
+    const debutMs = Date.now();
+    let minuterie = null;
+    try {
+      const borne = new Promise((resolve) => {
+        minuterie = setTimeout(() => resolve("BORNE_DEMARRAGE_OCR"), DELAI_MAX_DEMARRAGE_OCR_MS);
+      });
+      const resultat = await Promise.race([tesseract.createWorker(langues, 1, options), borne]);
+      if (resultat === "BORNE_DEMARRAGE_OCR" || !resultat?.recognize) {
+        ocrCartelIndisponible = true;
+        console.error(
+          `OCR CARTEL : travailleur non démarré en ${Date.now() - debutMs} ms — ` +
+          "aucun cartel ne sera lu, les photos partiront en A_VERIFIER_RENOMMAGE."
+        );
+        return null;
+      }
+      travailleurOcrPhotoCartel = resultat;
+      console.log(`OCR CARTEL : travailleur prêt en ${Date.now() - debutMs} ms (langues ${langues.join("+")})`);
+      return travailleurOcrPhotoCartel;
+    } catch (error) {
+      ocrCartelIndisponible = true;
+      console.error(
+        `OCR CARTEL : création du travailleur impossible (${error?.message || error}) — ` +
+        "aucun cartel ne sera lu, les photos partiront en A_VERIFIER_RENOMMAGE."
+      );
+      return null;
+    } finally {
+      if (minuterie) clearTimeout(minuterie);
+      demarrageOcrPhotoCartel = null;
+    }
+  })();
+
+  return demarrageOcrPhotoCartel;
+}
+
+// L'OCR est un travail processeur : on le passe en file, un cartel a la fois,
+// meme quand les analyses partent en parallele.
+function executerOcrEnSerie(tache) {
+  const resultat = fileOcrPhotoCartel.then(tache, tache);
+  fileOcrPhotoCartel = resultat.then(() => undefined, () => undefined);
+  return resultat;
+}
+
+// Ne leve jamais : un echec d'OCR renvoie un texte vide, donc le repli image.
+async function lireTexteCartelParOCR(buffer, nomCartel = "") {
+  const debutMs = Date.now();
+  try {
+    const travailleur = await obtenirTravailleurOcrPhotoCartel();
+    if (!travailleur) return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs };
+    const resultat = await executerOcrEnSerie(() => travailleur.recognize(buffer));
+    const texte = String(resultat?.data?.text || "").trim();
+    const caracteres = texte.replace(/\s/g, "").length;
+    console.log(`OCR CARTEL ${nomCartel} : ${caracteres} caractère(s) en ${Date.now() - debutMs} ms`);
+    return { texte, caracteres, dureeMs: Date.now() - debutMs };
+  } catch (error) {
+    console.error(`OCR CARTEL ${nomCartel} : échec après ${Date.now() - debutMs} ms — ${error?.message || error}`);
+    return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs };
+  }
+}
+
 async function analyserCartelImageBuffer(buffer) {
   const bufferNormalise = await normaliserBufferImagePourIA(buffer);
   const imageBase64 = bufferNormalise.toString("base64");
@@ -3317,11 +3434,10 @@ Format attendu :
   }
 }
 
-app.post("/analyse-cartel", async (req, res) => {
-  try {
-    const { texte } = req.body;
-
-    const prompt = `
+// v84 — P2 : le prompt texte de /analyse-cartel devient une fonction partagée,
+// utilisée par la route ET par la lecture OCR du renommage. Aucun prompt dupliqué.
+function construirePromptAnalyseCartelTexte(texte) {
+  return `
 Tu es un expert de catalogage muséal.
 
 Analyse le texte OCR d'un cartel de musée.
@@ -3379,14 +3495,23 @@ Texte OCR :
 
 ${texte}
 `;
+}
 
-    const response = await openai.responses.create({
-      model: "gpt-5-mini",
-      input: prompt,
-    });
+// v84 — analyse d'un cartel à partir de son TEXTE : aucune image n'est envoyée.
+async function analyserCartelTexteOCR(texte) {
+  const response = await openai.responses.create({
+    model: "gpt-5-mini",
+    input: construirePromptAnalyseCartelTexte(texte),
+  }, OPTIONS_APPEL_IA_BORNE);
 
-    const contenu = response.output_text;
-    const resultat = JSON.parse(contenu);
+  return extraireJsonDepuisTexte(response.output_text);
+}
+
+app.post("/analyse-cartel", async (req, res) => {
+  try {
+    const { texte } = req.body;
+
+    const resultat = await analyserCartelTexteOCR(texte);
 
     res.json({
       success: true,
@@ -4649,11 +4774,28 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
         try {
           const cheminCartel = path.join(cheminCartels, cartel);
           const bufferCartel = fs.readFileSync(cheminCartel);
-          const analyse = await analyserCartelImageBuffer(bufferCartel);
+
+          // v85 — le cartel est lu en local, et SEUL son texte part à l'IA.
+          const lecture = await lireTexteCartelParOCR(bufferCartel, cartel);
+
+          if (lecture.caracteres < SEUIL_CARACTERES_OCR_CARTEL) {
+            const raisonOcr =
+              `cartel illisible : ${lecture.caracteres} caractère(s) lus, minimum ${SEUIL_CARACTERES_OCR_CARTEL}`;
+            console.log(
+              `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : aucun appel IA — ${raisonOcr} ` +
+              `(OCR ${lecture.dureeMs} ms, total ${Date.now() - debutAnalyseMs} ms)`
+            );
+            return { analyse: null, erreur: null, raisonOcr };
+          }
+
+          const analyse = await analyserCartelTexteOCR(lecture.texte);
+
           console.log(
-            `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : ${Date.now() - debutAnalyseMs} ms`
+            `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : voie texte, ` +
+            `${lecture.caracteres} caractère(s) lus en ${lecture.dureeMs} ms, ` +
+            `total ${Date.now() - debutAnalyseMs} ms`
           );
-          return { analyse, erreur: null };
+          return { analyse, erreur: null, raisonOcr: null };
         } catch (error) {
           console.error(
             `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : échec après ${Date.now() - debutAnalyseMs} ms`
@@ -4687,12 +4829,14 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
         if (resultatAnalyse.erreur) throw resultatAnalyse.erreur;
         const analyse = resultatAnalyse.analyse;
         const nomPropose = construireNomIntelligentDepuisAnalyse(oeuvre, analyse);
+        const aVerifier = nomPropose.includes("A_VERIFIER_RENOMMAGE");
 
         propositions.push({
           oeuvre,
           cartel,
-          aVerifier: nomPropose.includes("A_VERIFIER_RENOMMAGE"),
-          raison: nomPropose.includes("A_VERIFIER_RENOMMAGE") ? "Analyse peu fiable" : "",
+          aVerifier,
+          // v85 — quand l'OCR n'a pas lu assez, la raison le dit avec son compte de caractères.
+          raison: aVerifier ? (resultatAnalyse.raisonOcr || "Analyse peu fiable") : "",
           nomPropose,
           analyse,
         });
@@ -6494,4 +6638,8 @@ const PORT = process.env.PORT || 3002;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`PhotoCartel API démarrée sur le port ${PORT}`);
   console.log("Dossier racine données PhotoCartel =", DOSSIER_RACINE_DONNEES);
+
+  // v84 — le travailleur OCR est préparé au démarrage : ni son chargement,
+  // ni son échec éventuel ne doivent être payés pendant un renommage.
+  obtenirTravailleurOcrPhotoCartel().catch(() => {});
 });
