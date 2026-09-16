@@ -96,7 +96,7 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v82";
+const VERSION_PHOTOCARTEL = "v83";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1567,12 +1567,12 @@ const openai = new OpenAI({
 const DELAI_MAX_APPEL_IA_MS = 40000;
 const OPTIONS_APPEL_IA_BORNE = { timeout: DELAI_MAX_APPEL_IA_MS, maxRetries: 1 };
 
-// v82 — P1 : taille maximale envoyee a l'IA, mesuree sur les photos reelles de Vincent
-// (paires oeuvre + cartel, 4000x3000). 768 px suffit a repondre "oeuvre ou cartel" ;
-// 1536 px garde lisibles les lignes secondaires d'un cartel dense ou mal eclaire.
-// "Analyser une photo" (analyserPhotoOneShotBuffer) n'est PAS concerne : pleine resolution.
+// v82 — P1 : taille maximale envoyee a l'IA pour le tri, mesuree sur les photos reelles
+// de Vincent (paires oeuvre + cartel, 4000x3000) : 768 px suffit a repondre "oeuvre ou cartel".
+// v83 — le cartel repart en PLEINE DEFINITION : c'est de lui que sort tout le nom propose,
+// aucune perte de texte n'est acceptee. Seul le tri est reduit.
+// "Analyser une photo" (analyserPhotoOneShotBuffer) n'a jamais ete concerne : pleine resolution.
 const TAILLE_IA_TRI_PX = 768;
-const TAILLE_IA_CARTEL_PX = 1536;
 
 // v82 — P2 : les appels IA du tri et de l'analyse des cartels partent ensemble au lieu
 // de s'enchainer. L'ordre des resultats est conserve, les ecritures restent sequentielles.
@@ -2863,7 +2863,7 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri
 }
 
 async function analyserCartelImageBuffer(buffer) {
-  const bufferNormalise = await normaliserBufferImagePourIA(buffer, TAILLE_IA_CARTEL_PX);
+  const bufferNormalise = await normaliserBufferImagePourIA(buffer);
   const imageBase64 = bufferNormalise.toString("base64");
 
   const response = await openai.chat.completions.create({
