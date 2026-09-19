@@ -96,7 +96,10 @@ import { exec } from "child_process";
 dotenv.config();
 
 const app = express();
-const VERSION_PHOTOCARTEL = "v85";
+// v89 — renommage : (1) appariement oeuvre/cartel par l'heure de prise de vue EXIF, le nom du fichier ne servant
+// plus qu'a defaut ; (2) noms de fichiers accentues envoyes par le navigateur relus en UTF-8 (« SÃ£o » -> « São ») ;
+// (3) le nom final ne recopie plus jamais l'ancien nom du fichier : horodatage du nom ou EXIF, sinon aucun.
+const VERSION_PHOTOCARTEL = "v89";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -241,8 +244,21 @@ const DOSSIER_SOURCE_MODE_DEMONSTRATION = path.join(
 );
 
 
+// Interne — multer lit le nom de fichier envoye par le navigateur en latin1 : « São » devenait « SÃ£o ».
+// Le nom est relu en UTF-8 ici, une seule fois, pour toutes les routes qui recoivent des photos.
+// Un nom deja correct n'est pas touche (sa relecture produirait un caractere invalide).
+function corrigerEncodageNomRecu(nom) {
+  const texte = String(nom || "");
+  const relu = Buffer.from(texte, "latin1").toString("utf8");
+  return relu.includes("\uFFFD") ? texte : relu;
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
+  fileFilter: (req, fichier, rappel) => {
+    fichier.originalname = corrigerEncodageNomRecu(fichier.originalname);
+    rappel(null, true);
+  },
 });
 
 app.use(cors());
@@ -1880,6 +1896,57 @@ function timestampVersDate(timestamp) {
   return date;
 }
 
+// Interne — heure de prise de vue lue dans l'EXIF (DateTimeOriginal, sinon DateTime).
+// Lecture directe de l'en-tete JPEG, sans dependance nouvelle. Renvoie "AAAAMMJJHHMMSS" ou "".
+function lireHorodatageExifPriseDeVue(cheminFichier) {
+  try {
+    if (!cheminFichier || !fs.existsSync(cheminFichier)) return "";
+    const fd = fs.openSync(cheminFichier, "r");
+    const tampon = Buffer.alloc(262144);
+    const lus = fs.readSync(fd, tampon, 0, tampon.length, 0);
+    fs.closeSync(fd);
+    const b = tampon.subarray(0, lus);
+    if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return "";
+    let pos = 2;
+    while (pos + 4 <= b.length) {
+      if (b[pos] !== 0xff) return "";
+      const marqueur = b[pos + 1];
+      const taille = b.readUInt16BE(pos + 2);
+      if (marqueur === 0xe1 && b.toString("latin1", pos + 4, pos + 10) === "Exif\0\0") {
+        const t = pos + 10;
+        const le = b.toString("latin1", t, t + 2) === "II";
+        const u16 = (o) => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
+        const u32 = (o) => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
+        const lireIfd = (debut) => {
+          const tags = {};
+          if (t + debut + 2 > b.length) return tags;
+          const n = u16(t + debut);
+          for (let i = 0; i < n; i += 1) {
+            const e = t + debut + 2 + i * 12;
+            if (e + 12 > b.length) break;
+            tags[u16(e)] = { type: u16(e + 2), nombre: u32(e + 4), valeur: u32(e + 8) };
+          }
+          return tags;
+        };
+        const lireTexte = (tag) =>
+          tag && tag.type === 2 && t + tag.valeur + 19 <= b.length
+            ? b.toString("latin1", t + tag.valeur, t + tag.valeur + 19)
+            : "";
+        const ifd0 = lireIfd(u32(t + 4));
+        const ifdExif = ifd0[0x8769] ? lireIfd(ifd0[0x8769].valeur) : {};
+        const brut = lireTexte(ifdExif[0x9003]) || lireTexte(ifd0[0x0132]);
+        const m = brut.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+        return m ? m.slice(1).join("") : "";
+      }
+      if (marqueur === 0xda) return "";
+      pos += 2 + taille;
+    }
+    return "";
+  } catch (e) {
+    return "";
+  }
+}
+
 function distanceTimestampSecondes(fichierA, fichierB) {
   const a = extraireTimestampComparable(fichierA);
   const b = extraireTimestampComparable(fichierB);
@@ -1892,7 +1959,24 @@ function distanceTimestampSecondes(fichierA, fichierB) {
   return Math.abs(dateA.getTime() - dateB.getTime()) / 1000;
 }
 
-function trouverCartelLePlusProche(oeuvre, cartelsDisponibles) {
+function distanceEntreHorodatages(a, b) {
+  const dateA = timestampVersDate(a);
+  const dateB = timestampVersDate(b);
+  if (!dateA || !dateB) return Number.MAX_SAFE_INTEGER;
+  return Math.abs(dateA.getTime() - dateB.getTime()) / 1000;
+}
+
+// Interne — l'heure EXIF des deux photos prime ; a defaut, l'heure lue dans le nom (comportement v85).
+function distancePriseDeVueSecondes(oeuvre, cartel, cheminOeuvres, cheminCartels) {
+  if (cheminOeuvres && cheminCartels) {
+    const exifOeuvre = lireHorodatageExifPriseDeVue(path.join(cheminOeuvres, oeuvre));
+    const exifCartel = lireHorodatageExifPriseDeVue(path.join(cheminCartels, cartel));
+    if (exifOeuvre && exifCartel) return distanceEntreHorodatages(exifOeuvre, exifCartel);
+  }
+  return distanceTimestampSecondes(oeuvre, cartel);
+}
+
+function trouverCartelLePlusProche(oeuvre, cartelsDisponibles, cheminOeuvres = "", cheminCartels = "") {
   const FENETRE_MAX_ASSOCIATION = 60;
 
   if (!cartelsDisponibles.length) return null;
@@ -1901,7 +1985,7 @@ function trouverCartelLePlusProche(oeuvre, cartelsDisponibles) {
   let meilleureDistance = Number.MAX_SAFE_INTEGER;
 
   for (const cartel of cartelsDisponibles) {
-    const distance = distanceTimestampSecondes(oeuvre, cartel);
+    const distance = distancePriseDeVueSecondes(oeuvre, cartel, cheminOeuvres, cheminCartels);
 
     if (distance < meilleureDistance) {
       meilleur = cartel;
@@ -1916,13 +2000,21 @@ function trouverCartelLePlusProche(oeuvre, cartelsDisponibles) {
   return meilleur;
 }
 
-function construireNomIntelligentDepuisAnalyse(fichierOeuvre, analyse) {
+function construireNomIntelligentDepuisAnalyse(fichierOeuvre, analyse, cheminOeuvre = "") {
   const extension = path.extname(fichierOeuvre).toLowerCase() || ".jpg";
-  const timestamp = normaliserTimestampDepuisNomFichier(fichierOeuvre);
+  // Interne — si le nom ne porte pas d'horodatage, l'heure EXIF de prise de vue le remplace.
+  const timestampNom = normaliserTimestampDepuisNomFichier(fichierOeuvre);
+  const exifOeuvre = /^\d{8}_\d{6}$/.test(timestampNom) ? "" : lireHorodatageExifPriseDeVue(cheminOeuvre);
+  // Interne — seul un vrai horodatage ouvre le nom final ; l'ancien nom du fichier n'y est jamais recopie.
+  // Il reste en tete des noms A_VERIFIER_RENOMMAGE, pour qu'on retrouve la photo.
+  const timestamp = exifOeuvre
+    ? `${exifOeuvre.slice(0, 8)}_${exifOeuvre.slice(8, 14)}`
+    : /^\d{8}_\d{6}$/.test(timestampNom) ? timestampNom : "";
+  const prefixeAVerifier = timestamp || timestampNom;
   const confiance = Number(analyse?.confidence || 0);
 
   if (!analyse || confiance < 0.5) {
-    return `${timestamp}, A_VERIFIER_RENOMMAGE${extension}`;
+    return `${prefixeAVerifier}, A_VERIFIER_RENOMMAGE${extension}`;
   }
 
   const morceaux = [];
@@ -1935,8 +2027,8 @@ function construireNomIntelligentDepuisAnalyse(fichierOeuvre, analyse) {
   if (titre) morceaux.push(`'${titre}'`);
   if (date) morceaux.push(date);
 
-  if (morceaux.length <= 1) {
-    return `${timestamp}, A_VERIFIER_RENOMMAGE${extension}`;
+  if (morceaux.length <= (timestamp ? 1 : 0)) {
+    return `${prefixeAVerifier}, A_VERIFIER_RENOMMAGE${extension}`;
   }
 
   return morceaux.join(", ") + extension;
@@ -4761,7 +4853,7 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
       oeuvre,
       cartel: associationDirecteLotUnique
         ? cartels[0]
-        : trouverCartelLePlusProche(oeuvre, cartels),
+        : trouverCartelLePlusProche(oeuvre, cartels, cheminOeuvres, cheminCartels),
     }));
 
     const debutAnalysesMs = Date.now();
@@ -4828,7 +4920,7 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
       try {
         if (resultatAnalyse.erreur) throw resultatAnalyse.erreur;
         const analyse = resultatAnalyse.analyse;
-        const nomPropose = construireNomIntelligentDepuisAnalyse(oeuvre, analyse);
+        const nomPropose = construireNomIntelligentDepuisAnalyse(oeuvre, analyse, path.join(cheminOeuvres, oeuvre));
         const aVerifier = nomPropose.includes("A_VERIFIER_RENOMMAGE");
 
         propositions.push({
@@ -5037,7 +5129,7 @@ app.post("/renommer-oeuvres", async (req, res) => {
     let erreursOcrJson = 0;
 
     for (const oeuvre of oeuvres) {
-      const cartel = trouverCartelLePlusProche(oeuvre, cartels);
+      const cartel = trouverCartelLePlusProche(oeuvre, cartels, cheminOeuvres, cheminCartels);
 
       const cheminOeuvre = path.join(cheminOeuvres, oeuvre);
 
@@ -5062,7 +5154,7 @@ app.post("/renommer-oeuvres", async (req, res) => {
 
         const nomOeuvreFinal = rendreNomUnique(
           cheminOeuvres,
-          construireNomIntelligentDepuisAnalyse(oeuvre, analyse)
+          construireNomIntelligentDepuisAnalyse(oeuvre, analyse, cheminOeuvre)
         );
 
         const cheminOeuvreFinal = path.join(cheminOeuvres, nomOeuvreFinal);
