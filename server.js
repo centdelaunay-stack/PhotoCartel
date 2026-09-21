@@ -99,7 +99,10 @@ const app = express();
 // v89 — renommage : (1) appariement oeuvre/cartel par l'heure de prise de vue EXIF, le nom du fichier ne servant
 // plus qu'a defaut ; (2) noms de fichiers accentues envoyes par le navigateur relus en UTF-8 (« SÃ£o » -> « São ») ;
 // (3) le nom final ne recopie plus jamais l'ancien nom du fichier : horodatage du nom ou EXIF, sinon aucun.
-const VERSION_PHOTOCARTEL = "v89";
+// v90 — renommage : la lecture de chaque cartel est limitée à 4 s. Au-delà, elle est arrêtée, le moteur OCR
+// relancé et l'œuvre part en « À vérifier » avec la raison « cartel trop long à lire ». Seuil retenu sur mesure :
+// 70 photos jamais renommées, meilleur rapport durée / œuvres renommées entre 2,4 s et 10 s.
+const VERSION_PHOTOCARTEL = "v90";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3054,13 +3057,34 @@ function executerOcrEnSerie(tache) {
   return resultat;
 }
 
-// Ne leve jamais : un echec d'OCR renvoie un texte vide, donc le repli image.
+// v90 — durée de lecture maximale d'un cartel (hors attente dans la file OCR).
+const LIMITE_LECTURE_OCR_CARTEL_MS = Number(process.env.PHOTOCARTEL_OCR_LIMITE_LECTURE_MS || 4000);
+
+// Ne leve jamais : un echec d'OCR renvoie un texte vide.
+// v90 — la limite ne compte que la lecture elle-même : le chronomètre part quand le cartel sort de la file.
+// Une lecture arrêtée ne peut pas être interrompue autrement qu'en arrêtant le moteur : il est relancé
+// pour le cartel suivant (le travailleur est obtenu DANS la file, jamais avant).
 async function lireTexteCartelParOCR(buffer, nomCartel = "") {
   const debutMs = Date.now();
   try {
-    const travailleur = await obtenirTravailleurOcrPhotoCartel();
-    if (!travailleur) return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs };
-    const resultat = await executerOcrEnSerie(() => travailleur.recognize(buffer));
+    let lectureArretee = false;
+    const resultat = await executerOcrEnSerie(async () => {
+      const travailleur = await obtenirTravailleurOcrPhotoCartel();
+      if (!travailleur) return null;
+      let minuterie = null;
+      const borne = new Promise((resolve) => {
+        minuterie = setTimeout(() => resolve("BORNE_LECTURE_OCR"), LIMITE_LECTURE_OCR_CARTEL_MS);
+      });
+      const lecture = await Promise.race([travailleur.recognize(buffer), borne]);
+      clearTimeout(minuterie);
+      if (lecture !== "BORNE_LECTURE_OCR") return lecture;
+      lectureArretee = true;
+      console.log(`OCR CARTEL ${nomCartel} : lecture arrêtée à ${LIMITE_LECTURE_OCR_CARTEL_MS} ms, moteur relancé`);
+      if (travailleurOcrPhotoCartel === travailleur) travailleurOcrPhotoCartel = null;
+      await travailleur.terminate().catch(() => {});
+      return null;
+    });
+    if (!resultat) return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs, lectureArretee };
     const texte = String(resultat?.data?.text || "").trim();
     const caracteres = texte.replace(/\s/g, "").length;
     console.log(`OCR CARTEL ${nomCartel} : ${caracteres} caractère(s) en ${Date.now() - debutMs} ms`);
@@ -4871,8 +4895,9 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
           const lecture = await lireTexteCartelParOCR(bufferCartel, cartel);
 
           if (lecture.caracteres < SEUIL_CARACTERES_OCR_CARTEL) {
-            const raisonOcr =
-              `cartel illisible : ${lecture.caracteres} caractère(s) lus, minimum ${SEUIL_CARACTERES_OCR_CARTEL}`;
+            const raisonOcr = lecture.lectureArretee
+              ? `cartel trop long à lire (plus de ${LIMITE_LECTURE_OCR_CARTEL_MS / 1000} s)`
+              : `cartel illisible : ${lecture.caracteres} caractère(s) lus, minimum ${SEUIL_CARACTERES_OCR_CARTEL}`;
             console.log(
               `ANALYSE CARTEL ${cartel} (oeuvre ${oeuvre}) : aucun appel IA — ${raisonOcr} ` +
               `(OCR ${lecture.dureeMs} ms, total ${Date.now() - debutAnalyseMs} ms)`

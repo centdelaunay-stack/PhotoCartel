@@ -274,7 +274,10 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // v89 — renommage : (1) appariement oeuvre/cartel par l'heure de prise de vue EXIF, le nom du fichier ne servant
 // plus qu'a defaut ; (2) noms de fichiers accentues envoyes par le navigateur relus en UTF-8 (« SÃ£o » -> « São ») ;
 // (3) le nom final ne recopie plus jamais l'ancien nom du fichier : horodatage du nom ou EXIF, sinon aucun.
-const VERSION_PHOTOCARTEL = "v89";
+// v90 — renommage : la lecture de chaque cartel est limitée à 4 s. Au-delà, elle est arrêtée, le moteur OCR
+// relancé et l'œuvre part en « À vérifier » avec la raison « cartel trop long à lire ». Seuil retenu sur mesure :
+// 70 photos jamais renommées, meilleur rapport durée / œuvres renommées entre 2,4 s et 10 s.
+const VERSION_PHOTOCARTEL = "v90";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
