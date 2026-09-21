@@ -277,7 +277,10 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // v90 — renommage : la lecture de chaque cartel est limitée à 4 s. Au-delà, elle est arrêtée, le moteur OCR
 // relancé et l'œuvre part en « À vérifier » avec la raison « cartel trop long à lire ». Seuil retenu sur mesure :
 // 70 photos jamais renommées, meilleur rapport durée / œuvres renommées entre 2,4 s et 10 s.
-const VERSION_PHOTOCARTEL = "v90";
+// v91 — renommage d'un dossier (PC) : le renommage part de lui-même à la fin de l'analyse IA (plus de
+// second clic « Valider et renommer ») ; l'écran de fin titre « Dossier « X » renommé » et affiche l'emplacement ;
+// les « À vérifier » sont déplacés (et non plus copiés) : le sous-dossier Oeuvres ne contient que les renommées.
+const VERSION_PHOTOCARTEL = "v91";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
@@ -9965,11 +9968,9 @@ async function lancerAnalyseRenommage() {
       return;
     }
 
-    setPropositionsRenommage(data.propositions);
-    setMessageRenommage(
-      `${data.propositions.length} proposition(s) générée(s). Vérifie puis valide le renommage.`
-    );
-    amenerEtapeALaVue("etape-renommage");
+    // v91 — plus de validation manuelle : le renommage part de lui-même avec les noms proposés.
+    setAnalyseRenommageEnCours(false);
+    await validerRenommage(data.propositions);
   } catch (error) {
     if (!operation.estActive()) return;
     console.error(error);
@@ -9987,10 +9988,11 @@ async function lancerAnalyseRenommage() {
 }
 
 // v50.5 — étape 6 : validation manuelle. N'écrit sur disque QUE ce que l'utilisateur valide ici.
-async function validerRenommage() {
+async function validerRenommage(propositionsForcees = null) {
   const cheminVisite = cheminRenommagePrepareRef.current || cheminRenommagePrepare;
+  const propositionsAValider = propositionsForcees || propositionsRenommage;
 
-  if (!cheminVisite || !propositionsRenommage) return;
+  if (!cheminVisite || !propositionsAValider) return;
 
   // v77 — un résultat arrivé après « Accueil » est ignoré. La requête n'est pas annulée :
   // le renommage sur disque, une fois lancé, va au bout.
@@ -10000,7 +10002,7 @@ async function validerRenommage() {
     setConfirmationRenommageEnCours(true);
     setMessageRenommage("Renommage en cours...");
 
-    const propositions = propositionsRenommage.map((proposition) => ({
+    const propositions = propositionsAValider.map((proposition) => ({
       oeuvre: proposition.oeuvre,
       cartel: proposition.cartel,
       nomFinal: proposition.nomPropose,
@@ -10030,6 +10032,10 @@ async function validerRenommage() {
     setMessageRenommage(
       `Renommage terminé : ${data.renommes} œuvres renommées, ${data.aVerifier} à vérifier.`
     );
+    // v91 — l'écran de fin s'ouvre en haut : titre et emplacement du dossier visibles d'emblée.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
+    }
   } catch (error) {
     if (!operation.estActive()) return;
     console.error(error);
@@ -13896,8 +13902,12 @@ const validerNouvelleVisite = async () => {
         <div style={styles.resultatSucces}>
           <div style={styles.resultatIconeSucces}>✓</div>
           <div>
-            <h2 style={styles.resultatTitre}>Renommage terminé</h2>
-            <p style={styles.resultatTexte}>Le renommage des œuvres est terminé.</p>
+            <h2 style={styles.resultatTitre}>
+              Dossier « {dossierRenommage || dashboardRenommage.dossierSource} » renommé
+            </h2>
+            <p style={{ ...styles.resultatTexte, wordBreak: "break-all" }}>
+              {dashboardRenommage.cheminResultat}
+            </p>
           </div>
         </div>
 

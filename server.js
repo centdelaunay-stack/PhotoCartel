@@ -102,7 +102,10 @@ const app = express();
 // v90 — renommage : la lecture de chaque cartel est limitée à 4 s. Au-delà, elle est arrêtée, le moteur OCR
 // relancé et l'œuvre part en « À vérifier » avec la raison « cartel trop long à lire ». Seuil retenu sur mesure :
 // 70 photos jamais renommées, meilleur rapport durée / œuvres renommées entre 2,4 s et 10 s.
-const VERSION_PHOTOCARTEL = "v90";
+// v91 — renommage d'un dossier (PC) : le renommage part de lui-même à la fin de l'analyse IA (plus de
+// second clic « Valider et renommer ») ; l'écran de fin titre « Dossier « X » renommé » et affiche l'emplacement ;
+// les « À vérifier » sont déplacés (et non plus copiés) : le sous-dossier Oeuvres ne contient que les renommées.
+const VERSION_PHOTOCARTEL = "v91";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5015,7 +5018,9 @@ app.post("/renommer-oeuvres/confirmer", async (req, res) => {
 
       if (!fs.existsSync(cheminOeuvre)) {
         aVerifier += 1;
-        resultats.push({ oeuvre, success: false, raison: "Fichier introuvable" });
+        // v91 — une œuvre déjà déplacée en « À vérifier » par un appel précédent n'est pas « introuvable ».
+        const dejaDeplacee = fs.existsSync(path.join(cheminVerification, oeuvre));
+        resultats.push({ oeuvre, success: false, raison: dejaDeplacee ? "Déjà marqué à vérifier" : "Fichier introuvable" });
         continue;
       }
 
@@ -5028,8 +5033,9 @@ app.post("/renommer-oeuvres/confirmer", async (req, res) => {
           resultats.push({ oeuvre, success: false, raison: "Déjà marqué à vérifier" });
           continue;
         }
+        // v91 — déplacée, et non plus copiée : le sous-dossier Oeuvres ne garde que les œuvres renommées.
         const nomVerification = rendreNomUnique(cheminVerification, oeuvre);
-        fs.copyFileSync(cheminOeuvre, path.join(cheminVerification, nomVerification));
+        fs.renameSync(cheminOeuvre, path.join(cheminVerification, nomVerification));
         aVerifier += 1;
         resultats.push({ oeuvre, success: false, raison: "Marqué à vérifier" });
         continue;
