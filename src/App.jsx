@@ -280,7 +280,14 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // v91 — renommage d'un dossier (PC) : le renommage part de lui-même à la fin de l'analyse IA (plus de
 // second clic « Valider et renommer ») ; l'écran de fin titre « Dossier « X » renommé » et affiche l'emplacement ;
 // les « À vérifier » sont déplacés (et non plus copiés) : le sous-dossier Oeuvres ne contient que les renommées.
-const VERSION_PHOTOCARTEL = "v91";
+// v92 — renommage d'un dossier : deux changements, tous deux dans server.js.
+// (1) R1, lecture du cartel : l'OCR ne reçoit plus la photo entière mais la seule zone de texte,
+// trouvée localement par contraste (aucun appel réseau). Mesuré sur 26 cartels : 23 lus sur 26
+// en photo entière, 26 sur 26 en zone recadrée, lecture moyenne 2 120 ms -> 1 375 ms.
+// (2) R2, tri : une mesure locale (part de pixels colorés, écart de luminance) contrôle le
+// classement de l'IA. Elle corrige un classement franchement faux et rattrape les photos
+// qu'aucun classement Oeuvres/Cartels n'a retenues. Mesurée conforme sur les 52 photos du lot.
+const VERSION_PHOTOCARTEL = "v92";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,

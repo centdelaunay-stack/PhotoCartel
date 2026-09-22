@@ -105,7 +105,14 @@ const app = express();
 // v91 — renommage d'un dossier (PC) : le renommage part de lui-même à la fin de l'analyse IA (plus de
 // second clic « Valider et renommer ») ; l'écran de fin titre « Dossier « X » renommé » et affiche l'emplacement ;
 // les « À vérifier » sont déplacés (et non plus copiés) : le sous-dossier Oeuvres ne contient que les renommées.
-const VERSION_PHOTOCARTEL = "v91";
+// v92 — renommage d'un dossier : deux changements, tous deux dans server.js.
+// (1) R1, lecture du cartel : l'OCR ne reçoit plus la photo entière mais la seule zone de texte,
+// trouvée localement par contraste (aucun appel réseau). Mesuré sur 26 cartels : 23 lus sur 26
+// en photo entière, 26 sur 26 en zone recadrée, lecture moyenne 2 120 ms -> 1 375 ms.
+// (2) R2, tri : une mesure locale (part de pixels colorés, écart de luminance) contrôle le
+// classement de l'IA. Elle corrige un classement franchement faux et rattrape les photos
+// qu'aucun classement Oeuvres/Cartels n'a retenues. Mesurée conforme sur les 52 photos du lot.
+const VERSION_PHOTOCARTEL = "v92";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2813,6 +2820,99 @@ async function normaliserBufferImagePourIA(buffer, tailleMaxPixels = null) {
   return bufferNormalise;
 }
 
+// v92 — R2 : contrôle local de la classification du tri, sans aucun appel réseau.
+// Deux mesures séparent un cartel d'une œuvre : la part de pixels colorés et l'écart
+// de luminance. Mesuré sur les 52 photos du dossier Morozov — œuvres : part colorée
+// 0,241 à 0,409 et écart 40,5 à 66,1 ; cartels : 0,001 à 0,099 et 8,5 à 26,9.
+// Les bornes ci-dessous laissent l'entre-deux à l'IA : la mesure ne corrige que le franc.
+const LARGEUR_MESURE_TRAITS_PHOTOCARTEL = 400;
+const SEUIL_PIXEL_COLORE_PHOTOCARTEL = 0.25;
+const PART_COLOREE_MAX_CARTEL = 0.15;
+const ECART_LUMINANCE_MAX_CARTEL = 35;
+const PART_COLOREE_MIN_OEUVRE = 0.22;
+const ECART_LUMINANCE_MIN_OEUVRE = 38;
+
+// Ne lève jamais : sans sharp ou sur une image non décodable, renvoie null et le tri
+// garde exactement le comportement v91.
+async function mesurerTraitsImagePhotoCartel(buffer) {
+  try {
+    const sharp = await obtenirSharpPhotoCartel();
+    if (!sharp) return null;
+    const { data, info } = await sharp(buffer)
+      .rotate()
+      .resize({ width: LARGEUR_MESURE_TRAITS_PHOTOCARTEL })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    if (!data || info.channels < 3) return null;
+    const nombrePixels = info.width * info.height;
+    if (!nombrePixels) return null;
+    let pixelsColores = 0;
+    let sommeLuminance = 0;
+    let sommeCarresLuminance = 0;
+    for (let index = 0; index < nombrePixels; index += 1) {
+      const decalage = index * info.channels;
+      const rouge = data[decalage];
+      const vert = data[decalage + 1];
+      const bleu = data[decalage + 2];
+      const maximum = Math.max(rouge, vert, bleu);
+      const minimum = Math.min(rouge, vert, bleu);
+      const saturation = maximum === 0 ? 0 : (maximum - minimum) / maximum;
+      if (saturation > SEUIL_PIXEL_COLORE_PHOTOCARTEL) pixelsColores += 1;
+      const luminance = 0.299 * rouge + 0.587 * vert + 0.114 * bleu;
+      sommeLuminance += luminance;
+      sommeCarresLuminance += luminance * luminance;
+    }
+    const moyenne = sommeLuminance / nombrePixels;
+    const variance = Math.max(0, sommeCarresLuminance / nombrePixels - moyenne * moyenne);
+    return {
+      partColoree: pixelsColores / nombrePixels,
+      ecartLuminance: Math.sqrt(variance),
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+// Renvoie "Oeuvres", "Cartels", ou null quand la mesure ne tranche pas franchement.
+function categorieSelonImagePhotoCartel(traits) {
+  if (!traits) return null;
+  if (
+    traits.partColoree < PART_COLOREE_MAX_CARTEL &&
+    traits.ecartLuminance < ECART_LUMINANCE_MAX_CARTEL
+  ) {
+    return "Cartels";
+  }
+  if (
+    traits.partColoree > PART_COLOREE_MIN_OEUVRE &&
+    traits.ecartLuminance > ECART_LUMINANCE_MIN_OEUVRE
+  ) {
+    return "Oeuvres";
+  }
+  return null;
+}
+
+// v92 — la mesure locale corrige le classement de l'IA dans deux cas seulement :
+// elle contredit franchement un classement Oeuvres/Cartels, ou l'IA n'a donné ni l'un
+// ni l'autre (Architecture, Jardins, A_verifier_classification, ou appel en échec) et
+// la photo est franchement l'une des deux. Partout ailleurs, le classement IA est gardé.
+function categorieTriCorrigeePhotoCartel(categorieIA, traits, nomFichier) {
+  const mesure = categorieSelonImagePhotoCartel(traits);
+  if (!mesure) return categorieIA;
+  const detail =
+    `part colorée ${traits.partColoree.toFixed(3)}, écart luminance ${traits.ecartLuminance.toFixed(1)}`;
+  if (categorieIA === "Oeuvres" || categorieIA === "Cartels") {
+    if (mesure === categorieIA) return categorieIA;
+    console.log(`TRI RENOMMAGE ${nomFichier} : ${categorieIA} corrigé en ${mesure} par la mesure locale (${detail})`);
+    return mesure;
+  }
+  console.log(
+    `TRI RENOMMAGE ${nomFichier} : ${categorieIA || "sans classement"} rattrapé en ${mesure} ` +
+    `par la mesure locale (${detail})`
+  );
+  return mesure;
+}
+
 async function classifierImageBuffer(buffer) {
   const bufferNormalise = await normaliserBufferImagePourIA(buffer, TAILLE_IA_TRI_PX);
   const imageBase64 = bufferNormalise.toString("base64");
@@ -2897,15 +2997,18 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri
     LIMITE_APPELS_IA_PARALLELES,
     async (fichier) => {
       const debutPhotoMs = Date.now();
+      // v92 — la mesure locale est prise dans le même passage parallèle que l'appel IA :
+      // elle ne rallonge pas le tri d'un aller-retour supplémentaire par photo.
+      const traits = await mesurerTraitsImagePhotoCartel(fichier.buffer);
       try {
         const categorie = await classifierImageBuffer(fichier.buffer);
         console.log(
           `TRI RENOMMAGE ${fichier.originalname} : ${categorie} en ${Date.now() - debutPhotoMs} ms ` +
           `(${fichier.buffer?.length || 0} octets)`
         );
-        return { categorie, erreur: null, dureeMs: Date.now() - debutPhotoMs };
+        return { categorie, traits, erreur: null, dureeMs: Date.now() - debutPhotoMs };
       } catch (error) {
-        return { categorie: null, erreur: error, dureeMs: Date.now() - debutPhotoMs };
+        return { categorie: null, traits, erreur: error, dureeMs: Date.now() - debutPhotoMs };
       }
     }
   );
@@ -2919,8 +3022,20 @@ async function trierMinimalPourRenommage(fichiers, cheminDestination, erreursTri
     const classement = classementsParFichier[indexFichier];
     const debutPhotoMs = Date.now() - (classement?.dureeMs || 0);
     try {
-      if (classement?.erreur) throw classement.erreur;
-      const categorie = classement.categorie;
+      // v92 — R2 : la mesure locale corrige un classement franchement faux et rattrape
+      // les photos qu'aucun classement Oeuvres/Cartels n'a retenues, appel IA en échec compris.
+      const categorie = categorieTriCorrigeePhotoCartel(
+        classement?.erreur ? null : classement?.categorie,
+        classement?.traits,
+        fichier.originalname
+      );
+      if (classement?.erreur) {
+        if (categorie !== "Oeuvres" && categorie !== "Cartels") throw classement.erreur;
+        console.error(
+          `TRI RENOMMAGE ${fichier.originalname} : appel IA en échec ` +
+          `(${raisonLisibleErreurIA(classement.erreur)}), photo rangée par la mesure locale`
+        );
+      }
 
       if (categorie === "Oeuvres") {
         stats.Oeuvres += 1;
@@ -3063,11 +3178,175 @@ function executerOcrEnSerie(tache) {
 // v90 — durée de lecture maximale d'un cartel (hors attente dans la file OCR).
 const LIMITE_LECTURE_OCR_CARTEL_MS = Number(process.env.PHOTOCARTEL_OCR_LIMITE_LECTURE_MS || 4000);
 
+// v92 — R1 : l'OCR ne lit plus la photo entière du cartel, mais la seule zone de texte.
+// La zone est trouvée localement avec sharp, sans aucun appel réseau : contraste local
+// (image nette moins image floutée), cellules de 10 px, blocs connexes, union des blocs
+// qui pèsent au moins un cinquième du plus gros — un cartel porte souvent deux œuvres,
+// chacune dans son bloc. Mesuré sur les 26 cartels du dossier Morozov : 23 lus sur 26
+// en photo entière contre 26 sur 26 en zone recadrée, et 2 120 ms de lecture moyenne
+// ramenés à 1 375 ms (détection comprise).
+const LARGEUR_ANALYSE_ZONE_CARTEL = 800;
+const COTE_CELLULE_ZONE_CARTEL = 10;
+const SEUIL_CONTRASTE_TEXTE_CARTEL = 18;
+const PART_CELLULE_TEXTE_CARTEL = 0.06;
+const PART_BLOC_RETENU_ZONE_CARTEL = 0.2;
+const MARGE_ZONE_CARTEL = 0.06;
+const PART_MAX_ZONE_CARTEL = 0.6;
+const LARGEUR_OCR_ZONE_CARTEL = 1500;
+
+// Ne lève jamais : sans sharp, ou si aucun bloc de texte n'est trouvé, renvoie null et
+// la lecture se fait sur la photo entière, exactement comme en v91.
+async function trouverZoneTexteCartel(buffer) {
+  try {
+    const sharp = await obtenirSharpPhotoCartel();
+    if (!sharp) return null;
+
+    const reduction = sharp(buffer).rotate().greyscale().resize({ width: LARGEUR_ANALYSE_ZONE_CARTEL });
+    const { data: net, info } = await reduction.clone().raw().toBuffer({ resolveWithObject: true });
+    const { data: flou } = await reduction.clone().blur(6).raw().toBuffer({ resolveWithObject: true });
+    const largeur = info.width;
+    const hauteur = info.height;
+    if (!largeur || !hauteur) return null;
+
+    const colonnes = Math.ceil(largeur / COTE_CELLULE_ZONE_CARTEL);
+    const lignes = Math.ceil(hauteur / COTE_CELLULE_ZONE_CARTEL);
+    const densite = new Float32Array(colonnes * lignes);
+    for (let y = 0; y < hauteur; y += 1) {
+      for (let x = 0; x < largeur; x += 1) {
+        const position = y * largeur + x;
+        if (Math.abs(net[position] - flou[position]) > SEUIL_CONTRASTE_TEXTE_CARTEL) {
+          const cellule =
+            Math.floor(y / COTE_CELLULE_ZONE_CARTEL) * colonnes + Math.floor(x / COTE_CELLULE_ZONE_CARTEL);
+          densite[cellule] += 1;
+        }
+      }
+    }
+
+    const airecellule = COTE_CELLULE_ZONE_CARTEL * COTE_CELLULE_ZONE_CARTEL;
+    const texte = new Uint8Array(colonnes * lignes);
+    for (let cellule = 0; cellule < densite.length; cellule += 1) {
+      texte[cellule] = densite[cellule] / airecellule > PART_CELLULE_TEXTE_CARTEL ? 1 : 0;
+    }
+
+    // Fermeture : une cellule vide cernée par du texte compte comme du texte (interligne).
+    const ferme = new Uint8Array(texte);
+    for (let y = 0; y < lignes; y += 1) {
+      for (let x = 0; x < colonnes; x += 1) {
+        if (texte[y * colonnes + x]) continue;
+        let voisines = 0;
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const yy = y + dy;
+            const xx = x + dx;
+            if (yy >= 0 && yy < lignes && xx >= 0 && xx < colonnes && texte[yy * colonnes + xx]) voisines += 1;
+          }
+        }
+        if (voisines >= 4) ferme[y * colonnes + x] = 1;
+      }
+    }
+
+    // Blocs connexes (8 voisins), parcours par pile : aucune récursion.
+    const vues = new Uint8Array(colonnes * lignes);
+    const blocs = [];
+    for (let depart = 0; depart < ferme.length; depart += 1) {
+      if (!ferme[depart] || vues[depart]) continue;
+      const pile = [depart];
+      vues[depart] = 1;
+      let x0 = colonnes;
+      let y0 = lignes;
+      let x1 = -1;
+      let y1 = -1;
+      let cellules = 0;
+      while (pile.length) {
+        const courante = pile.pop();
+        const cx = courante % colonnes;
+        const cy = (courante - cx) / colonnes;
+        cellules += 1;
+        if (cx < x0) x0 = cx;
+        if (cx > x1) x1 = cx;
+        if (cy < y0) y0 = cy;
+        if (cy > y1) y1 = cy;
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const yy = cy + dy;
+            const xx = cx + dx;
+            if (yy < 0 || yy >= lignes || xx < 0 || xx >= colonnes) continue;
+            const voisine = yy * colonnes + xx;
+            if (ferme[voisine] && !vues[voisine]) {
+              vues[voisine] = 1;
+              pile.push(voisine);
+            }
+          }
+        }
+      }
+      blocs.push({ cellules, x0, y0, x1, y1 });
+    }
+    if (!blocs.length) return null;
+
+    const plusGros = blocs.reduce((a, b) => (b.cellules > a.cellules ? b : a));
+    const retenus = blocs.filter((bloc) => bloc.cellules >= plusGros.cellules * PART_BLOC_RETENU_ZONE_CARTEL);
+    const x0 = Math.min(...retenus.map((bloc) => bloc.x0));
+    const y0 = Math.min(...retenus.map((bloc) => bloc.y0));
+    const x1 = Math.max(...retenus.map((bloc) => bloc.x1));
+    const y1 = Math.max(...retenus.map((bloc) => bloc.y1));
+
+    const metadonnees = await sharp(buffer).rotate().metadata();
+    if (!metadonnees.width || !metadonnees.height) return null;
+    const echelle = metadonnees.width / largeur;
+
+    let gauche = x0 * COTE_CELLULE_ZONE_CARTEL * echelle;
+    let haut = y0 * COTE_CELLULE_ZONE_CARTEL * echelle;
+    let large = (x1 - x0 + 1) * COTE_CELLULE_ZONE_CARTEL * echelle;
+    let haute = (y1 - y0 + 1) * COTE_CELLULE_ZONE_CARTEL * echelle;
+    const margeX = large * MARGE_ZONE_CARTEL;
+    const margeY = haute * MARGE_ZONE_CARTEL;
+    gauche = Math.max(0, Math.round(gauche - margeX));
+    haut = Math.max(0, Math.round(haut - margeY));
+    large = Math.min(metadonnees.width - gauche, Math.round(large + 2 * margeX));
+    haute = Math.min(metadonnees.height - haut, Math.round(haute + 2 * margeY));
+    if (large < 1 || haute < 1) return null;
+
+    return {
+      gauche,
+      haut,
+      largeur: large,
+      hauteur: haute,
+      part: (large * haute) / (metadonnees.width * metadonnees.height),
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+// Ne lève jamais : renvoie le buffer recadré et préparé pour l'OCR, ou null.
+async function preparerZoneCartelPourOCR(buffer) {
+  const debutMs = Date.now();
+  const zone = await trouverZoneTexteCartel(buffer);
+  if (!zone) return null;
+  if (zone.part > PART_MAX_ZONE_CARTEL) return null;
+  try {
+    const sharp = await obtenirSharpPhotoCartel();
+    if (!sharp) return null;
+    const bufferZone = await sharp(buffer)
+      .rotate()
+      .extract({ left: zone.gauche, top: zone.haut, width: zone.largeur, height: zone.hauteur })
+      .greyscale()
+      .normalise()
+      .resize({ width: LARGEUR_OCR_ZONE_CARTEL, withoutEnlargement: false })
+      .sharpen()
+      .png()
+      .toBuffer();
+    return { buffer: bufferZone, zone, dureeMs: Date.now() - debutMs };
+  } catch (error) {
+    return null;
+  }
+}
+
 // Ne leve jamais : un echec d'OCR renvoie un texte vide.
 // v90 — la limite ne compte que la lecture elle-même : le chronomètre part quand le cartel sort de la file.
 // Une lecture arrêtée ne peut pas être interrompue autrement qu'en arrêtant le moteur : il est relancé
 // pour le cartel suivant (le travailleur est obtenu DANS la file, jamais avant).
-async function lireTexteCartelParOCR(buffer, nomCartel = "") {
+async function lireUnePasseOcrCartel(buffer, nomCartel, origine) {
   const debutMs = Date.now();
   try {
     let lectureArretee = false;
@@ -3082,7 +3361,9 @@ async function lireTexteCartelParOCR(buffer, nomCartel = "") {
       clearTimeout(minuterie);
       if (lecture !== "BORNE_LECTURE_OCR") return lecture;
       lectureArretee = true;
-      console.log(`OCR CARTEL ${nomCartel} : lecture arrêtée à ${LIMITE_LECTURE_OCR_CARTEL_MS} ms, moteur relancé`);
+      console.log(
+        `OCR CARTEL ${nomCartel} (${origine}) : lecture arrêtée à ${LIMITE_LECTURE_OCR_CARTEL_MS} ms, moteur relancé`
+      );
       if (travailleurOcrPhotoCartel === travailleur) travailleurOcrPhotoCartel = null;
       await travailleur.terminate().catch(() => {});
       return null;
@@ -3090,12 +3371,36 @@ async function lireTexteCartelParOCR(buffer, nomCartel = "") {
     if (!resultat) return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs, lectureArretee };
     const texte = String(resultat?.data?.text || "").trim();
     const caracteres = texte.replace(/\s/g, "").length;
-    console.log(`OCR CARTEL ${nomCartel} : ${caracteres} caractère(s) en ${Date.now() - debutMs} ms`);
-    return { texte, caracteres, dureeMs: Date.now() - debutMs };
+    console.log(`OCR CARTEL ${nomCartel} (${origine}) : ${caracteres} caractère(s) en ${Date.now() - debutMs} ms`);
+    return { texte, caracteres, dureeMs: Date.now() - debutMs, lectureArretee };
   } catch (error) {
     console.error(`OCR CARTEL ${nomCartel} : échec après ${Date.now() - debutMs} ms — ${error?.message || error}`);
-    return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs };
+    return { texte: "", caracteres: 0, dureeMs: Date.now() - debutMs, lectureArretee: false };
   }
+}
+
+// v92 — lecture de la zone d'abord. Une seconde lecture sur la photo entière n'a lieu que
+// si la lecture de la zone s'est terminée d'elle-même sans rendre assez de texte : dans ce
+// cas la photo est rapide à lire, la reprise est bornée. Si la lecture de la zone a été
+// arrêtée par la limite, la photo entière serait plus lente encore : aucune reprise.
+async function lireTexteCartelParOCR(buffer, nomCartel = "") {
+  const debutMs = Date.now();
+  const zone = await preparerZoneCartelPourOCR(buffer);
+  if (zone) {
+    console.log(
+      `OCR CARTEL ${nomCartel} : zone de texte ${zone.zone.largeur}x${zone.zone.hauteur} px ` +
+      `(${Math.round(zone.zone.part * 100)} % de la photo) trouvée en ${zone.dureeMs} ms`
+    );
+  }
+  let lecture = await lireUnePasseOcrCartel(zone ? zone.buffer : buffer, nomCartel, zone ? "zone" : "photo entière");
+  if (zone && !lecture.lectureArretee && lecture.caracteres < SEUIL_CARACTERES_OCR_CARTEL) {
+    console.log(
+      `OCR CARTEL ${nomCartel} : ${lecture.caracteres} caractère(s) sur la zone, reprise sur la photo entière`
+    );
+    const reprise = await lireUnePasseOcrCartel(buffer, nomCartel, "photo entière");
+    if (reprise.caracteres > lecture.caracteres) lecture = reprise;
+  }
+  return { ...lecture, dureeMs: Date.now() - debutMs };
 }
 
 async function analyserCartelImageBuffer(buffer) {
