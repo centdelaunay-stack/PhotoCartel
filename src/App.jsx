@@ -243,6 +243,14 @@
 import { useState, useRef, useEffect } from "react";
 import Tesseract from "tesseract.js";
 import cv from "@techstark/opencv-js";
+// v93 — moteur de lecture des cartels et langues servis par l'app elle-même (aucun CDN).
+// v94 — langues lues dans les 4 fichiers .traineddata déjà à la racine du projet (aucun paquet à installer).
+import urlWorkerTesseract from "tesseract.js/dist/worker.min.js?url";
+import urlCoreTesseract from "tesseract.js-core/tesseract-core-simd-lstm.wasm.js?url";
+import urlLangueFra from "../fra.traineddata?url";
+import urlLangueEng from "../eng.traineddata?url";
+import urlLangueDeu from "../deu.traineddata?url";
+import urlLanguePor from "../por.traineddata?url";
 
 
 const ICONE_VILLE_PHOTOCARTEL_SRC =
@@ -287,12 +295,19 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // (2) R2, tri : une mesure locale (part de pixels colorés, écart de luminance) contrôle le
 // classement de l'IA. Elle corrige un classement franchement faux et rattrape les photos
 // qu'aucun classement Oeuvres/Cartels n'a retenues. Mesurée conforme sur les 52 photos du lot.
-const VERSION_PHOTOCARTEL = "v92";
+// v93 — renommage d'un dossier : la réception des photos (R1), le repérage du texte (R3) et la
+// lecture des cartels (R4) se font dans l'app, même code sur PC et téléphone. Le serveur ne reçoit
+// plus qu'une image de 768 px par photo (tri) et le texte lu sur chaque cartel (nom). Moteur de
+// lecture chargé une fois, gardé tout le renommage, relancé au cartel suivant s'il ne démarre pas ;
+// cartel bloqué 10 s → « À vérifier » ; photo de cartel à deux textes → « À vérifier ».
+// v94 — correctif v93 : les langues de lecture viennent des fichiers déjà présents à la racine
+// du projet ; plus aucune installation nécessaire.
+const VERSION_PHOTOCARTEL = "v94";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
-  descriptif: "Bandeau de critères figé, ouverture d’une visite avec attente visible",
-  date: "2026-09-12",
+  descriptif: "Renommage d’un dossier : photos lues et cartels lus dans l’app",
+  date: "2026-09-23",
   build: 5,
 };
 
@@ -1915,6 +1930,656 @@ const CONCURRENCE_PREFETCH_MINIATURES = 0;
 const CONCURRENCE_CHARGEMENT_IMAGES_ANDROID = 2;
 const MAX_IMAGES_ANDROID_EN_MEMOIRE = 320;
 
+// ============================================================================
+// v93 — Renommage d'un dossier : réception (R1), zone de texte (R3) et lecture des cartels (R4)
+// faites dans l'app, même code sur PC et téléphone. Seuls partent au serveur une image réduite
+// à 768 px par photo (tri, R2) et le texte lu sur chaque cartel (nom, R5).
+// Les fichiers du moteur de lecture et les langues sont servis par l'app : aucun CDN.
+// ============================================================================
+const RA_TAILLE_TRI_PX = 768;
+const RA_LARGEUR_TRAITS = 400;
+const RA_SEUIL_PIXEL_COLORE = 0.25;
+const RA_APPELS_PARALLELES = 4;
+const RA_LIMITE_LECTURE_MS = 10000; // v93 — cartel bloqué : 10 s, puis « À vérifier »
+const RA_DELAI_DEMARRAGE_MS = 20000;
+const RA_SEUIL_CARACTERES = 15;
+const RA_LARGEUR_ZONE = 800;
+const RA_CELLULE = 10;
+const RA_SEUIL_CONTRASTE = 18;
+const RA_PART_CELLULE_TEXTE = 0.06;
+const RA_PART_BLOC_RETENU = 0.2;
+const RA_MARGE_ZONE = 0.06;
+const RA_PART_MAX_ZONE = 0.6;
+const RA_LARGEUR_OCR = 1500;
+const RA_SIGMA_FLOU = 6;
+// v93 — C2 : deux blocs de texte séparés d'au moins 8 cellules (80 px sur 800) et dont le
+// second pèse au moins le quart du premier = une photo de cartel qui porte deux textes.
+const RA_ECART_DEUX_TEXTES_CELLULES = 8;
+const RA_PART_SECOND_TEXTE = 0.25;
+const RA_LANGUES = ["fra", "eng", "deu", "por"];
+const RA_URLS_LANGUES = {
+  fra: urlLangueFra, eng: urlLangueEng, deu: urlLangueDeu, por: urlLanguePor,
+};
+
+// Heure de prise de vue — portage exact de lireHorodatageExifPriseDeVue (server.js).
+function raLireHorodatageExif(tampon) {
+  try {
+    const b = new Uint8Array(tampon, 0, Math.min(tampon.byteLength, 262144));
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const latin1 = (debut, fin) => String.fromCharCode(...b.subarray(debut, fin));
+    if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return "";
+    let pos = 2;
+    while (pos + 4 <= b.length) {
+      if (b[pos] !== 0xff) return "";
+      const marqueur = b[pos + 1];
+      const taille = v.getUint16(pos + 2);
+      if (marqueur === 0xe1 && latin1(pos + 4, pos + 10) === "Exif\0\0") {
+        const t = pos + 10;
+        const le = latin1(t, t + 2) === "II";
+        const u16 = (o) => v.getUint16(o, le);
+        const u32 = (o) => v.getUint32(o, le);
+        const lireIfd = (debut) => {
+          const tags = {};
+          if (t + debut + 2 > b.length) return tags;
+          const n = u16(t + debut);
+          for (let i = 0; i < n; i += 1) {
+            const e = t + debut + 2 + i * 12;
+            if (e + 12 > b.length) break;
+            tags[u16(e)] = { type: u16(e + 2), nombre: u32(e + 4), valeur: u32(e + 8) };
+          }
+          return tags;
+        };
+        const lireTexte = (tag) =>
+          tag && tag.type === 2 && t + tag.valeur + 19 <= b.length ? latin1(t + tag.valeur, t + tag.valeur + 19) : "";
+        const ifd0 = lireIfd(u32(t + 4));
+        const ifdExif = ifd0[0x8769] ? lireIfd(ifd0[0x8769].valeur) : {};
+        const brut = lireTexte(ifdExif[0x9003]) || lireTexte(ifd0[0x0132]);
+        const m = brut.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+        return m ? m.slice(1).join("") : "";
+      }
+      if (marqueur === 0xda) return "";
+      pos += 2 + taille;
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+// Photo décodée et redressée selon son orientation (= sharp .rotate()).
+function raDecoder(fichier) {
+  return createImageBitmap(fichier, { imageOrientation: "from-image" });
+}
+
+function raToile(l, h) {
+  if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(l, h);
+  const c = document.createElement("canvas");
+  c.width = l;
+  c.height = h;
+  return c;
+}
+
+function raDessiner(source, sx, sy, sl, sh, l, h) {
+  const c = raToile(l, h);
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, sx, sy, sl, sh, 0, 0, l, h);
+  return { c, ctx };
+}
+
+// Réduction par moitiés successives puis dernier pas (pas de crénelage).
+function raReduire(source, largeurCible) {
+  let courant = source;
+  let l = source.width;
+  let h = source.height;
+  while (l / 2 >= largeurCible * 1.001) {
+    const nl = Math.round(l / 2);
+    const nh = Math.round(h / 2);
+    courant = raDessiner(courant, 0, 0, l, h, nl, nh).c;
+    l = nl;
+    h = nh;
+  }
+  const hf = Math.max(1, Math.round((h * largeurCible) / l));
+  return raDessiner(courant, 0, 0, l, h, largeurCible, hf);
+}
+
+function raGris(rgba) {
+  const g = new Uint8ClampedArray(rgba.length / 4);
+  for (let i = 0, j = 0; j < g.length; i += 4, j += 1) {
+    g[j] = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+  }
+  return g;
+}
+
+function raFlouGaussien(src, l, h, sigma) {
+  const noyau = [];
+  for (let x = 0; ; x += 1) {
+    const val = Math.exp(-(x * x) / (2 * sigma * sigma));
+    if (x > 0 && val < 0.2 / 100) break;
+    noyau.push(val);
+    if (x > 6 * sigma) break;
+  }
+  const r = noyau.length - 1;
+  const poids = [...noyau.slice(1).reverse(), ...noyau];
+  const somme = poids.reduce((a, b) => a + b, 0);
+  const k = poids.map((p) => p / somme);
+  const tmp = new Float32Array(l * h);
+  const dst = new Uint8ClampedArray(l * h);
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < l; x += 1) {
+      let acc = 0;
+      for (let i = -r; i <= r; i += 1) acc += src[y * l + Math.min(l - 1, Math.max(0, x + i))] * k[i + r];
+      tmp[y * l + x] = acc;
+    }
+  }
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < l; x += 1) {
+      let acc = 0;
+      for (let i = -r; i <= r; i += 1) acc += tmp[Math.min(h - 1, Math.max(0, y + i)) * l + x] * k[i + r];
+      dst[y * l + x] = acc + 0.5;
+    }
+  }
+  return dst;
+}
+
+async function raBlobEnBase64(blob) {
+  const octets = new Uint8Array(await blob.arrayBuffer());
+  let texte = "";
+  for (let i = 0; i < octets.length; i += 0x8000) texte += String.fromCharCode(...octets.subarray(i, i + 0x8000));
+  return btoa(texte);
+}
+
+// R2, préparation locale : image réduite à 768 px + mesure locale v92 (part colorée, écart).
+async function raPreparerPourTri(bitmap) {
+  const cote = Math.max(bitmap.width, bitmap.height);
+  const echelle = Math.min(1, RA_TAILLE_TRI_PX / cote);
+  const { c } = raReduire(bitmap, Math.max(1, Math.round(bitmap.width * echelle)));
+  const blob = c.convertToBlob
+    ? await c.convertToBlob({ type: "image/jpeg", quality: 0.9 })
+    : await new Promise((r) => c.toBlob(r, "image/jpeg", 0.9));
+  const base64 = await raBlobEnBase64(blob);
+  const { ctx, c: cm } = raReduire(bitmap, RA_LARGEUR_TRAITS);
+  const d = ctx.getImageData(0, 0, cm.width, cm.height).data;
+  const n = cm.width * cm.height;
+  let colores = 0;
+  let s = 0;
+  let s2 = 0;
+  for (let i = 0; i < n; i += 1) {
+    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    if (mx !== 0 && (mx - mn) / mx > RA_SEUIL_PIXEL_COLORE) colores += 1;
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    s += lum;
+    s2 += lum * lum;
+  }
+  const moyenne = s / n;
+  return {
+    base64,
+    traits: { partColoree: colores / n, ecartLuminance: Math.sqrt(Math.max(0, s2 / n - moyenne * moyenne)) },
+  };
+}
+
+// R3 — zone de texte (portage de trouverZoneTexteCartel, server.js v92), sur l'image redressée.
+// Renvoie aussi deuxTextes (C2) : deux groupes de texte nettement séparés.
+function raZoneTexteDepuisGris(net, largeur, hauteur) {
+  const flou = raFlouGaussien(net, largeur, hauteur, RA_SIGMA_FLOU);
+  const colonnes = Math.ceil(largeur / RA_CELLULE);
+  const lignes = Math.ceil(hauteur / RA_CELLULE);
+  const densite = new Float32Array(colonnes * lignes);
+  for (let y = 0; y < hauteur; y += 1) {
+    for (let x = 0; x < largeur; x += 1) {
+      const p = y * largeur + x;
+      if (Math.abs(net[p] - flou[p]) > RA_SEUIL_CONTRASTE) {
+        densite[Math.floor(y / RA_CELLULE) * colonnes + Math.floor(x / RA_CELLULE)] += 1;
+      }
+    }
+  }
+  const aire = RA_CELLULE * RA_CELLULE;
+  const texte = new Uint8Array(colonnes * lignes);
+  for (let i = 0; i < densite.length; i += 1) texte[i] = densite[i] / aire > RA_PART_CELLULE_TEXTE ? 1 : 0;
+  const ferme = new Uint8Array(texte);
+  for (let y = 0; y < lignes; y += 1) {
+    for (let x = 0; x < colonnes; x += 1) {
+      if (texte[y * colonnes + x]) continue;
+      let voisines = 0;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const yy = y + dy, xx = x + dx;
+          if (yy >= 0 && yy < lignes && xx >= 0 && xx < colonnes && texte[yy * colonnes + xx]) voisines += 1;
+        }
+      }
+      if (voisines >= 4) ferme[y * colonnes + x] = 1;
+    }
+  }
+  const vues = new Uint8Array(colonnes * lignes);
+  const blocs = [];
+  for (let depart = 0; depart < ferme.length; depart += 1) {
+    if (!ferme[depart] || vues[depart]) continue;
+    const pile = [depart];
+    vues[depart] = 1;
+    let x0 = colonnes, y0 = lignes, x1 = -1, y1 = -1, cellules = 0;
+    while (pile.length) {
+      const c = pile.pop();
+      const cx = c % colonnes;
+      const cy = (c - cx) / colonnes;
+      cellules += 1;
+      if (cx < x0) x0 = cx;
+      if (cx > x1) x1 = cx;
+      if (cy < y0) y0 = cy;
+      if (cy > y1) y1 = cy;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const yy = cy + dy, xx = cx + dx;
+          if (yy < 0 || yy >= lignes || xx < 0 || xx >= colonnes) continue;
+          const vv = yy * colonnes + xx;
+          if (ferme[vv] && !vues[vv]) { vues[vv] = 1; pile.push(vv); }
+        }
+      }
+    }
+    blocs.push({ cellules, x0, y0, x1, y1 });
+  }
+  if (!blocs.length) return null;
+  const plusGros = blocs.reduce((a, b) => (b.cellules > a.cellules ? b : a));
+  const retenus = blocs.filter((b) => b.cellules >= plusGros.cellules * RA_PART_BLOC_RETENU);
+
+  // C2 : regroupement des blocs retenus proches (écart < 8 cellules) en « textes ».
+  const groupes = [];
+  for (const bloc of retenus) {
+    const proches = groupes.filter((g) =>
+      bloc.x0 - RA_ECART_DEUX_TEXTES_CELLULES <= g.x1 && g.x0 - RA_ECART_DEUX_TEXTES_CELLULES <= bloc.x1 &&
+      bloc.y0 - RA_ECART_DEUX_TEXTES_CELLULES <= g.y1 && g.y0 - RA_ECART_DEUX_TEXTES_CELLULES <= bloc.y1);
+    const fusion = { ...bloc };
+    for (const g of proches) {
+      fusion.cellules += g.cellules;
+      fusion.x0 = Math.min(fusion.x0, g.x0); fusion.y0 = Math.min(fusion.y0, g.y0);
+      fusion.x1 = Math.max(fusion.x1, g.x1); fusion.y1 = Math.max(fusion.y1, g.y1);
+      groupes.splice(groupes.indexOf(g), 1);
+    }
+    groupes.push(fusion);
+  }
+  groupes.sort((a, b) => b.cellules - a.cellules);
+  const deuxTextes = groupes.length >= 2 && groupes[1].cellules >= groupes[0].cellules * RA_PART_SECOND_TEXTE;
+
+  return {
+    x0: Math.min(...retenus.map((b) => b.x0)), y0: Math.min(...retenus.map((b) => b.y0)),
+    x1: Math.max(...retenus.map((b) => b.x1)), y1: Math.max(...retenus.map((b) => b.y1)),
+    deuxTextes,
+  };
+}
+
+function raZoneEnPixels(cellules, largeurAnalyse, largeurReelle, hauteurReelle) {
+  const echelle = largeurReelle / largeurAnalyse;
+  let gauche = cellules.x0 * RA_CELLULE * echelle;
+  let haut = cellules.y0 * RA_CELLULE * echelle;
+  let large = (cellules.x1 - cellules.x0 + 1) * RA_CELLULE * echelle;
+  let haute = (cellules.y1 - cellules.y0 + 1) * RA_CELLULE * echelle;
+  const mx = large * RA_MARGE_ZONE, my = haute * RA_MARGE_ZONE;
+  gauche = Math.max(0, Math.round(gauche - mx));
+  haut = Math.max(0, Math.round(haut - my));
+  large = Math.min(largeurReelle - gauche, Math.round(large + 2 * mx));
+  haute = Math.min(hauteurReelle - haut, Math.round(haute + 2 * my));
+  if (large < 1 || haute < 1) return null;
+  return { gauche, haut, largeur: large, hauteur: haute, part: (large * haute) / (largeurReelle * hauteurReelle), deuxTextes: cellules.deuxTextes };
+}
+
+function raTrouverZoneTexteCartel(bitmap) {
+  try {
+    const { ctx, c } = raReduire(bitmap, RA_LARGEUR_ZONE);
+    const net = raGris(ctx.getImageData(0, 0, c.width, c.height).data);
+    const cellules = raZoneTexteDepuisGris(net, c.width, c.height);
+    if (!cellules) return null;
+    return raZoneEnPixels(cellules, c.width, bitmap.width, bitmap.height);
+  } catch {
+    return null;
+  }
+}
+
+// Recadrage + gris + normalisation 1 %-99 % + 1500 px + netteté douce (= preparerZoneCartelPourOCR).
+function raPreparerImageOcr(bitmap, zone) {
+  const l = RA_LARGEUR_OCR;
+  const h = Math.max(1, Math.round((zone.hauteur * l) / zone.largeur));
+  const { ctx, c } = raDessiner(bitmap, zone.gauche, zone.haut, zone.largeur, zone.hauteur, l, h);
+  const img = ctx.getImageData(0, 0, l, h);
+  const g = raGris(img.data);
+  const histo = new Uint32Array(256);
+  for (let i = 0; i < g.length; i += 1) histo[g[i]] += 1;
+  const cumul = (part) => {
+    let s = 0;
+    for (let v = 0; v < 256; v += 1) { s += histo[v]; if (s >= part * g.length) return v; }
+    return 255;
+  };
+  const bas = cumul(0.01);
+  const haut = Math.max(cumul(0.99), bas + 1);
+  const norm = new Float32Array(g.length);
+  for (let i = 0; i < g.length; i += 1) norm[i] = Math.min(255, Math.max(0, ((g[i] - bas) * 255) / (haut - bas)));
+  const out = img.data;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < l; x += 1) {
+      let acc = 32 * norm[y * l + x];
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (!dx && !dy) continue;
+          acc -= norm[Math.min(h - 1, Math.max(0, y + dy)) * l + Math.min(l - 1, Math.max(0, x + dx))];
+        }
+      }
+      const v = Math.min(255, Math.max(0, acc / 24));
+      const p = (y * l + x) * 4;
+      out[p] = out[p + 1] = out[p + 2] = v;
+      out[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+// Langues de lecture : chargées une fois depuis l'app, rangées là où le moteur les cherche
+// en premier (base locale de l'app). Les fois suivantes, rien n'est téléchargé.
+async function raBaseLangues(action) {
+  const db = await new Promise((ok, ko) => {
+    const r = indexedDB.open("keyval-store");
+    r.onupgradeneeded = () => r.result.createObjectStore("keyval");
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => ko(r.error);
+  });
+  try {
+    return await action(db);
+  } finally {
+    db.close();
+  }
+}
+
+async function raPreparerLangues() {
+  for (const code of RA_LANGUES) {
+    const cle = `./${code}.traineddata`;
+    const present = await raBaseLangues((db) => new Promise((ok) => {
+      const r = db.transaction("keyval").objectStore("keyval").getKey(cle);
+      r.onsuccess = () => ok(r.result !== undefined);
+      r.onerror = () => ok(false);
+    }));
+    if (present) continue;
+    const reponse = await fetch(new URL(RA_URLS_LANGUES[code], window.location.href).href);
+    if (!reponse.ok) throw new Error(`fichier de langue ${code} introuvable dans l'app`);
+    const data = new Uint8Array(await reponse.arrayBuffer());
+    await raBaseLangues((db) => new Promise((ok, ko) => {
+      const t = db.transaction("keyval", "readwrite");
+      t.objectStore("keyval").put(data, cle);
+      t.oncomplete = ok;
+      t.onerror = () => ko(t.error);
+    }));
+  }
+}
+
+// R4 — un moteur chargé une fois et gardé tout le renommage ; une file ; lecture bornée à 10 s.
+// Un démarrage raté n'arrête rien : nouvel essai au cartel suivant.
+class RaLecteurCartels {
+  constructor() {
+    this.moteur = null;
+    this.file = Promise.resolve();
+    this.demarrages = 0;
+    this.echecsDemarrage = 0;
+  }
+
+  async obtenirMoteur() {
+    if (this.moteur) return this.moteur;
+    this.demarrages += 1;
+    let minuterie = null;
+    let creation = null;
+    try {
+      await raPreparerLangues();
+      const borne = new Promise((r) => { minuterie = setTimeout(() => r("BORNE"), RA_DELAI_DEMARRAGE_MS); });
+      creation = Tesseract.createWorker(RA_LANGUES, 1, {
+        workerPath: new URL(urlWorkerTesseract, window.location.href).href,
+        corePath: new URL(urlCoreTesseract, window.location.href).href,
+        langPath: "/langues-ocr-absentes",
+        cacheMethod: "readOnly",
+        errorHandler: (e) => console.error("OCR CARTEL : erreur moteur", e),
+      });
+      const resultat = await Promise.race([creation, borne]);
+      if (resultat === "BORNE" || !resultat?.recognize) {
+        this.echecsDemarrage += 1;
+        creation.then((m) => m?.terminate?.()).catch(() => {});
+        return null;
+      }
+      this.moteur = resultat;
+      return this.moteur;
+    } catch (e) {
+      this.echecsDemarrage += 1;
+      console.error("OCR CARTEL : démarrage impossible", e);
+      return null;
+    } finally {
+      clearTimeout(minuterie);
+    }
+  }
+
+  lire(image) {
+    const tache = async () => {
+      const moteur = await this.obtenirMoteur();
+      if (!moteur) return { texte: "", caracteres: 0, dureeMs: 0, lectureArretee: false, moteurAbsent: true };
+      const debut = performance.now();
+      let minuterie = null;
+      const borne = new Promise((r) => { minuterie = setTimeout(() => r("BORNE"), RA_LIMITE_LECTURE_MS); });
+      const lecture = await Promise.race([moteur.recognize(image), borne]).catch((e) => ({ erreur: e }));
+      clearTimeout(minuterie);
+      if (lecture === "BORNE") {
+        if (this.moteur === moteur) this.moteur = null;
+        await moteur.terminate().catch(() => {});
+        return { texte: "", caracteres: 0, dureeMs: performance.now() - debut, lectureArretee: true, moteurAbsent: false };
+      }
+      const texte = String(lecture?.data?.text || "").trim();
+      return { texte, caracteres: texte.replace(/\s/g, "").length, dureeMs: performance.now() - debut, lectureArretee: false, moteurAbsent: false };
+    };
+    const resultat = this.file.then(tache, tache);
+    this.file = resultat.then(() => undefined, () => undefined);
+    return resultat;
+  }
+
+  async fermer() {
+    await this.file;
+    if (this.moteur) await this.moteur.terminate().catch(() => {});
+    this.moteur = null;
+  }
+}
+
+// Même règle que lireTexteCartelParOCR (server.js v92) : zone d'abord, reprise sur la photo
+// entière seulement si la zone s'est lue sans assez de texte. C2 : aucune lecture.
+async function raLireCartel(lecteur, bitmap) {
+  const debut = performance.now();
+  const zone = raTrouverZoneTexteCartel(bitmap);
+  if (zone?.deuxTextes) {
+    return { texte: "", caracteres: 0, lectureArretee: false, moteurAbsent: false, deuxTextes: true, dureeMs: performance.now() - debut };
+  }
+  const zoneRetenue = zone && zone.part <= RA_PART_MAX_ZONE ? zone : null;
+  let lecture;
+  if (zoneRetenue) {
+    lecture = await lecteur.lire(raPreparerImageOcr(bitmap, zoneRetenue));
+    if (!lecture.lectureArretee && !lecture.moteurAbsent && lecture.caracteres < RA_SEUIL_CARACTERES) {
+      const reprise = await lecteur.lire(bitmap);
+      if (reprise.caracteres > lecture.caracteres) lecture = reprise;
+    }
+  } else {
+    lecture = await lecteur.lire(bitmap);
+  }
+  return { ...lecture, deuxTextes: false, dureeMs: performance.now() - debut };
+}
+
+async function raEnParallele(elements, limite, traiter) {
+  const res = new Array(elements.length);
+  let i = 0;
+  const travail = async () => {
+    while (i < elements.length) {
+      const k = i;
+      i += 1;
+      res[k] = await traiter(elements[k], k);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limite, elements.length)) }, travail));
+  return res;
+}
+
+// E3 — le serveur relais a droit à un raté : un nouvel essai, puis l'erreur remonte une fois.
+async function raPostJson(url, corps, signal) {
+  let derniere = null;
+  for (let essai = 0; essai < 2; essai += 1) {
+    try {
+      const signaux = [AbortSignal.timeout(90000), ...(signal ? [signal] : [])];
+      const r = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corps),
+        signal: AbortSignal.any ? AbortSignal.any(signaux) : signal,
+      });
+      const json = await r.json().catch(() => ({ success: false, error: `réponse illisible (${r.status})` }));
+      if (r.ok && json.success) return json;
+      derniere = new Error(json.error || `HTTP ${r.status}`);
+      if (r.status >= 400 && r.status < 500) break;
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      derniere = e;
+    }
+  }
+  const erreur = new Error("Le serveur n'a pas répondu. Relancez le renommage.");
+  erreur.cause = derniere;
+  erreur.code = "SERVEUR_INDISPONIBLE";
+  throw erreur;
+}
+
+// Étape 1 : R1 + R2. Chaque photo est lue sur place ; seule une image de 768 px part au tri.
+async function raTrierPhotos(fichiers, apiBase, signal) {
+  const photos = new Array(fichiers.length);
+  let erreurServeur = null;
+  await raEnParallele(fichiers, RA_APPELS_PARALLELES, async (fichier, index) => {
+    const horodatage = raLireHorodatageExif(await fichier.slice(0, 262144).arrayBuffer());
+    let categorie = "A_verifier_renommage";
+    let raison = "";
+    if (!erreurServeur) {
+      try {
+        const bitmap = await raDecoder(fichier);
+        const { base64, traits } = await raPreparerPourTri(bitmap);
+        bitmap.close();
+        const r = await raPostJson(`${apiBase}/renommer-oeuvres/trier-image`, { nom: fichier.name, image: base64, traits }, signal);
+        categorie = r.categorie;
+        raison = r.raison || "";
+      } catch (e) {
+        if (e?.code === "SERVEUR_INDISPONIBLE" || signal?.aborted) erreurServeur = e;
+        else raison = `photo illisible (${e?.message || e})`;
+      }
+    }
+    photos[index] = { fichier, nom: fichier.name, horodatage, categorie, raison };
+  });
+  if (erreurServeur) throw erreurServeur;
+  return photos;
+}
+
+// Étape 2 : R3 + R4 dans l'app, puis R5 (texte seul) au serveur.
+async function raLireEtProposer(photos, apiBase, signal) {
+  const lecteur = new RaLecteurCartels();
+  const cartels = photos.filter((p) => p.categorie === "Cartels");
+  try {
+    for (const p of cartels) {
+      if (signal?.aborted) throw new DOMException("interrompu", "AbortError");
+      const bitmap = await raDecoder(p.fichier);
+      p.lecture = await raLireCartel(lecteur, bitmap);
+      bitmap.close();
+    }
+  } finally {
+    await lecteur.fermer();
+  }
+  const corps = {
+    oeuvres: photos.filter((p) => p.categorie === "Oeuvres").map((p) => ({ nom: p.nom, horodatage: p.horodatage })),
+    cartels: cartels.map((p) => ({
+      nom: p.nom, horodatage: p.horodatage, texte: p.lecture.texte, caracteres: p.lecture.caracteres,
+      lectureArretee: p.lecture.lectureArretee, deuxTextes: p.lecture.deuxTextes,
+    })),
+  };
+  if (!corps.oeuvres.length) return [];
+  const r = await raPostJson(`${apiBase}/renommer-oeuvres/proposer`, corps, signal);
+  return r.propositions || [];
+}
+
+// Plan d'écriture unique (PC et téléphone) : mêmes dossiers et mêmes noms que la confirmation v92.
+// Oeuvres : œuvres renommées ; Cartels : cartels + copie « <nom>_CARTEL.jpg » ; A_verifier_renommage.
+function raPlanEcriture(photos, propositions) {
+  const parNom = new Map(photos.map((p) => [p.nom, p]));
+  const pris = { Oeuvres: new Set(), Cartels: new Set(), A_verifier_renommage: new Set() };
+  const unique = (dossier, nom) => {
+    let candidat = nom;
+    const point = nom.lastIndexOf(".");
+    const base = point > 0 ? nom.slice(0, point) : nom;
+    const ext = point > 0 ? nom.slice(point) : "";
+    for (let i = 2; pris[dossier].has(candidat.toLowerCase()); i += 1) candidat = `${base} (${i})${ext}`;
+    pris[dossier].add(candidat.toLowerCase());
+    return candidat;
+  };
+  const plan = [];
+  const resultats = [];
+  let renommes = 0;
+  for (const p of photos) {
+    if (p.categorie === "Cartels") plan.push({ dossier: "Cartels", nom: unique("Cartels", p.nom), fichier: p.fichier });
+  }
+  for (const prop of propositions) {
+    const photo = parNom.get(prop.oeuvre);
+    if (!photo) continue;
+    if (prop.aVerifier || !prop.nomPropose) {
+      plan.push({ dossier: "A_verifier_renommage", nom: unique("A_verifier_renommage", prop.oeuvre), fichier: photo.fichier });
+      resultats.push({ oeuvre: prop.oeuvre, success: false, raison: prop.raison || "Marqué à vérifier" });
+      continue;
+    }
+    const nomOeuvreFinal = unique("Oeuvres", prop.nomPropose);
+    plan.push({ dossier: "Oeuvres", nom: nomOeuvreFinal, fichier: photo.fichier });
+    const cartel = prop.cartel ? parNom.get(prop.cartel) : null;
+    if (cartel) {
+      plan.push({ dossier: "Cartels", nom: unique("Cartels", nomOeuvreFinal.replace(/\.[^.]+$/i, "_CARTEL.jpg")), fichier: cartel.fichier });
+    }
+    renommes += 1;
+    resultats.push({ oeuvre: prop.oeuvre, nomOeuvreFinal, success: true });
+  }
+  for (const p of photos) {
+    if (p.categorie !== "Cartels" && p.categorie !== "Oeuvres") {
+      plan.push({ dossier: "A_verifier_renommage", nom: unique("A_verifier_renommage", p.nom), fichier: p.fichier });
+    }
+  }
+  const aVerifier = plan.filter((e) => e.dossier === "A_verifier_renommage").length;
+  return { plan, resultats, renommes, aVerifier };
+}
+
+// Téléphone : écriture dans DCIM/PhotoCartel par l'accès aux dossiers du navigateur.
+async function raEcrireDansDossier(dossierPhotoCartel, nomSortie, plan) {
+  const base = await dossierPhotoCartel.getDirectoryHandle("Oeuvres renommées", { create: true });
+  const sortie = await base.getDirectoryHandle(nomSortie, { create: true });
+  const sous = {};
+  for (const nom of ["Oeuvres", "Cartels", "A_verifier_renommage"]) sous[nom] = await sortie.getDirectoryHandle(nom, { create: true });
+  for (const entree of plan) {
+    const poignee = await sous[entree.dossier].getFileHandle(entree.nom, { create: true });
+    const flux = await poignee.createWritable();
+    await flux.write(entree.fichier);
+    await flux.close();
+  }
+}
+
+// PC : le serveur local (même machine) écrit dans C:\PhotoCartel. Envoi par lots de 8 photos.
+async function raEcrireParServeurLocal(apiBase, dossierRacine, nomSortie, plan) {
+  for (let i = 0; i < plan.length; i += 8) {
+    const lot = plan.slice(i, i + 8);
+    const form = new FormData();
+    form.append("dossierRacine", dossierRacine);
+    form.append("nomSortie", nomSortie);
+    form.append("entrees", JSON.stringify(lot.map((e) => ({ dossier: e.dossier, nom: e.nom }))));
+    for (const e of lot) form.append("photos", e.fichier, e.nom);
+    const r = await fetch(`${apiBase}/renommer-oeuvres/enregistrer`, { method: "POST", body: form });
+    const json = await r.json().catch(() => ({ success: false, error: `réponse illisible (${r.status})` }));
+    if (!r.ok || !json.success) throw new Error(json.error || `HTTP ${r.status}`);
+  }
+}
+
+function raHorodatageSortie(date = new Date()) {
+  return date.toISOString().replace(/:/g, "-").replace("T", "_").slice(0, 16) + "Z";
+}
+
+function raNomSortie(nomDossierSource, date = new Date()) {
+  const nomSource = String(nomDossierSource || "Dossier_selectionne").replace(/[<>:"/\\|?*]/g, "_").replace(/\s+/g, " ").trim();
+  return `${nomSource}_renommé_${raHorodatageSortie(date)}`;
+}
+// ============================================================================
+
 function App() {
   console.log(`APP PRINCIPALE - PhotoCartel ${VERSION_COMPLETE} cloud-ready`);
 
@@ -2207,6 +2872,8 @@ const [confirmationRenommageEnCours, setConfirmationRenommageEnCours] = useState
 
 
 const cheminRenommagePrepareRef = useRef("");
+// v93 — photos du dossier en cours de renommage (fichiers locaux, jamais envoyés en entier).
+const photosRenommageRef = useRef(null);
 const inputPrendrePhotosRef = useRef(null);
 const inputActualiserPhotosRef = useRef(null);
 const inputAnalyserPhotoCameraRef = useRef(null);
@@ -9799,16 +10466,11 @@ function handleSelectionDossierRenommage(event) {
 
 
 async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
-  // v77 — attente bornée et interruptible : la modale ne peut plus rester affichée sans fin.
+  // v93 — R1 et R2 : les photos sont lues dans l'app ; seule une image de 768 px par photo part
+  // au tri. Aucune photo pleine taille n'est envoyée au serveur.
   const operation = demarrerOperationEnCours("renommage");
-  let nombrePhotosEnvoyees = 0;
-  let delaiMs = 0;
 
   try {
-    // v63 — correctif : filtre client resynchronise avec EXTENSIONS_IMAGE_PHOTOCARTEL cote
-    // serveur (v57). Avant ce correctif, .heic/.heif/.gif/.bmp/.tif/.tiff etaient elargis
-    // cote serveur mais ignores silencieusement ici avant meme l'envoi : un .heic pris sur
-    // telephone n'atteignait jamais le serveur.
     const EXTENSIONS_RENOMMAGE_ACCEPTEES = [
       ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp", ".tif", ".tiff"
     ];
@@ -9818,6 +10480,7 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
     });
 
     cheminRenommagePrepareRef.current = "";
+    photosRenommageRef.current = null;
     setCheminRenommagePrepare("");
     setRenommagePret(false);
     setPropositionsRenommage(null);
@@ -9826,7 +10489,6 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
     setRenommageFinalTermine(false);
 
     // v16.5 : un seul tableau de bord visible à la fois.
-    // Un nouveau renommage remplace automatiquement le dernier résultat affiché.
     setResultatClassification(null);
     setMessageImport("");
     setDossierImport("");
@@ -9843,7 +10505,6 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
       ? cheminRelatif.split("/")[0]
       : dossierRenommage || "Dossier_selectionne";
 
-    nombrePhotosEnvoyees = listeFichiers.length;
     setDossierRenommage(nomDossierSource);
     setNombrePhotosRenommage(listeFichiers.length);
     setRenommageFinalEnCours(true);
@@ -9851,67 +10512,26 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
       `Renommage en cours du dossier "${nomDossierSource}" : ${listeFichiers.length} photos à traiter.`
     );
 
-    const formData = new FormData();
-
-    for (const fichier of listeFichiers) {
-      formData.append("oeuvres", fichier, fichier.name);
-    }
-
-    formData.append("dossierSource", nomDossierSource);
-    formData.append("dossierRacine", dossierRacine);
-    formData.append("nomDossierSource", nomDossierSource);
-
-    delaiMs = delaiMaxAttentePhotos(listeFichiers.length);
-    const { response, texte } = await executerRequeteBornee(
-      API_BASE + "/renommer-oeuvres-fichiers",
-      { method: "POST", body: formData },
-      { delaiMs, signal: operation.signal }
-    );
-
-    // v77 — interrompu pendant l'attente : ce résultat n'appartient plus à l'écran.
+    const debut = new Date();
+    const photos = await raTrierPhotos(listeFichiers, API_BASE, operation.signal);
     if (!operation.estActive()) return;
 
-    const data = texte ? JSON.parse(texte) : {};
-    console.log("DATA BRUTE RENOMMAGE =", data);
+    const nomSortie = raNomSortie(nomDossierSource, debut);
+    const cheminPrepare = estAndroid()
+      ? `DCIM/PhotoCartel/Oeuvres renommées/${nomSortie}`
+      : `${dossierRacine}\\Oeuvres renommées\\${nomSortie}`;
 
-    if (!response.ok || !data.success) {
-      const message = data.error || "Erreur pendant la préparation du renommage";
-      setRenommageFinalEnCours(false);
-      setMessageRenommage("Erreur renommage : " + message);
-      amenerEtapeALaVue("etape-renommage");
-      return;
-    }
-
-    const cheminPrepare = data.cheminDestination || "";
-
-    if (!cheminPrepare) {
-      console.error("AUCUN CHEMIN RETOURNE PAR LE SERVEUR =", data);
-      setRenommageFinalEnCours(false);
-      setMessageRenommage(
-        "Renommage impossible : le serveur n'a pas retourné le chemin complet du dossier de renommage."
-      );
-      amenerEtapeALaVue("etape-renommage");
-      return;
-    }
-
-    console.log("DATA PREPARATION =", data);
-    console.log("CHEMIN PREPARE =", cheminPrepare);
-
+    photosRenommageRef.current = { photos, nomSortie, nomDossierSource, debut };
     cheminRenommagePrepareRef.current = cheminPrepare;
     setCheminRenommagePrepare(cheminPrepare);
     setRenommagePret(true);
 
-    // v77 — une photo que l'IA n'a pas pu trier est dite, avec sa raison.
-    const erreursTri = Array.isArray(data.erreursTri) ? data.erreursTri : [];
-    const raisonsTri = Array.from(new Set(erreursTri.map((erreur) => erreur?.raison).filter(Boolean)));
+    const erreursTri = photos.filter((photo) => photo.raison && photo.categorie === "A_verifier_renommage");
+    const raisonsTri = Array.from(new Set(erreursTri.map((photo) => photo.raison)));
     const complementErreursTri = erreursTri.length
-      ? ` ${erreursTri.length} photo(s) n'ont pas pu être triée(s)` +
-        (raisonsTri.length ? ` : ${raisonsTri.join(" ; ")}.` : ".")
+      ? ` ${erreursTri.length} photo(s) n'ont pas pu être triée(s) : ${raisonsTri.join(" ; ")}.`
       : "";
 
-    // v50.5 — étape 3 de la spec : le tri œuvre/cartel est automatique, mais l'analyse IA
-    // (qui produit la proposition de nom) attend désormais un déclenchement manuel.
-    // On ne chaîne plus automatiquement vers lancerRenommageFinal ici.
     setRenommageFinalEnCours(false);
     setMessageRenommage(
       `Tri terminé pour "${nomDossierSource}". Clique sur « Lancer l'analyse IA » pour continuer.` +
@@ -9922,124 +10542,119 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
     if (!operation.estActive()) return;
     console.error(error);
     setRenommageFinalEnCours(false);
-    if (error?.code === "DELAI_DEPASSE") {
-      setMessageRenommage(
-        `Renommage arrêté : le serveur n'a pas répondu en ${formaterDureeAttente(delaiMs)} ` +
-          `pour ${nombrePhotosEnvoyees} photo(s). Aucune photo n'a été renommée. ` +
-          "Tu peux relancer le renommage."
-      );
-    } else {
-      setMessageRenommage("Erreur renommage : " + error.message);
-    }
+    setMessageRenommage(
+      error?.code === "SERVEUR_INDISPONIBLE"
+        ? error.message + " Aucune photo n'a été renommée."
+        : "Erreur renommage : " + error.message
+    );
     amenerEtapeALaVue("etape-renommage");
   }
 }
 
-// v50.5 — étape 3 : déclenchement manuel de l'analyse IA. Produit une proposition de nom
-// par œuvre, SANS renommer aucun fichier (voir /renommer-oeuvres/analyser côté serveur).
+// v93 — étape 3 : R3 et R4 dans l'app (zone de texte, lecture des cartels), puis R5 : seul le
+// texte lu part au serveur, qui rend les noms proposés. L'enregistrement suit de lui-même (v91).
 async function lancerAnalyseRenommage() {
   const cheminVisite = cheminRenommagePrepareRef.current || cheminRenommagePrepare;
+  const preparation = photosRenommageRef.current;
 
-  if (!cheminVisite) {
+  if (!cheminVisite || !preparation) {
     setMessageRenommage(
       "Analyse impossible : clique d'abord sur « Renommer un dossier » et attends la fin du tri."
     );
     return;
   }
 
-  // v77 — attente bornée ; un résultat arrivé après « Accueil » est ignoré.
+  // Téléphone : l'accès à DCIM/PhotoCartel est demandé tout de suite, pendant le clic.
+  let racineAndroid = null;
+  if (estAndroid()) {
+    racineAndroid = await obtenirDossierRacinePhotoCartelAndroid({
+      ouvrirSelecteurSiNecessaire: true,
+      demanderPermissionSiNecessaire: true,
+    });
+    if (!racineAndroid) {
+      setMessageRenommage("Accès au dossier PhotoCartel refusé : aucune photo n'a été renommée.");
+      return;
+    }
+  }
+
   const operation = demarrerOperationEnCours("renommage");
-  const delaiMs = delaiMaxAttentePhotos(nombrePhotosRenommage);
 
   try {
     setAnalyseRenommageEnCours(true);
     setPropositionsRenommage(null);
     setMessageRenommage("Analyse IA en cours...");
 
-    const { response, texte } = await executerRequeteBornee(
-      API_BASE + "/renommer-oeuvres/analyser",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cheminVisite }),
-      },
-      { delaiMs, signal: operation.signal }
-    );
-
+    const propositions = await raLireEtProposer(preparation.photos, API_BASE, operation.signal);
     if (!operation.estActive()) return;
 
-    const data = texte ? JSON.parse(texte) : {};
-
-    if (!response.ok || !data.success) {
-      setMessageRenommage("Erreur analyse : " + (data.error || "erreur inconnue"));
-      return;
-    }
-
-    // v91 — plus de validation manuelle : le renommage part de lui-même avec les noms proposés.
     setAnalyseRenommageEnCours(false);
-    await validerRenommage(data.propositions);
+    await validerRenommage(propositions, racineAndroid);
   } catch (error) {
     if (!operation.estActive()) return;
     console.error(error);
-    if (error?.code === "DELAI_DEPASSE") {
-      setMessageRenommage(
-        `Analyse arrêtée : le serveur n'a pas répondu en ${formaterDureeAttente(delaiMs)}. ` +
-          "Aucune photo n'a été renommée. Tu peux relancer l'analyse."
-      );
-    } else {
-      setMessageRenommage("Erreur analyse : " + error.message);
-    }
+    setMessageRenommage(
+      error?.code === "SERVEUR_INDISPONIBLE"
+        ? error.message + " Aucune photo n'a été renommée."
+        : "Erreur analyse : " + error.message
+    );
   } finally {
     if (operation.estActive()) setAnalyseRenommageEnCours(false);
   }
 }
 
-// v50.5 — étape 6 : validation manuelle. N'écrit sur disque QUE ce que l'utilisateur valide ici.
-async function validerRenommage(propositionsForcees = null) {
+// v93 — enregistrement : un seul plan d'écriture pour PC et téléphone. Téléphone : écriture
+// directe dans DCIM/PhotoCartel. PC : le serveur local écrit dans le dossier racine (C:\PhotoCartel).
+// Les photos d'origine ne sont jamais modifiées : le résultat est une copie rangée et renommée.
+async function validerRenommage(propositionsForcees = null, racineAndroidPreautorisee = null) {
   const cheminVisite = cheminRenommagePrepareRef.current || cheminRenommagePrepare;
   const propositionsAValider = propositionsForcees || propositionsRenommage;
+  const preparation = photosRenommageRef.current;
 
-  if (!cheminVisite || !propositionsAValider) return;
+  if (!cheminVisite || !propositionsAValider || !preparation) return;
 
-  // v77 — un résultat arrivé après « Accueil » est ignoré. La requête n'est pas annulée :
-  // le renommage sur disque, une fois lancé, va au bout.
   const operation = demarrerOperationEnCours("renommage");
 
   try {
     setConfirmationRenommageEnCours(true);
     setMessageRenommage("Renommage en cours...");
 
-    const propositions = propositionsAValider.map((proposition) => ({
-      oeuvre: proposition.oeuvre,
-      cartel: proposition.cartel,
-      nomFinal: proposition.nomPropose,
-      aVerifier: proposition.aVerifier,
-    }));
+    const { plan, resultats, renommes, aVerifier } = raPlanEcriture(preparation.photos, propositionsAValider);
 
-    const response = await fetch(API_BASE + "/renommer-oeuvres/confirmer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cheminVisite, propositions }),
-    });
-
-    const data = await response.json();
+    if (estAndroid()) {
+      const racine = racineAndroidPreautorisee || await obtenirDossierRacinePhotoCartelAndroid({
+        ouvrirSelecteurSiNecessaire: false,
+        demanderPermissionSiNecessaire: false,
+      });
+      if (!racine) throw new Error("accès au dossier PhotoCartel indisponible, relance le renommage");
+      await raEcrireDansDossier(racine.dossierPhotoCartel, preparation.nomSortie, plan);
+    } else {
+      await raEcrireParServeurLocal(API_BASE, dossierRacine, preparation.nomSortie, plan);
+    }
 
     if (!operation.estActive()) return;
 
-    if (!response.ok || !data.success) {
-      setMessageRenommage("Erreur renommage : " + (data.error || "erreur inconnue"));
-      return;
-    }
-
-    setDashboardRenommage(data.dashboardRenommage);
-    setResultatsRenommageDetail(data.resultats || null);
+    const fin = new Date();
+    const photosAnalysees = propositionsAValider.length;
+    setDashboardRenommage({
+      statut: "RENOMMAGE TERMINÉ",
+      dossierSource: preparation.nomSortie,
+      cheminResultat: cheminVisite,
+      photosAnalysees,
+      oeuvresRenommees: renommes,
+      fichiersAVerifier: aVerifier,
+      tauxReussite: photosAnalysees > 0 ? Math.round((renommes / photosAnalysees) * 100) : 0,
+      tempsRenommageSecondes: Math.round((fin.getTime() - preparation.debut.getTime()) / 1000),
+      debutTraitement: formaterDateHeurePhoto(preparation.debut),
+      finTraitement: formaterDateHeurePhoto(fin),
+      creationDossierLocale: formaterDateHeurePhoto(preparation.debut),
+      creationDossierUTC: preparation.debut.toISOString(),
+    });
+    setResultatsRenommageDetail(resultats);
     setPropositionsRenommage(null);
     setRenommagePret(false);
     setRenommageFinalTermine(true);
-    setMessageRenommage(
-      `Renommage terminé : ${data.renommes} œuvres renommées, ${data.aVerifier} à vérifier.`
-    );
-    // v91 — l'écran de fin s'ouvre en haut : titre et emplacement du dossier visibles d'emblée.
+    photosRenommageRef.current = null;
+    setMessageRenommage(`Renommage terminé : ${renommes} œuvres renommées, ${aVerifier} à vérifier.`);
     if (typeof window !== "undefined") {
       window.requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
     }

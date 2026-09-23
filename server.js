@@ -112,7 +112,12 @@ const app = express();
 // (2) R2, tri : une mesure locale (part de pixels colorés, écart de luminance) contrôle le
 // classement de l'IA. Elle corrige un classement franchement faux et rattrape les photos
 // qu'aucun classement Oeuvres/Cartels n'a retenues. Mesurée conforme sur les 52 photos du lot.
-const VERSION_PHOTOCARTEL = "v92";
+// v93 — renommage d'un dossier : l'app lit elle-même les photos et les cartels. Trois routes :
+// /renommer-oeuvres/trier-image (une image de 768 px), /renommer-oeuvres/proposer (le texte lu,
+// deux demandes identiques simultanées partagent le même travail), /renommer-oeuvres/enregistrer
+// (PC seulement : le serveur local écrit le résultat dans le dossier racine ; refusée sur Render).
+// v94 — numéro aligné sur l'App (correctif v93 côté App uniquement).
+const VERSION_PHOTOCARTEL = "v94";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2013,11 +2018,11 @@ function trouverCartelLePlusProche(oeuvre, cartelsDisponibles, cheminOeuvres = "
   return meilleur;
 }
 
-function construireNomIntelligentDepuisAnalyse(fichierOeuvre, analyse, cheminOeuvre = "") {
+function construireNomIntelligentDepuisAnalyse(fichierOeuvre, analyse, cheminOeuvre = "", horodatageFourni = "") {
   const extension = path.extname(fichierOeuvre).toLowerCase() || ".jpg";
   // Interne — si le nom ne porte pas d'horodatage, l'heure EXIF de prise de vue le remplace.
   const timestampNom = normaliserTimestampDepuisNomFichier(fichierOeuvre);
-  const exifOeuvre = /^\d{8}_\d{6}$/.test(timestampNom) ? "" : lireHorodatageExifPriseDeVue(cheminOeuvre);
+  const exifOeuvre = /^\d{8}_\d{6}$/.test(timestampNom) ? "" : (horodatageFourni || lireHorodatageExifPriseDeVue(cheminOeuvre));
   // Interne — seul un vrai horodatage ouvre le nom final ; l'ancien nom du fichier n'y est jamais recopie.
   // Il reste en tete des noms A_VERIFIER_RENOMMAGE, pour qu'on retrouve la photo.
   const timestamp = exifOeuvre
@@ -5292,6 +5297,160 @@ app.post("/renommer-oeuvres/analyser", async (req, res) => {
 
 // v50.5 — étape manuelle : applique réellement le renommage, uniquement sur ce que
 // l'utilisateur a validé (propositions reçues, éventuellement éditées côté client).
+// v93 — Renommage autonome : R1, R3 et R4 se font dans l'app (PC et téléphone, même code).
+// Le serveur ne relaie plus que R2 (image de 768 px) et R5 (texte lu sur le cartel).
+const LIMITE_LECTURE_CARTEL_APP_S = 10;
+const renommagesAutonomesEnCours = new Map();
+
+app.post("/renommer-oeuvres/trier-image", async (req, res) => {
+  const debutMs = Date.now();
+  try {
+    const { nom, image, traits } = req.body || {};
+    if (!nom || !image) return res.status(400).json({ success: false, error: "nom ou image manquant" });
+    const buffer = Buffer.from(String(image), "base64");
+    let categorieIA = null;
+    let erreur = null;
+    try {
+      categorieIA = await classifierImageBuffer(buffer);
+    } catch (error) {
+      erreur = error;
+    }
+    const categorie = categorieTriCorrigeePhotoCartel(erreur ? null : categorieIA, traits || null, nom);
+    const retenue = categorie === "Oeuvres" || categorie === "Cartels" ? categorie : "A_verifier_renommage";
+    console.log(`TRI AUTONOME ${nom} : ${retenue} en ${Date.now() - debutMs} ms (${buffer.length} octets)`);
+    res.json({ success: true, nom, categorie: retenue, raison: erreur ? raisonLisibleErreurIA(erreur) : "" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Même appariement que trouverCartelLePlusProche (fenêtre de 60 s, heure EXIF d'abord,
+// heure du nom à défaut), sur les heures transmises par l'app.
+function trouverCartelLePlusProcheTransmis(oeuvre, cartels) {
+  const FENETRE_MAX_ASSOCIATION = 60;
+  if (!cartels.length) return null;
+  let meilleur = null;
+  let meilleureDistance = Number.MAX_SAFE_INTEGER;
+  for (const cartel of cartels) {
+    const distance = oeuvre.horodatage && cartel.horodatage
+      ? distanceEntreHorodatages(oeuvre.horodatage, cartel.horodatage)
+      : distanceTimestampSecondes(oeuvre.nom, cartel.nom);
+    if (distance < meilleureDistance) {
+      meilleur = cartel;
+      meilleureDistance = distance;
+    }
+  }
+  return meilleureDistance > FENETRE_MAX_ASSOCIATION ? null : meilleur;
+}
+
+async function proposerRenommageAutonome(oeuvres, cartels) {
+  const associationDirecteLotUnique = oeuvres.length === 1 && cartels.length === 1;
+  const associations = oeuvres.map((oeuvre) => ({
+    oeuvre,
+    cartel: associationDirecteLotUnique ? cartels[0] : trouverCartelLePlusProcheTransmis(oeuvre, cartels),
+  }));
+  const debutMs = Date.now();
+  const analyses = await executerEnParalleleOrdonne(associations, LIMITE_APPELS_IA_PARALLELES, async ({ oeuvre, cartel }) => {
+    if (!cartel) return { analyse: null, erreur: null };
+    if (cartel.deuxTextes) {
+      console.log(`ANALYSE AUTONOME ${cartel.nom} (oeuvre ${oeuvre.nom}) : aucun appel IA — cartel à deux textes`);
+      return { analyse: null, erreur: null, raisonOcr: "cartel à deux textes" };
+    }
+    if (Number(cartel.caracteres || 0) < SEUIL_CARACTERES_OCR_CARTEL) {
+      const raisonOcr = cartel.lectureArretee
+        ? `cartel trop long à lire (plus de ${LIMITE_LECTURE_CARTEL_APP_S} s)`
+        : `cartel illisible : ${Number(cartel.caracteres || 0)} caractère(s) lus, minimum ${SEUIL_CARACTERES_OCR_CARTEL}`;
+      console.log(`ANALYSE AUTONOME ${cartel.nom} (oeuvre ${oeuvre.nom}) : aucun appel IA — ${raisonOcr}`);
+      return { analyse: null, erreur: null, raisonOcr };
+    }
+    try {
+      const analyse = await analyserCartelTexteOCR(String(cartel.texte || ""));
+      console.log(`ANALYSE AUTONOME ${cartel.nom} (oeuvre ${oeuvre.nom}) : ${cartel.caracteres} caractère(s) reçus`);
+      return { analyse, erreur: null, raisonOcr: null };
+    } catch (error) {
+      return { analyse: null, erreur: error };
+    }
+  });
+  console.log(`ANALYSE AUTONOME : ${associations.length} oeuvre(s) en ${Date.now() - debutMs} ms`);
+  return associations.map(({ oeuvre, cartel }, index) => {
+    const resultat = analyses[index];
+    if (!cartel) {
+      return { oeuvre: oeuvre.nom, cartel: null, aVerifier: true, raison: "Aucun cartel proche", nomPropose: oeuvre.nom, analyse: null };
+    }
+    if (resultat.erreur) {
+      return { oeuvre: oeuvre.nom, cartel: cartel.nom, aVerifier: true, raison: raisonLisibleErreurIA(resultat.erreur), nomPropose: oeuvre.nom, analyse: null };
+    }
+    const nomPropose = construireNomIntelligentDepuisAnalyse(oeuvre.nom, resultat.analyse, "", oeuvre.horodatage || "");
+    const aVerifier = nomPropose.includes("A_VERIFIER_RENOMMAGE");
+    return {
+      oeuvre: oeuvre.nom, cartel: cartel.nom, aVerifier,
+      raison: aVerifier ? (resultat.raisonOcr || "Analyse peu fiable") : "",
+      nomPropose, analyse: resultat.analyse,
+    };
+  });
+}
+
+// Deux demandes identiques simultanées (double appui, renvoi) partagent le même travail :
+// l'IA n'est appelée qu'une fois.
+app.post("/renommer-oeuvres/proposer", async (req, res) => {
+  try {
+    const oeuvres = Array.isArray(req.body?.oeuvres) ? req.body.oeuvres : [];
+    const cartels = Array.isArray(req.body?.cartels) ? req.body.cartels : [];
+    if (!oeuvres.length) return res.status(400).json({ success: false, error: "Aucune œuvre à nommer" });
+    const cle = crypto.createHash("sha1").update(JSON.stringify(req.body)).digest("hex");
+    let travail = renommagesAutonomesEnCours.get(cle);
+    const partage = Boolean(travail);
+    if (!travail) {
+      travail = proposerRenommageAutonome(oeuvres, cartels).finally(() => renommagesAutonomesEnCours.delete(cle));
+      renommagesAutonomesEnCours.set(cle, travail);
+    } else {
+      console.log("PROPOSER AUTONOME : demande identique déjà en cours, résultat partagé");
+    }
+    const propositions = await travail;
+    res.json({ success: true, total: oeuvres.length, propositions, partage });
+  } catch (error) {
+    console.error("ERREUR /renommer-oeuvres/proposer =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PC seulement : le serveur local écrit le résultat du renommage dans le dossier racine.
+// Refusée sur Render (variable RENDER posée par l'hébergeur) : aucune photo n'y est reçue.
+const SOUS_DOSSIERS_RENOMMAGE = new Set(["Oeuvres", "Cartels", "A_verifier_renommage"]);
+app.post("/renommer-oeuvres/enregistrer", (req, res, suite) => {
+  if (process.env.RENDER) {
+    return res.status(403).json({ success: false, error: "Enregistrement réservé au serveur local du PC." });
+  }
+  return suite();
+}, upload.array("photos"), (req, res) => {
+  try {
+    const racine = req.body.dossierRacine || DOSSIER_RACINE_DONNEES;
+    const nomSortie = path.basename(String(req.body.nomSortie || "")).replace(/[<>:"/\\|?*]/g, "_");
+    const entrees = JSON.parse(req.body.entrees || "[]");
+    const fichiers = req.files || [];
+    if (!nomSortie || !entrees.length || entrees.length !== fichiers.length) {
+      return res.status(400).json({ success: false, error: "lot d'enregistrement incomplet" });
+    }
+    // Tout le lot est contrôlé avant la moindre écriture.
+    const noms = entrees.map((entree) => {
+      if (!SOUS_DOSSIERS_RENOMMAGE.has(entree.dossier)) throw new Error("sous-dossier inconnu : " + entree.dossier);
+      const nom = path.basename(String(entree.nom || "")).replace(/[<>:"/\\|?*]/g, "_");
+      if (!nom) throw new Error("nom de photo vide");
+      return nom;
+    });
+    const cheminSortie = path.join(racine, "Oeuvres renommées", nomSortie);
+    for (const sous of SOUS_DOSSIERS_RENOMMAGE) fs.mkdirSync(path.join(cheminSortie, sous), { recursive: true });
+    entrees.forEach((entree, index) => {
+      fs.writeFileSync(path.join(cheminSortie, entree.dossier, noms[index]), fichiers[index].buffer);
+    });
+    console.log(`ENREGISTRER AUTONOME ${nomSortie} : ${entrees.length} photo(s) écrites`);
+    res.json({ success: true, cheminSortie, ecrites: entrees.length });
+  } catch (error) {
+    console.error("ERREUR /renommer-oeuvres/enregistrer =", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post("/renommer-oeuvres/confirmer", async (req, res) => {
   try {
     console.log("APPEL BACKEND /renommer-oeuvres/confirmer =", req.body);
