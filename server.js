@@ -118,7 +118,8 @@ const app = express();
 // (PC seulement : le serveur local écrit le résultat dans le dossier racine ; refusée sur Render).
 // v94 — numéro aligné sur l'App (correctif v93 côté App uniquement).
 // v95 — le tri d'une photo douteuse envoyée par l'app passe en détail d'image bas.
-const VERSION_PHOTOCARTEL = "v95";
+// v96 — /renommer-oeuvres/proposer : les œuvres d'un lot sont nommées toutes en même temps.
+const VERSION_PHOTOCARTEL = "v96";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5353,7 +5354,8 @@ async function proposerRenommageAutonome(oeuvres, cartels) {
     cartel: associationDirecteLotUnique ? cartels[0] : trouverCartelLePlusProcheTransmis(oeuvre, cartels),
   }));
   const debutMs = Date.now();
-  const analyses = await executerEnParalleleOrdonne(associations, LIMITE_APPELS_IA_PARALLELES, async ({ oeuvre, cartel }) => {
+  // v96 — N1 : toutes les œuvres d'un lot sont nommées en même temps (plafond gpt-5-mini : 500 appels/min).
+  const analyses = await executerEnParalleleOrdonne(associations, Math.max(1, Math.min(associations.length, 30)), async ({ oeuvre, cartel }) => {
     if (!cartel) return { analyse: null, erreur: null };
     if (cartel.deuxTextes) {
       console.log(`ANALYSE AUTONOME ${cartel.nom} (oeuvre ${oeuvre.nom}) : aucun appel IA — cartel à deux textes`);

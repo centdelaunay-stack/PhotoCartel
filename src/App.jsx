@@ -305,12 +305,14 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // v95 — renommage d'un dossier : tri œuvre/cartel fait par la mesure locale (l'IA seulement pour
 // les photos douteuses) ; avancement affiché à chaque étape dans une fenêtre qui bloque tout double
 // clic ; durée de chaque étape affichée sur l'écran de fin.
-const VERSION_PHOTOCARTEL = "v95";
+// v96 — noms des œuvres demandés tous en même temps (compteur « Noms : x / n ») ; un seul exemplaire
+// par cartel, nommé d'après son œuvre ; bouton « Lancer le renommage ».
+const VERSION_PHOTOCARTEL = "v96";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
-  descriptif: "Renommage d’un dossier : tri local, avancement et durées affichés",
-  date: "2026-09-24",
+  descriptif: "Renommage d’un dossier : noms en parallèle, un exemplaire par cartel",
+  date: "2026-09-25",
   build: 5,
 };
 
@@ -1943,6 +1945,7 @@ const RA_TAILLE_TRI_PX = 768;
 const RA_LARGEUR_TRAITS = 400;
 const RA_SEUIL_PIXEL_COLORE = 0.25;
 const RA_APPELS_PARALLELES = 4;
+const RA_LOTS_NOMS = 6; // v96 — N1
 const RA_LIMITE_LECTURE_MS = 10000; // v93 — cartel bloqué : 10 s, puis « À vérifier »
 const RA_DELAI_DEMARRAGE_MS = 20000;
 const RA_SEUIL_CARACTERES = 15;
@@ -2529,15 +2532,43 @@ async function raLireEtProposer(photos, apiBase, signal, surAvancement = () => {
     })),
   };
   if (!corps.oeuvres.length) return { propositions: [], durees };
-  surAvancement("Noms des œuvres (IA)", 0, corps.oeuvres.length);
+  // v96 — N1 : les œuvres partent en 6 lots simultanés (6 = connexions simultanées d'un navigateur
+  // vers un même serveur) ; le serveur nomme toutes les œuvres d'un lot en même temps.
+  // Chaque lot porte tous les cartels : l'appariement œuvre-cartel reste celui du serveur.
+  const total = corps.oeuvres.length;
+  const nbLots = Math.min(RA_LOTS_NOMS, total);
+  const lots = Array.from({ length: nbLots }, (_, k) => corps.oeuvres.filter((_, i) => i % nbLots === k));
+  let nommees = 0;
+  surAvancement("Noms des œuvres (IA)", 0, total);
   const debutNoms = performance.now();
-  const r = await raPostJson(`${apiBase}/renommer-oeuvres/proposer`, corps, signal);
+  const resultats = await Promise.all(lots.map(async (oeuvres) => {
+    try {
+      const r = await raPostJson(`${apiBase}/renommer-oeuvres/proposer`, { oeuvres, cartels: corps.cartels }, signal);
+      return { propositions: r.propositions || [] };
+    } catch (e) {
+      return { erreur: e, oeuvres };
+    } finally {
+      nommees += oeuvres.length;
+      surAvancement("Noms des œuvres (IA)", nommees, total);
+    }
+  }));
   durees.nomsMs = performance.now() - debutNoms;
-  return { propositions: r.propositions || [], durees };
+  if (signal?.aborted) throw new DOMException("interrompu", "AbortError");
+  // Serveur injoignable pour tous les lots : erreur unique. Sinon, un lot en échec part en « À vérifier ».
+  if (resultats.every((r) => r.erreur)) throw resultats[0].erreur;
+  const parNom = new Map();
+  for (const r of resultats) {
+    if (r.erreur) {
+      for (const o of r.oeuvres) parNom.set(o.nom, { oeuvre: o.nom, cartel: null, aVerifier: true, raison: "Le serveur n'a pas répondu", nomPropose: o.nom, analyse: null });
+    } else {
+      for (const p of r.propositions) parNom.set(p.oeuvre, p);
+    }
+  }
+  return { propositions: corps.oeuvres.map((o) => parNom.get(o.nom)).filter(Boolean), durees };
 }
 
 // Plan d'écriture unique (PC et téléphone) : mêmes dossiers et mêmes noms que la confirmation v92.
-// Oeuvres : œuvres renommées ; Cartels : cartels + copie « <nom>_CARTEL.jpg » ; A_verifier_renommage.
+// Oeuvres : œuvres renommées ; Cartels : un exemplaire par cartel (v96) ; A_verifier_renommage.
 function raPlanEcriture(photos, propositions) {
   const parNom = new Map(photos.map((p) => [p.nom, p]));
   const pris = { Oeuvres: new Set(), Cartels: new Set(), A_verifier_renommage: new Set() };
@@ -2552,10 +2583,11 @@ function raPlanEcriture(photos, propositions) {
   };
   const plan = [];
   const resultats = [];
+  // v96 — N2 (choix b) : un seul exemplaire par cartel. Un cartel rattaché à une œuvre renommée
+  // est écrit sous « <nom de l'œuvre>_CARTEL.jpg » ; un cartel rattaché à aucune œuvre renommée
+  // garde son nom d'origine. L'original reste toujours intact dans le dossier d'origine.
+  const nomCartel = new Map();
   let renommes = 0;
-  for (const p of photos) {
-    if (p.categorie === "Cartels") plan.push({ dossier: "Cartels", nom: unique("Cartels", p.nom), fichier: p.fichier });
-  }
   for (const prop of propositions) {
     const photo = parNom.get(prop.oeuvre);
     if (!photo) continue;
@@ -2566,15 +2598,16 @@ function raPlanEcriture(photos, propositions) {
     }
     const nomOeuvreFinal = unique("Oeuvres", prop.nomPropose);
     plan.push({ dossier: "Oeuvres", nom: nomOeuvreFinal, fichier: photo.fichier });
-    const cartel = prop.cartel ? parNom.get(prop.cartel) : null;
-    if (cartel) {
-      plan.push({ dossier: "Cartels", nom: unique("Cartels", nomOeuvreFinal.replace(/\.[^.]+$/i, "_CARTEL.jpg")), fichier: cartel.fichier });
+    if (prop.cartel && parNom.has(prop.cartel) && !nomCartel.has(prop.cartel)) {
+      nomCartel.set(prop.cartel, nomOeuvreFinal.replace(/\.[^.]+$/i, "_CARTEL.jpg"));
     }
     renommes += 1;
     resultats.push({ oeuvre: prop.oeuvre, nomOeuvreFinal, success: true });
   }
   for (const p of photos) {
-    if (p.categorie !== "Cartels" && p.categorie !== "Oeuvres") {
+    if (p.categorie === "Cartels") {
+      plan.push({ dossier: "Cartels", nom: unique("Cartels", nomCartel.get(p.nom) || p.nom), fichier: p.fichier });
+    } else if (p.categorie !== "Oeuvres") {
       plan.push({ dossier: "A_verifier_renommage", nom: unique("A_verifier_renommage", p.nom), fichier: p.fichier });
     }
   }
@@ -10592,7 +10625,7 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
 
     setRenommageFinalEnCours(false);
     setMessageRenommage(
-      `Tri terminé pour "${nomDossierSource}". Clique sur « Lancer l'analyse IA » pour continuer.` +
+      `Tri terminé pour "${nomDossierSource}". Clique sur « Lancer le renommage » pour continuer.` +
         complementErreursTri
     );
     amenerEtapeALaVue("etape-renommage");
@@ -10641,7 +10674,7 @@ async function lancerAnalyseRenommage() {
   try {
     setAnalyseRenommageEnCours(true);
     setPropositionsRenommage(null);
-    setMessageRenommage("Analyse IA en cours...");
+    setMessageRenommage("Renommage en cours...");
 
     const { propositions, durees } = await raLireEtProposer(preparation.photos, API_BASE, operation.signal, (etape, fait, total) => {
       if (operation.estActive()) setAvancementRenommage({ etape, fait, total });
@@ -17118,7 +17151,7 @@ const validerNouvelleVisite = async () => {
               <p data-avancement-renommage>
                 <strong>
                   {avancementRenommage.etape}
-                  {avancementRenommage.total > 0 && avancementRenommage.etape !== "Noms des œuvres (IA)"
+                  {avancementRenommage.total > 0
                     ? ` : ${avancementRenommage.fait} / ${avancementRenommage.total}`
                     : "…"}
                 </strong>
@@ -18126,7 +18159,7 @@ const validerNouvelleVisite = async () => {
               >
                 {analyseRenommageEnCours || confirmationRenommageEnCours
                   ? "Renommage en cours..."
-                  : "🤖 Lancer l'analyse IA"}
+                  : "✏️ Lancer le renommage"}
               </button>
             )}
 
