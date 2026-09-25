@@ -117,7 +117,8 @@ const app = express();
 // deux demandes identiques simultanées partagent le même travail), /renommer-oeuvres/enregistrer
 // (PC seulement : le serveur local écrit le résultat dans le dossier racine ; refusée sur Render).
 // v94 — numéro aligné sur l'App (correctif v93 côté App uniquement).
-const VERSION_PHOTOCARTEL = "v94";
+// v95 — le tri d'une photo douteuse envoyée par l'app passe en détail d'image bas.
+const VERSION_PHOTOCARTEL = "v95";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2918,7 +2919,7 @@ function categorieTriCorrigeePhotoCartel(categorieIA, traits, nomFichier) {
   return mesure;
 }
 
-async function classifierImageBuffer(buffer) {
+async function classifierImageBuffer(buffer, detailImage = "") {
   const bufferNormalise = await normaliserBufferImagePourIA(buffer, TAILLE_IA_TRI_PX);
   const imageBase64 = bufferNormalise.toString("base64");
 
@@ -2959,6 +2960,8 @@ Ne réponds que par le nom exact de la catégorie.
             type: "image_url",
             image_url: {
               url: `data:image/jpeg;base64,${imageBase64}`,
+              // v95 — le tri d'une photo douteuse envoyée par l'app demande le détail bas.
+              ...(detailImage ? { detail: detailImage } : {}),
             },
           },
         ],
@@ -5311,7 +5314,7 @@ app.post("/renommer-oeuvres/trier-image", async (req, res) => {
     let categorieIA = null;
     let erreur = null;
     try {
-      categorieIA = await classifierImageBuffer(buffer);
+      categorieIA = await classifierImageBuffer(buffer, "low");
     } catch (error) {
       erreur = error;
     }

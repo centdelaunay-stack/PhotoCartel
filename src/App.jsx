@@ -302,12 +302,15 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // cartel bloqué 10 s → « À vérifier » ; photo de cartel à deux textes → « À vérifier ».
 // v94 — correctif v93 : les langues de lecture viennent des fichiers déjà présents à la racine
 // du projet ; plus aucune installation nécessaire.
-const VERSION_PHOTOCARTEL = "v94";
+// v95 — renommage d'un dossier : tri œuvre/cartel fait par la mesure locale (l'IA seulement pour
+// les photos douteuses) ; avancement affiché à chaque étape dans une fenêtre qui bloque tout double
+// clic ; durée de chaque étape affichée sur l'écran de fin.
+const VERSION_PHOTOCARTEL = "v95";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
-  descriptif: "Renommage d’un dossier : photos lues et cartels lus dans l’app",
-  date: "2026-09-23",
+  descriptif: "Renommage d’un dossier : tri local, avancement et durées affichés",
+  date: "2026-09-24",
   build: 5,
 };
 
@@ -2090,15 +2093,15 @@ async function raBlobEnBase64(blob) {
   return btoa(texte);
 }
 
-// R2, préparation locale : image réduite à 768 px + mesure locale v92 (part colorée, écart).
-async function raPreparerPourTri(bitmap) {
-  const cote = Math.max(bitmap.width, bitmap.height);
-  const echelle = Math.min(1, RA_TAILLE_TRI_PX / cote);
-  const { c } = raReduire(bitmap, Math.max(1, Math.round(bitmap.width * echelle)));
-  const blob = c.convertToBlob
-    ? await c.convertToBlob({ type: "image/jpeg", quality: 0.9 })
-    : await new Promise((r) => c.toBlob(r, "image/jpeg", 0.9));
-  const base64 = await raBlobEnBase64(blob);
+// R2, préparation locale. v95 : la mesure locale (part colorée, écart de luminance, mêmes seuils
+// que server.js v92) classe seule les cas francs ; l'IA n'est appelée que pour les cas douteux.
+// Mesurée sur les 52 vraies photos Morozov : 52 classées seules, 0 doute, 0 erreur.
+const RA_PART_COLOREE_MAX_CARTEL = 0.15;
+const RA_ECART_LUMINANCE_MAX_CARTEL = 35;
+const RA_PART_COLOREE_MIN_OEUVRE = 0.22;
+const RA_ECART_LUMINANCE_MIN_OEUVRE = 38;
+
+function raMesurerTraits(bitmap) {
   const { ctx, c: cm } = raReduire(bitmap, RA_LARGEUR_TRAITS);
   const d = ctx.getImageData(0, 0, cm.width, cm.height).data;
   const n = cm.width * cm.height;
@@ -2114,10 +2117,25 @@ async function raPreparerPourTri(bitmap) {
     s2 += lum * lum;
   }
   const moyenne = s / n;
-  return {
-    base64,
-    traits: { partColoree: colores / n, ecartLuminance: Math.sqrt(Math.max(0, s2 / n - moyenne * moyenne)) },
-  };
+  return { partColoree: colores / n, ecartLuminance: Math.sqrt(Math.max(0, s2 / n - moyenne * moyenne)) };
+}
+
+// "Oeuvres", "Cartels", ou null quand la mesure ne tranche pas (= categorieSelonImagePhotoCartel).
+function raCategorieLocale(traits) {
+  if (!traits) return null;
+  if (traits.partColoree < RA_PART_COLOREE_MAX_CARTEL && traits.ecartLuminance < RA_ECART_LUMINANCE_MAX_CARTEL) return "Cartels";
+  if (traits.partColoree > RA_PART_COLOREE_MIN_OEUVRE && traits.ecartLuminance > RA_ECART_LUMINANCE_MIN_OEUVRE) return "Oeuvres";
+  return null;
+}
+
+async function raImageTri(bitmap) {
+  const cote = Math.max(bitmap.width, bitmap.height);
+  const echelle = Math.min(1, RA_TAILLE_TRI_PX / cote);
+  const { c } = raReduire(bitmap, Math.max(1, Math.round(bitmap.width * echelle)));
+  const blob = c.convertToBlob
+    ? await c.convertToBlob({ type: "image/jpeg", quality: 0.9 })
+    : await new Promise((r) => c.toBlob(r, "image/jpeg", 0.9));
+  return raBlobEnBase64(blob);
 }
 
 // R3 — zone de texte (portage de trouverZoneTexteCartel, server.js v92), sur l'image redressée.
@@ -2442,10 +2460,13 @@ async function raPostJson(url, corps, signal) {
   throw erreur;
 }
 
-// Étape 1 : R1 + R2. Chaque photo est lue sur place ; seule une image de 768 px part au tri.
-async function raTrierPhotos(fichiers, apiBase, signal) {
+// Étape 1 : R1 + R2. Chaque photo est lue sur place et classée localement ; seule une photo
+// douteuse part au tri IA, en image de 768 px. surAvancement(fait, total) suit la progression.
+async function raTrierPhotos(fichiers, apiBase, signal, surAvancement = () => {}) {
   const photos = new Array(fichiers.length);
   let erreurServeur = null;
+  let faites = 0;
+  let appelsIA = 0;
   await raEnParallele(fichiers, RA_APPELS_PARALLELES, async (fichier, index) => {
     const horodatage = raLireHorodatageExif(await fichier.slice(0, 262144).arrayBuffer());
     let categorie = "A_verifier_renommage";
@@ -2453,36 +2474,53 @@ async function raTrierPhotos(fichiers, apiBase, signal) {
     if (!erreurServeur) {
       try {
         const bitmap = await raDecoder(fichier);
-        const { base64, traits } = await raPreparerPourTri(bitmap);
-        bitmap.close();
-        const r = await raPostJson(`${apiBase}/renommer-oeuvres/trier-image`, { nom: fichier.name, image: base64, traits }, signal);
-        categorie = r.categorie;
-        raison = r.raison || "";
+        const traits = raMesurerTraits(bitmap);
+        const locale = raCategorieLocale(traits);
+        if (locale) {
+          categorie = locale;
+          bitmap.close();
+        } else {
+          const image = await raImageTri(bitmap);
+          bitmap.close();
+          appelsIA += 1;
+          const r = await raPostJson(`${apiBase}/renommer-oeuvres/trier-image`, { nom: fichier.name, image, traits }, signal);
+          categorie = r.categorie;
+          raison = r.raison || "";
+        }
       } catch (e) {
         if (e?.code === "SERVEUR_INDISPONIBLE" || signal?.aborted) erreurServeur = e;
         else raison = `photo illisible (${e?.message || e})`;
       }
     }
     photos[index] = { fichier, nom: fichier.name, horodatage, categorie, raison };
+    faites += 1;
+    surAvancement(faites, fichiers.length);
   });
   if (erreurServeur) throw erreurServeur;
+  photos.appelsIA = appelsIA;
   return photos;
 }
 
 // Étape 2 : R3 + R4 dans l'app, puis R5 (texte seul) au serveur.
-async function raLireEtProposer(photos, apiBase, signal) {
+async function raLireEtProposer(photos, apiBase, signal, surAvancement = () => {}) {
   const lecteur = new RaLecteurCartels();
   const cartels = photos.filter((p) => p.categorie === "Cartels");
+  const debutLecture = performance.now();
+  let lus = 0;
+  surAvancement("Lecture des cartels", 0, cartels.length);
   try {
     for (const p of cartels) {
       if (signal?.aborted) throw new DOMException("interrompu", "AbortError");
       const bitmap = await raDecoder(p.fichier);
       p.lecture = await raLireCartel(lecteur, bitmap);
       bitmap.close();
+      lus += 1;
+      surAvancement("Lecture des cartels", lus, cartels.length);
     }
   } finally {
     await lecteur.fermer();
   }
+  const durees = { lectureMs: performance.now() - debutLecture, nomsMs: 0 };
   const corps = {
     oeuvres: photos.filter((p) => p.categorie === "Oeuvres").map((p) => ({ nom: p.nom, horodatage: p.horodatage })),
     cartels: cartels.map((p) => ({
@@ -2490,9 +2528,12 @@ async function raLireEtProposer(photos, apiBase, signal) {
       lectureArretee: p.lecture.lectureArretee, deuxTextes: p.lecture.deuxTextes,
     })),
   };
-  if (!corps.oeuvres.length) return [];
+  if (!corps.oeuvres.length) return { propositions: [], durees };
+  surAvancement("Noms des œuvres (IA)", 0, corps.oeuvres.length);
+  const debutNoms = performance.now();
   const r = await raPostJson(`${apiBase}/renommer-oeuvres/proposer`, corps, signal);
-  return r.propositions || [];
+  durees.nomsMs = performance.now() - debutNoms;
+  return { propositions: r.propositions || [], durees };
 }
 
 // Plan d'écriture unique (PC et téléphone) : mêmes dossiers et mêmes noms que la confirmation v92.
@@ -2542,21 +2583,24 @@ function raPlanEcriture(photos, propositions) {
 }
 
 // Téléphone : écriture dans DCIM/PhotoCartel par l'accès aux dossiers du navigateur.
-async function raEcrireDansDossier(dossierPhotoCartel, nomSortie, plan) {
+async function raEcrireDansDossier(dossierPhotoCartel, nomSortie, plan, surAvancement = () => {}) {
   const base = await dossierPhotoCartel.getDirectoryHandle("Oeuvres renommées", { create: true });
   const sortie = await base.getDirectoryHandle(nomSortie, { create: true });
   const sous = {};
   for (const nom of ["Oeuvres", "Cartels", "A_verifier_renommage"]) sous[nom] = await sortie.getDirectoryHandle(nom, { create: true });
+  let ecrits = 0;
   for (const entree of plan) {
     const poignee = await sous[entree.dossier].getFileHandle(entree.nom, { create: true });
     const flux = await poignee.createWritable();
     await flux.write(entree.fichier);
     await flux.close();
+    ecrits += 1;
+    surAvancement(ecrits, plan.length);
   }
 }
 
 // PC : le serveur local (même machine) écrit dans C:\PhotoCartel. Envoi par lots de 8 photos.
-async function raEcrireParServeurLocal(apiBase, dossierRacine, nomSortie, plan) {
+async function raEcrireParServeurLocal(apiBase, dossierRacine, nomSortie, plan, surAvancement = () => {}) {
   for (let i = 0; i < plan.length; i += 8) {
     const lot = plan.slice(i, i + 8);
     const form = new FormData();
@@ -2567,6 +2611,7 @@ async function raEcrireParServeurLocal(apiBase, dossierRacine, nomSortie, plan) 
     const r = await fetch(`${apiBase}/renommer-oeuvres/enregistrer`, { method: "POST", body: form });
     const json = await r.json().catch(() => ({ success: false, error: `réponse illisible (${r.status})` }));
     if (!r.ok || !json.success) throw new Error(json.error || `HTTP ${r.status}`);
+    surAvancement(Math.min(plan.length, i + lot.length), plan.length);
   }
 }
 
@@ -2869,6 +2914,8 @@ const [renommageFinalTermine, setRenommageFinalTermine] = useState(false);
 const [propositionsRenommage, setPropositionsRenommage] = useState(null);
 const [analyseRenommageEnCours, setAnalyseRenommageEnCours] = useState(false);
 const [confirmationRenommageEnCours, setConfirmationRenommageEnCours] = useState(false);
+// v95 — avancement visible du renommage : { etape, fait, total } (tri, lecture, noms, enregistrement).
+const [avancementRenommage, setAvancementRenommage] = useState(null);
 
 
 const cheminRenommagePrepareRef = useRef("");
@@ -5729,11 +5776,16 @@ function amenerEtapeALaVue(id) {
 function interrompreRenommage() {
   interrompreOperationEnCours("renommage");
   setRenommageFinalEnCours(false);
+  // v95 — l'interruption vaut pour toutes les étapes (tri, lecture, noms, enregistrement).
+  setAnalyseRenommageEnCours(false);
+  setConfirmationRenommageEnCours(false);
+  setAvancementRenommage(null);
+  photosRenommageRef.current = null;
   cheminRenommagePrepareRef.current = "";
   setCheminRenommagePrepare("");
   setRenommagePret(false);
   setPropositionsRenommage(null);
-  setMessageRenommage("Renommage interrompu. Aucune photo n'a été renommée.");
+  setMessageRenommage("Renommage interrompu. Les photos d'origine sont intactes.");
   amenerEtapeALaVue("etape-renommage");
 }
 
@@ -10513,7 +10565,12 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
     );
 
     const debut = new Date();
-    const photos = await raTrierPhotos(listeFichiers, API_BASE, operation.signal);
+    setAvancementRenommage({ etape: "Tri des photos", fait: 0, total: listeFichiers.length });
+    const debutTri = performance.now();
+    const photos = await raTrierPhotos(listeFichiers, API_BASE, operation.signal, (fait, total) => {
+      if (operation.estActive()) setAvancementRenommage({ etape: "Tri des photos", fait, total });
+    });
+    const dureeTriMs = performance.now() - debutTri;
     if (!operation.estActive()) return;
 
     const nomSortie = raNomSortie(nomDossierSource, debut);
@@ -10521,7 +10578,8 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
       ? `DCIM/PhotoCartel/Oeuvres renommées/${nomSortie}`
       : `${dossierRacine}\\Oeuvres renommées\\${nomSortie}`;
 
-    photosRenommageRef.current = { photos, nomSortie, nomDossierSource, debut };
+    photosRenommageRef.current = { photos, nomSortie, nomDossierSource, debut, durees: { triMs: dureeTriMs, appelsIA: photos.appelsIA || 0 } };
+    setAvancementRenommage(null);
     cheminRenommagePrepareRef.current = cheminPrepare;
     setCheminRenommagePrepare(cheminPrepare);
     setRenommagePret(true);
@@ -10542,6 +10600,7 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
     if (!operation.estActive()) return;
     console.error(error);
     setRenommageFinalEnCours(false);
+    setAvancementRenommage(null);
     setMessageRenommage(
       error?.code === "SERVEUR_INDISPONIBLE"
         ? error.message + " Aucune photo n'a été renommée."
@@ -10584,14 +10643,18 @@ async function lancerAnalyseRenommage() {
     setPropositionsRenommage(null);
     setMessageRenommage("Analyse IA en cours...");
 
-    const propositions = await raLireEtProposer(preparation.photos, API_BASE, operation.signal);
+    const { propositions, durees } = await raLireEtProposer(preparation.photos, API_BASE, operation.signal, (etape, fait, total) => {
+      if (operation.estActive()) setAvancementRenommage({ etape, fait, total });
+    });
     if (!operation.estActive()) return;
+    preparation.durees = { ...preparation.durees, ...durees };
 
     setAnalyseRenommageEnCours(false);
     await validerRenommage(propositions, racineAndroid);
   } catch (error) {
     if (!operation.estActive()) return;
     console.error(error);
+    setAvancementRenommage(null);
     setMessageRenommage(
       error?.code === "SERVEUR_INDISPONIBLE"
         ? error.message + " Aucune photo n'a été renommée."
@@ -10619,6 +10682,11 @@ async function validerRenommage(propositionsForcees = null, racineAndroidPreauto
     setMessageRenommage("Renommage en cours...");
 
     const { plan, resultats, renommes, aVerifier } = raPlanEcriture(preparation.photos, propositionsAValider);
+    const surEcriture = (fait, total) => {
+      if (operation.estActive()) setAvancementRenommage({ etape: "Enregistrement", fait, total });
+    };
+    surEcriture(0, plan.length);
+    const debutEcriture = performance.now();
 
     if (estAndroid()) {
       const racine = racineAndroidPreautorisee || await obtenirDossierRacinePhotoCartelAndroid({
@@ -10626,14 +10694,17 @@ async function validerRenommage(propositionsForcees = null, racineAndroidPreauto
         demanderPermissionSiNecessaire: false,
       });
       if (!racine) throw new Error("accès au dossier PhotoCartel indisponible, relance le renommage");
-      await raEcrireDansDossier(racine.dossierPhotoCartel, preparation.nomSortie, plan);
+      await raEcrireDansDossier(racine.dossierPhotoCartel, preparation.nomSortie, plan, surEcriture);
     } else {
-      await raEcrireParServeurLocal(API_BASE, dossierRacine, preparation.nomSortie, plan);
+      await raEcrireParServeurLocal(API_BASE, dossierRacine, preparation.nomSortie, plan, surEcriture);
     }
 
     if (!operation.estActive()) return;
 
     const fin = new Date();
+    const dureeEcritureMs = performance.now() - debutEcriture;
+    const durees = preparation.durees || {};
+    const secondes = (ms) => `${Math.max(0, Math.round((ms || 0) / 1000))} s`;
     const photosAnalysees = propositionsAValider.length;
     setDashboardRenommage({
       statut: "RENOMMAGE TERMINÉ",
@@ -10648,7 +10719,13 @@ async function validerRenommage(propositionsForcees = null, racineAndroidPreauto
       finTraitement: formaterDateHeurePhoto(fin),
       creationDossierLocale: formaterDateHeurePhoto(preparation.debut),
       creationDossierUTC: preparation.debut.toISOString(),
+      // v95 — durée de chaque étape, mesurée sur l'appareil (téléphone ou PC).
+      dureeTri: `${secondes(durees.triMs)} (${durees.appelsIA || 0} photo(s) confiée(s) à l'IA)`,
+      dureeLecture: secondes(durees.lectureMs),
+      dureeNoms: secondes(durees.nomsMs),
+      dureeEnregistrement: secondes(dureeEcritureMs),
     });
+    setAvancementRenommage(null);
     setResultatsRenommageDetail(resultats);
     setPropositionsRenommage(null);
     setRenommagePret(false);
@@ -10661,6 +10738,7 @@ async function validerRenommage(propositionsForcees = null, racineAndroidPreauto
   } catch (error) {
     if (!operation.estActive()) return;
     console.error(error);
+    setAvancementRenommage(null);
     setMessageRenommage("Erreur renommage : " + error.message);
   } finally {
     if (operation.estActive()) setConfirmationRenommageEnCours(false);
@@ -14561,6 +14639,14 @@ const validerNouvelleVisite = async () => {
             label="Taux de réussite"
             valeur={`${dashboardRenommage.tauxReussite} % (${dashboardRenommage.oeuvresRenommees}/${dashboardRenommage.photosAnalysees})`}
           />
+          {dashboardRenommage.dureeTri && (
+            <>
+              <DetailLigne icone="⏱️" label="Tri des photos" valeur={dashboardRenommage.dureeTri} />
+              <DetailLigne icone="⏱️" label="Lecture des cartels" valeur={dashboardRenommage.dureeLecture} />
+              <DetailLigne icone="⏱️" label="Noms des œuvres (IA)" valeur={dashboardRenommage.dureeNoms} />
+              <DetailLigne icone="⏱️" label="Enregistrement" valeur={dashboardRenommage.dureeEnregistrement} />
+            </>
+          )}
         </section>
 
         {/* v67 — mise en evidence demandee : vignette + nouveau nom de chaque oeuvre reellement
@@ -17022,13 +17108,24 @@ const validerNouvelleVisite = async () => {
         </div>
       )}
 
-      {renommageFinalEnCours && (
+      {(renommageFinalEnCours || analyseRenommageEnCours || confirmationRenommageEnCours) && (
         <div style={styles.modalOverlay}>
           <div style={styles.modal}>
             <h2>Renommage en cours</h2>
             <p>Dossier : {dossierRenommage}</p>
             <p>Photos à traiter : {nombrePhotosRenommage}</p>
-            <p>Merci de patienter.</p>
+            {avancementRenommage ? (
+              <p data-avancement-renommage>
+                <strong>
+                  {avancementRenommage.etape}
+                  {avancementRenommage.total > 0 && avancementRenommage.etape !== "Noms des œuvres (IA)"
+                    ? ` : ${avancementRenommage.fait} / ${avancementRenommage.total}`
+                    : "…"}
+                </strong>
+              </p>
+            ) : (
+              <p>Merci de patienter.</p>
+            )}
             <BoutonMenuPopup titre="Interrompre" secondaire onClick={interrompreRenommage} />
           </div>
         </div>
@@ -18024,11 +18121,11 @@ const validerNouvelleVisite = async () => {
               <button
                 type="button"
                 onClick={() => lancerAnalyseRenommage()}
-                disabled={analyseRenommageEnCours}
+                disabled={analyseRenommageEnCours || confirmationRenommageEnCours || renommageFinalEnCours}
                 style={styles.boutonTraitement}
               >
-                {analyseRenommageEnCours
-                  ? "Analyse IA en cours..."
+                {analyseRenommageEnCours || confirmationRenommageEnCours
+                  ? "Renommage en cours..."
                   : "🤖 Lancer l'analyse IA"}
               </button>
             )}
