@@ -1,3 +1,20 @@
+// PhotoCartel v97 — RECHERCHE À LA FORME D'EUROCARTEL, SUR LE RÉSUMÉ DE VISITE.
+// Base : v96.
+// 1. Résumé de visite (master data) : une visite = un dossier de photos (ses
+//    sous-dossiers Oeuvres, Cartels… compris) ; début et fin tirés des heures de prise
+//    de vue (EXIF, lues une seule fois par photo et gardées dans l'index, format 3) ;
+//    pays, villes, années, artistes ; type de visite posé à la création, modifiable,
+//    jamais déduit (_PhotoCartel_types_visites.json à la racine).
+// 2. Écran de recherche : Visites / Photos / Œuvres ; six critères déclarés (Pays,
+//    Ville, Année, Type de visite, Artiste, Mots-clés), chacun dans sa fenêtre à
+//    cases avec le nombre de résultats par valeur, compte sur le bouton ; « Lancer la
+//    recherche » ; rappel figé ; résultats groupés et titrés ; « Enregistrer la
+//    recherche » et « Recherches enregistrées » (liste de photos, aucune copie).
+// 3. Référentiel : liste complète des pays, villes étendues (Ljubljana…), ville
+//    posée par la structure Voyages/<voyage>/<ville>/<visite>.
+// 4. Chargement automatique en arrière-plan à l'ouverture de l'app, sans fenêtre.
+// 5. « Rechercher » sort du menu Bibliothèques (accès par la barre de l'accueil).
+//
 // PhotoCartel v81 — BANDEAU DE CRITÈRES FIGÉ, ET OUVERTURE D'UNE VISITE QUI SE VOIT.
 // Base : v80.
 // 1. Le bandeau de rappel des critères reste visible pendant le défilement des
@@ -307,7 +324,7 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // clic ; durée de chaque étape affichée sur l'écran de fin.
 // v96 — noms des œuvres demandés tous en même temps (compteur « Noms : x / n ») ; un seul exemplaire
 // par cartel, nommé d'après son œuvre ; bouton « Lancer le renommage ».
-const VERSION_PHOTOCARTEL = "v96";
+const VERSION_PHOTOCARTEL = "v97";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
@@ -572,7 +589,10 @@ function signatureAffichageGalerie(fiches) {
 
 const NOM_FICHIER_INDEX_RECHERCHE = "_PhotoCartel_index_recherche.json";
 const TYPE_DOCUMENT_INDEX_RECHERCHE = "PHOTOCARTEL_INDEX_RECHERCHE";
-const VERSION_FORMAT_INDEX_RECHERCHE = 2;
+// v97 — format 3 : chaque photo porte son heure de prise de vue (« horodatage »,
+// AAAAMMJJHHMMSS), lue UNE fois dans son EXIF puis gardée dans l'index. Un index
+// de format 2 reste lisible : ses photos n'ont simplement pas encore d'heure.
+const VERSION_FORMAT_INDEX_RECHERCHE = 3;
 
 // Mots ajoutés à la main à un dossier (lecture C). Fichier séparé de l'index :
 // reconstruire l'index ne l'efface jamais.
@@ -601,6 +621,8 @@ const DOSSIERS_HORS_RECHERCHE = [
   "Photos à analyser",
   "Collecte Photo en cours",
   "Classifications",
+  // v97 — les recherches enregistrées sont des listes de photos, pas des visites.
+  "Recherches enregistrées",
 ];
 
 // Dossiers de premier niveau parcourus, mais dont le nom n'est pas un mot de
@@ -793,13 +815,21 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
   const photos = [];
   const photosParNom = new Map();
   const listeTriee = photosListees
-    .map((photo) => ({ nom: String(photo?.nom || ""), dossier: String(photo?.dossier || "") }))
+    .map((photo) => ({
+      nom: String(photo?.nom || ""),
+      dossier: String(photo?.dossier || ""),
+      horodatage: String(photo?.horodatage || ""),
+    }))
     .filter((photo) => photo.nom)
     .sort((a, b) =>
       a.dossier === b.dossier ? (a.nom < b.nom ? -1 : a.nom > b.nom ? 1 : 0) : a.dossier < b.dossier ? -1 : 1
     );
   for (let i = 0; i < listeTriee.length; i += 1) {
-    const photo = { nom: listeTriee[i].nom, dossier: ajouterDossier(listeTriee[i].dossier) };
+    const photo = {
+      nom: listeTriee[i].nom,
+      dossier: ajouterDossier(listeTriee[i].dossier),
+      horodatage: listeTriee[i].horodatage,
+    };
     photos.push(photo);
     if (!photosParNom.has(photo.nom)) photosParNom.set(photo.nom, []);
     photosParNom.get(photo.nom).push(photo);
@@ -864,6 +894,7 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
       photos.push({
         nom: nomOriginal || String(fiche.nomPhoto || ""),
         dossier: dossierFiches,
+        horodatage: "",
         ...valeurs,
       });
     }
@@ -887,7 +918,8 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
 function lireEntreesDepuisContenuIndexRecherche(contenu) {
   if (!contenu || typeof contenu !== "object") return null;
   if (String(contenu.type_document || "") !== TYPE_DOCUMENT_INDEX_RECHERCHE) return null;
-  if (Number(contenu.version_format_index) !== VERSION_FORMAT_INDEX_RECHERCHE) return null;
+  const versionFormat = Number(contenu.version_format_index);
+  if (versionFormat !== 2 && versionFormat !== VERSION_FORMAT_INDEX_RECHERCHE) return null;
   if (!Array.isArray(contenu.dossiers) || !Array.isArray(contenu.photos)) return null;
 
   const dossiers = contenu.dossiers.map((dossier) => ({
@@ -905,6 +937,7 @@ function lireEntreesDepuisContenuIndexRecherche(contenu) {
           : -1,
       fichier: String(photo.fichier || ""),
       nomJson: String(photo.nomJson || ""),
+      horodatage: /^\d{14}$/.test(String(photo.horodatage || "")) ? String(photo.horodatage) : "",
       analysee: Boolean(photo.analysee),
       dateIso: String(photo.dateIso || ""),
       titre: String(photo.titre || ""),
@@ -918,9 +951,35 @@ function lireEntreesDepuisContenuIndexRecherche(contenu) {
 
   return {
     dateIndexIso: String(contenu.date_index_iso || ""),
+    horodatagesLus: versionFormat >= 3,
     dossiers,
     photos,
   };
+}
+
+// v97 — heures de prise de vue déjà connues, par photo (« chemin du dossier/nom »,
+// racine = ""). Un index de format 2 n'en connaît aucune : chaque photo sera lue
+// une fois, puis plus jamais. Une photo sans heure lisible est connue aussi (valeur
+// vide) : elle n'est pas relue à chaque ouverture.
+function horodatagesConnusDepuisContenuIndexRecherche(contenu) {
+  const connus = new Map();
+  const index = lireEntreesDepuisContenuIndexRecherche(contenu);
+  if (!index || !index.horodatagesLus) return connus;
+  for (let i = 0; i < index.photos.length; i += 1) {
+    const photo = index.photos[i];
+    const dossier = photo.dossier >= 0 ? index.dossiers[photo.dossier].chemin : "";
+    connus.set(`${dossier}/${photo.nom}`, photo.horodatage);
+  }
+  return connus;
+}
+
+// Heure portée par le nom quand l'EXIF n'en donne pas : IMG_20260809_114601,
+// PXL_20220115_103012345, 20190209-101500. Jamais inventée : sinon "".
+function horodatageDepuisNomRecherche(nomFichier) {
+  const m = String(nomFichier || "").match(
+    /(?:^|\D)((?:19|20)\d\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_\- ]?([01]\d|2[0-3])([0-5]\d)([0-5]\d)/
+  );
+  return m ? m.slice(1, 7).join("") : "";
 }
 
 // Signature de ce qui a été LISTÉ : sert à savoir si une mise à jour a changé
@@ -955,6 +1014,138 @@ function lireDepuisContenuMotsAjoutes(contenu) {
     if (chemin && mots.length > 0) resultat[chemin] = mots;
   }
   return resultat;
+}
+
+// v97 — TYPE DE VISITE. Posé à la création de la visite, modifiable ensuite, jamais
+// déduit. Fichier durable à la racine, séparé de l'index : reconstruire l'index ne
+// l'efface jamais. Une visite sans type posé vaut « Non renseigné ».
+const NOM_FICHIER_TYPES_VISITES = "_PhotoCartel_types_visites.json";
+const TYPE_DOCUMENT_TYPES_VISITES = "PHOTOCARTEL_TYPES_VISITES";
+const VERSION_FORMAT_TYPES_VISITES = 1;
+const TYPE_VISITE_NON_RENSEIGNE = "Non renseigné";
+// Même liste, même ordre et mêmes icônes que l'écran « Nouvelle visite ».
+const TYPES_VISITE_PHOTOCARTEL = [
+  ["🏛️", "Musée"],
+  ["⛪", "Église"],
+  ["🚆", "Transport"],
+  ["🏞️", "Site naturel"],
+  ["🏘️", "Ville / Village"],
+  ["🌳", "Jardin / Parc"],
+  ["🏙️", "Architecture"],
+  ["🏰", "Château"],
+  ["🍽️", "Restaurant / Repas"],
+  ["•••", "Autre"],
+];
+
+function typeVisiteReconnu(type) {
+  const valeur = String(type || "").trim();
+  if (valeur === "Eglise") return "Église";
+  return TYPES_VISITE_PHOTOCARTEL.some(([, libelle]) => libelle === valeur) ? valeur : "";
+}
+
+// { "<chemin de la visite>": "Musée", ... } — une entrée illisible est ignorée.
+function lireDepuisContenuTypesVisites(contenu) {
+  const resultat = {};
+  if (!contenu || typeof contenu !== "object") return resultat;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_TYPES_VISITES) return resultat;
+  const visites = contenu.visites && typeof contenu.visites === "object" ? contenu.visites : {};
+  const chemins = Object.keys(visites);
+  for (let i = 0; i < chemins.length; i += 1) {
+    const chemin = String(chemins[i] || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const type = typeVisiteReconnu(visites[chemins[i]]);
+    if (chemin && !chemin.split("/").includes("..") && type) resultat[chemin] = type;
+  }
+  return resultat;
+}
+
+function construireContenuTypesVisites(typesParChemin, versionApplication) {
+  return {
+    type_document: TYPE_DOCUMENT_TYPES_VISITES,
+    version_format: VERSION_FORMAT_TYPES_VISITES,
+    version_photocartel: String(versionApplication || ""),
+    date_modification_iso: new Date().toISOString(),
+    visites: lireDepuisContenuTypesVisites({
+      type_document: TYPE_DOCUMENT_TYPES_VISITES,
+      visites: typesParChemin || {},
+    }),
+  };
+}
+
+// Pose (ou retire, type vide) le type d'UNE visite dans le contenu existant.
+function modifierContenuTypesVisites(contenuExistant, chemin, type, versionApplication) {
+  const types = lireDepuisContenuTypesVisites(contenuExistant);
+  const cle = String(chemin || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const valeur = typeVisiteReconnu(type);
+  if (cle) {
+    if (valeur) types[cle] = valeur;
+    else delete types[cle];
+  }
+  return construireContenuTypesVisites(types, versionApplication);
+}
+
+// v97 — RECHERCHES ENREGISTRÉES. Une recherche enregistrée est une liste de photos
+// (leurs chemins relatifs à la racine), avec les critères qui l'ont produite. Elle
+// ne copie aucune photo : un fichier .json par recherche, dans
+// « Recherches enregistrées » à la racine. Un nom déjà pris n'est jamais écrasé.
+const DOSSIER_RECHERCHES_ENREGISTREES = "Recherches enregistrées";
+const TYPE_DOCUMENT_RECHERCHE_ENREGISTREE = "PHOTOCARTEL_RECHERCHE_ENREGISTREE";
+const VERSION_FORMAT_RECHERCHE_ENREGISTREE = 1;
+
+function nomPropreRechercheEnregistree(nom) {
+  return String(nom || "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+/, "")
+    .slice(0, 90)
+    .trim();
+}
+
+function nomFichierRechercheEnregistree(nom) {
+  const propre = nomPropreRechercheEnregistree(nom);
+  return propre ? `${propre}.json` : "";
+}
+
+function estNomFichierRechercheEnregistree(nomFichier) {
+  const nom = String(nomFichier || "");
+  return (
+    nom.toLowerCase().endsWith(".json") &&
+    !nom.includes("/") &&
+    !nom.includes("\\") &&
+    nomFichierRechercheEnregistree(nom.slice(0, -5)) === nom
+  );
+}
+
+function lireRechercheEnregistree(contenu) {
+  if (!contenu || typeof contenu !== "object") return null;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_RECHERCHE_ENREGISTREE) return null;
+  const nom = nomPropreRechercheEnregistree(contenu.nom);
+  if (!nom || !Array.isArray(contenu.photos)) return null;
+  const photos = contenu.photos
+    .map((fichier) => String(fichier || "").replace(/\\/g, "/"))
+    .filter((fichier) => fichier && !fichier.split("/").includes(".."));
+  return {
+    nom,
+    dateIso: String(contenu.date_enregistrement_iso || ""),
+    typeRecherche: String(contenu.type_recherche || ""),
+    texteCriteres: String(contenu.texte_criteres || ""),
+    criteres: contenu.criteres && typeof contenu.criteres === "object" ? contenu.criteres : {},
+    photos,
+  };
+}
+
+function construireContenuRechercheEnregistree({ nom, typeRecherche, texteCriteres, criteres, photos }, versionApplication) {
+  return {
+    type_document: TYPE_DOCUMENT_RECHERCHE_ENREGISTREE,
+    version_format: VERSION_FORMAT_RECHERCHE_ENREGISTREE,
+    version_photocartel: String(versionApplication || ""),
+    date_enregistrement_iso: new Date().toISOString(),
+    nom: nomPropreRechercheEnregistree(nom),
+    type_recherche: String(typeRecherche || ""),
+    texte_criteres: String(texteCriteres || ""),
+    criteres: criteres && typeof criteres === "object" ? criteres : {},
+    photos: Array.isArray(photos) ? photos.map(String) : [],
+  };
 }
 
 function construireContenuMotsAjoutes(motsParDossier, versionApplication) {
@@ -1088,35 +1279,67 @@ const LEXIQUE_EQUIVALENCES_RECHERCHE = [
 
 // Pays : [nom canonique affiché, variantes...]. Reconnaissance par le
 // contenu, jamais par la place du mot dans le nom (point 2 de la v78).
+// v97 — liste complète des pays (et des territoires lointains souvent nommés
+// seuls) : un pays absent de la liste n'apparaissait jamais dans les critères.
 const PAYS_RECHERCHE = [
-  ["France", "france", "french"], ["Espagne", "espagne", "espana", "spain"], ["Italie", "italie", "italia", "italy"],
-  ["Portugal", "portugal"], ["Allemagne", "allemagne", "deutschland", "germany"], ["Belgique", "belgique", "belgie", "belgium"],
-  ["Pays-Bas", "pays bas", "hollande", "nederland", "netherlands"], ["Suisse", "suisse", "schweiz", "svizzera", "switzerland"],
-  ["Autriche", "autriche", "osterreich", "austria"], ["Royaume-Uni", "royaume uni", "angleterre", "ecosse", "england", "scotland", "united kingdom"],
-  ["Irlande", "irlande", "ireland", "eire"], ["Suède", "suede", "sverige", "sweden"], ["Norvège", "norvege", "norge", "norway"],
-  ["Danemark", "danemark", "danmark", "denmark"], ["Finlande", "finlande", "suomi", "finland"], ["Islande", "islande", "iceland"],
-  ["Pologne", "pologne", "polska", "poland"], ["Tchéquie", "tchequie", "republique tcheque", "czechia", "czech republic"],
-  ["Hongrie", "hongrie", "magyarorszag", "hungary"], ["Grèce", "grece", "hellas", "greece"], ["Croatie", "croatie", "hrvatska", "croatia"],
-  ["Slovénie", "slovenie", "slovenija", "slovenia"], ["Roumanie", "roumanie", "romania"], ["Bulgarie", "bulgarie", "bulgaria"],
-  ["Malte", "malte", "malta"], ["Chypre", "chypre", "cyprus"], ["Luxembourg", "luxembourg"], ["Monaco", "monaco"],
-  ["Estonie", "estonie", "eesti", "estonia"], ["Lettonie", "lettonie", "latvija", "latvia"], ["Lituanie", "lituanie", "lietuva", "lithuania"],
-  ["Slovaquie", "slovaquie", "slovensko", "slovakia"], ["Serbie", "serbie", "srbija", "serbia"], ["Monténégro", "montenegro"],
-  ["Albanie", "albanie", "albania"], ["Russie", "russie", "rossiya", "russia"], ["Ukraine", "ukraine", "ukraina"],
-  ["Turquie", "turquie", "turkiye", "turkey"], ["Maroc", "maroc", "morocco"], ["Tunisie", "tunisie", "tunisia"],
-  ["Égypte", "egypte", "egypt", "misr"], ["Algérie", "algerie", "algeria"], ["Afrique du Sud", "afrique du sud", "south africa"],
-  ["Kenya", "kenya"], ["Tanzanie", "tanzanie", "tanzania"], ["Sénégal", "senegal"], ["Madagascar", "madagascar"],
-  ["Maurice", "ile maurice", "mauritius"], ["Israël", "israel"], ["Jordanie", "jordanie", "jordan"], ["Liban", "liban", "lebanon"],
-  ["Émirats arabes unis", "emirats", "emirates", "dubai", "abu dhabi"], ["Oman", "oman"], ["Iran", "iran"], ["Inde", "inde", "india"],
-  ["Népal", "nepal"], ["Sri Lanka", "sri lanka"], ["Chine", "chine", "china", "zhongguo"], ["Japon", "japon", "japan", "nippon", "nihon"],
-  ["Corée du Sud", "coree", "korea"], ["Thaïlande", "thailande", "thailand"], ["Cambodge", "cambodge", "cambodia", "kampuchea"],
-  ["Vietnam", "vietnam", "viet nam"], ["Laos", "laos"], ["Birmanie", "birmanie", "myanmar"], ["Malaisie", "malaisie", "malaysia"],
-  ["Singapour", "singapour", "singapore"], ["Indonésie", "indonesie", "indonesia", "bali"], ["Philippines", "philippines", "pilipinas"],
-  ["Australie", "australie", "australia"], ["Nouvelle-Zélande", "nouvelle zelande", "new zealand", "aotearoa"],
-  ["Canada", "canada"], ["États-Unis", "etats unis", "usa", "united states"], ["Mexique", "mexique", "mexico"],
-  ["Cuba", "cuba"], ["Guatemala", "guatemala"], ["Costa Rica", "costa rica"], ["Panama", "panama"], ["Colombie", "colombie", "colombia"],
-  ["Équateur", "equateur", "ecuador"], ["Pérou", "perou", "peru"], ["Bolivie", "bolivie", "bolivia"], ["Chili", "chili", "chile"],
-  ["Argentine", "argentine", "argentina"], ["Uruguay", "uruguay"], ["Paraguay", "paraguay"], ["Brésil", "bresil", "brasil", "brazil"],
-  ["Venezuela", "venezuela"], ["République dominicaine", "republique dominicaine", "dominican republic"],
+  ["Afghanistan", "afghanistan"], ["Afrique du Sud", "afrique du sud", "south africa", "suid afrika"],
+  ["Albanie", "albanie", "albania", "shqiperia"], ["Algérie", "algerie", "algeria"], ["Allemagne", "allemagne", "deutschland", "germany"],
+  ["Andorre", "andorre", "andorra"], ["Angola", "angola"], ["Antigua-et-Barbuda", "antigua"], ["Arabie saoudite", "arabie saoudite", "saudi arabia"],
+  ["Argentine", "argentine", "argentina"], ["Arménie", "armenie", "armenia", "hayastan"], ["Australie", "australie", "australia"],
+  ["Autriche", "autriche", "osterreich", "austria"], ["Azerbaïdjan", "azerbaidjan", "azerbaijan"], ["Bahamas", "bahamas"],
+  ["Bahreïn", "bahrein", "bahrain"], ["Bangladesh", "bangladesh"], ["Barbade", "barbade", "barbados"], ["Belgique", "belgique", "belgie", "belgium"],
+  ["Belize", "belize"], ["Bénin", "benin"], ["Bhoutan", "bhoutan", "bhutan"], ["Biélorussie", "bielorussie", "belarus"],
+  ["Birmanie", "birmanie", "myanmar"], ["Bolivie", "bolivie", "bolivia"], ["Bosnie-Herzégovine", "bosnie", "bosnia", "herzegovine", "herzegovina"],
+  ["Botswana", "botswana"], ["Brésil", "bresil", "brasil", "brazil"], ["Brunei", "brunei"], ["Bulgarie", "bulgarie", "bulgaria"],
+  ["Burkina Faso", "burkina faso", "burkina"], ["Burundi", "burundi"], ["Cambodge", "cambodge", "cambodia", "kampuchea"],
+  ["Cameroun", "cameroun", "cameroon"], ["Canada", "canada"], ["Cap-Vert", "cap vert", "cabo verde", "cape verde"],
+  ["Centrafrique", "centrafrique", "republique centrafricaine", "central african republic"], ["Chili", "chili", "chile"],
+  ["Chine", "chine", "china", "zhongguo"], ["Chypre", "chypre", "cyprus"], ["Colombie", "colombie", "colombia"], ["Comores", "comores", "comoros"],
+  ["Congo", "congo", "republique du congo"], ["République démocratique du Congo", "rdc", "republique democratique du congo", "congo kinshasa"],
+  ["Corée du Nord", "coree du nord", "north korea"], ["Corée du Sud", "coree du sud", "coree", "south korea", "korea"], ["Costa Rica", "costa rica"],
+  ["Côte d'Ivoire", "cote d ivoire", "cote divoire", "ivory coast"], ["Croatie", "croatie", "hrvatska", "croatia"], ["Cuba", "cuba"],
+  ["Danemark", "danemark", "danmark", "denmark"], ["Djibouti", "djibouti"], ["Dominique", "ile de la dominique", "dominica"],
+  ["Égypte", "egypte", "egypt", "misr"], ["Émirats arabes unis", "emirats", "emirates", "emirats arabes unis", "dubai", "abu dhabi"],
+  ["Équateur", "equateur", "ecuador"], ["Érythrée", "erythree", "eritrea"], ["Espagne", "espagne", "espana", "spain"],
+  ["Estonie", "estonie", "eesti", "estonia"], ["Eswatini", "eswatini", "swaziland"], ["États-Unis", "etats unis", "usa", "united states"],
+  ["Éthiopie", "ethiopie", "ethiopia"], ["Fidji", "fidji", "fiji"], ["Finlande", "finlande", "suomi", "finland"], ["France", "france", "french"],
+  ["Gabon", "gabon"], ["Gambie", "gambie", "gambia"], ["Géorgie", "georgie", "sakartvelo"], ["Ghana", "ghana"],
+  ["Grèce", "grece", "hellas", "greece"], ["Grenade (pays)", "ile de la grenade"], ["Guatemala", "guatemala"], ["Guinée", "guinee", "guinea"],
+  ["Guinée-Bissau", "guinee bissau", "guinea bissau"], ["Guinée équatoriale", "guinee equatoriale", "equatorial guinea"], ["Guyana", "guyana"],
+  ["Haïti", "haiti"], ["Honduras", "honduras"], ["Hongrie", "hongrie", "magyarorszag", "hungary"], ["Inde", "inde", "india"],
+  ["Indonésie", "indonesie", "indonesia", "bali", "java", "sumatra"], ["Irak", "irak", "iraq"], ["Iran", "iran"],
+  ["Irlande", "irlande", "ireland", "eire"], ["Islande", "islande", "iceland"], ["Israël", "israel"], ["Italie", "italie", "italia", "italy"],
+  ["Jamaïque", "jamaique", "jamaica"], ["Japon", "japon", "japan", "nippon", "nihon"], ["Jordanie", "jordanie", "jordan"],
+  ["Kazakhstan", "kazakhstan"], ["Kenya", "kenya"], ["Kirghizistan", "kirghizistan", "kyrgyzstan"], ["Kiribati", "kiribati"], ["Kosovo", "kosovo"],
+  ["Koweït", "koweit", "kuwait"], ["Laos", "laos"], ["Lesotho", "lesotho"], ["Lettonie", "lettonie", "latvija", "latvia"],
+  ["Liban", "liban", "lebanon"], ["Liberia", "liberia"], ["Libye", "libye", "libya"], ["Liechtenstein", "liechtenstein"],
+  ["Lituanie", "lituanie", "lietuva", "lithuania"], ["Luxembourg", "luxembourg"], ["Macédoine du Nord", "macedoine", "macedonia"],
+  ["Madagascar", "madagascar"], ["Malaisie", "malaisie", "malaysia"], ["Malawi", "malawi"], ["Maldives", "maldives"], ["Mali", "mali"],
+  ["Malte", "malte", "malta"], ["Maroc", "maroc", "morocco"], ["Maurice", "ile maurice", "mauritius"], ["Mauritanie", "mauritanie", "mauritania"],
+  ["Mexique", "mexique", "mexico"], ["Moldavie", "moldavie", "moldova"], ["Monaco", "monaco"], ["Mongolie", "mongolie", "mongolia"],
+  ["Monténégro", "montenegro", "crna gora"], ["Mozambique", "mozambique"], ["Namibie", "namibie", "namibia"], ["Népal", "nepal"],
+  ["Nicaragua", "nicaragua"], ["Niger", "niger"], ["Nigeria", "nigeria"], ["Norvège", "norvege", "norge", "norway"],
+  ["Nouvelle-Zélande", "nouvelle zelande", "new zealand", "aotearoa"], ["Oman", "oman"], ["Ouganda", "ouganda", "uganda"],
+  ["Ouzbékistan", "ouzbekistan", "uzbekistan"], ["Pakistan", "pakistan"], ["Palestine", "palestine", "cisjordanie", "gaza"], ["Panama", "panama"],
+  ["Papouasie-Nouvelle-Guinée", "papouasie", "papua"], ["Paraguay", "paraguay"], ["Pays-Bas", "pays bas", "hollande", "nederland", "netherlands"],
+  ["Pérou", "perou", "peru"], ["Philippines", "philippines", "pilipinas"], ["Pologne", "pologne", "polska", "poland"], ["Portugal", "portugal"],
+  ["Qatar", "qatar"], ["République dominicaine", "republique dominicaine", "dominican republic"], ["Roumanie", "roumanie", "romania"],
+  ["Royaume-Uni", "royaume uni", "angleterre", "ecosse", "pays de galles", "irlande du nord", "england", "scotland", "wales", "united kingdom"],
+  ["Russie", "russie", "rossiya", "russia"], ["Rwanda", "rwanda"], ["Sainte-Lucie", "sainte lucie", "saint lucia"], ["Salvador", "el salvador"],
+  ["Samoa", "samoa"], ["Sao Tomé-et-Principe", "sao tome"], ["Sénégal", "senegal"], ["Serbie", "serbie", "srbija", "serbia"],
+  ["Seychelles", "seychelles"], ["Sierra Leone", "sierra leone"], ["Singapour", "singapour", "singapore"],
+  ["Slovaquie", "slovaquie", "slovensko", "slovakia"], ["Slovénie", "slovenie", "slovenija", "slovenia"], ["Somalie", "somalie", "somalia"],
+  ["Soudan", "soudan", "sudan"], ["Soudan du Sud", "soudan du sud", "south sudan"], ["Sri Lanka", "sri lanka"],
+  ["Suède", "suede", "sverige", "sweden"], ["Suisse", "suisse", "schweiz", "svizzera", "switzerland"], ["Suriname", "suriname"],
+  ["Syrie", "syrie", "syria"], ["Tadjikistan", "tadjikistan", "tajikistan"], ["Taïwan", "taiwan"], ["Tanzanie", "tanzanie", "tanzania", "zanzibar"],
+  ["Tchad", "tchad"], ["Tchéquie", "tchequie", "republique tcheque", "czechia", "czech republic"], ["Thaïlande", "thailande", "thailand"],
+  ["Timor oriental", "timor"], ["Togo", "togo"], ["Tonga", "tonga"], ["Trinité-et-Tobago", "trinite et tobago", "trinidad and tobago"],
+  ["Tunisie", "tunisie", "tunisia"], ["Turkménistan", "turkmenistan"], ["Turquie", "turquie", "turkiye", "turkey"],
+  ["Ukraine", "ukraine", "ukraina"], ["Uruguay", "uruguay"], ["Vanuatu", "vanuatu"], ["Vatican", "vatican"], ["Venezuela", "venezuela"],
+  ["Vietnam", "vietnam", "viet nam"], ["Yémen", "yemen"], ["Zambie", "zambie", "zambia"], ["Zimbabwe", "zimbabwe"],
+  ["Polynésie française", "polynesie", "tahiti", "bora bora", "moorea"], ["Nouvelle-Calédonie", "nouvelle caledonie", "new caledonia"],
+  ["La Réunion", "la reunion", "ile de la reunion"], ["Martinique", "martinique"], ["Guadeloupe", "guadeloupe"], ["Guyane", "guyane"],
+  ["Groenland", "groenland", "greenland"], ["Porto Rico", "porto rico", "puerto rico"], ["Hong Kong", "hong kong"], ["Macao", "macao", "macau"],
 ];
 
 // Villes : liste embarquée, en français et en langue locale. Un mot non
@@ -1156,11 +1379,101 @@ const VILLES_RECHERCHE = [
   ["Mexico", "ciudad de mexico"], ["Oaxaca", "oaxaca"], ["La Havane", "la havane", "habana", "havana"],
   ["Cusco", "cusco", "cuzco"], ["Lima", "lima"], ["Arequipa", "arequipa"], ["Machu Picchu", "machu picchu"],
   ["La Paz", "la paz"], ["Sucre", "sucre"], ["Potosí", "potosi"], ["Uyuni", "uyuni"],
-  ["Santiago du Chili", "santiago"], ["Valparaiso", "valparaiso"], ["San Pedro de Atacama", "san pedro de atacama", "atacama"],
+  ["Santiago du Chili", "santiago du chili", "santiago de chile"], ["Valparaiso", "valparaiso"], ["San Pedro de Atacama", "san pedro de atacama", "atacama"],
   ["Buenos Aires", "buenos aires"], ["Ushuaïa", "ushuaia"], ["Iguazú", "iguazu", "iguacu"],
   ["Rio de Janeiro", "rio de janeiro", "rio"], ["Copacabana", "copacabana"], ["São Paulo", "sao paulo"], ["Salvador", "salvador de bahia"],
   ["Encarnación", "encarnacion"], ["Asunción", "asuncion"], ["Montevideo", "montevideo"], ["Bogota", "bogota"], ["Carthagène", "carthagene", "cartagena"],
   ["Quito", "quito"],
+  // v97 — villes ajoutées : capitales et villes de voyage (Ljubljana, etc.).
+  ["Avignon", "avignon"], ["Arles", "arles"], ["Nîmes", "nimes"], ["Montpellier", "montpellier"], ["Aix-en-Provence", "aix en provence"],
+  ["Carcassonne", "carcassonne"], ["Rouen", "rouen"], ["Reims", "reims"], ["Dijon", "dijon"], ["Annecy", "annecy"], ["Grenoble", "grenoble"],
+  ["Colmar", "colmar"], ["Rennes", "rennes"], ["Saint-Malo", "saint malo"], ["Honfleur", "honfleur"], ["Étretat", "etretat"], ["Giverny", "giverny"],
+  ["Versailles", "versailles"], ["Fontainebleau", "fontainebleau"], ["Chartres", "chartres"], ["Amiens", "amiens"], ["Biarritz", "biarritz"],
+  ["Cannes", "cannes"], ["Antibes", "antibes"], ["Menton", "menton"], ["Ajaccio", "ajaccio"], ["Bastia", "bastia"], ["Albi", "albi"],
+  ["Rocamadour", "rocamadour"], ["Sarlat", "sarlat"], ["Le Havre", "le havre"], ["Caen", "caen"], ["Bayeux", "bayeux"], ["Metz", "metz"],
+  ["Nancy", "nancy"], ["Clermont-Ferrand", "clermont ferrand"], ["Mont-Saint-Michel", "mont saint michel"], ["Malaga", "malaga"], ["Ronda", "ronda"],
+  ["Cadix", "cadix", "cadiz"], ["Ségovie", "segovie", "segovia"], ["Ávila", "avila"], ["Cuenca", "cuenca"], ["Saragosse", "saragosse", "zaragoza"],
+  ["Palma de Majorque", "palma de majorque", "palma de mallorca"], ["Ibiza", "ibiza"], ["Mérida", "merida"], ["Cáceres", "caceres"],
+  ["Burgos", "burgos"], ["Oviedo", "oviedo"], ["Pampelune", "pampelune", "pamplona"], ["Tarragone", "tarragone", "tarragona"],
+  ["Gérone", "gerone", "girona"], ["Figueras", "figueras", "figueres"], ["Alicante", "alicante"], ["Jerez", "jerez"], ["Úbeda", "ubeda"],
+  ["Almería", "almeria"], ["Coimbra", "coimbra"], ["Évora", "evora"], ["Faro", "faro de algarve"], ["Óbidos", "obidos"], ["Braga", "braga"],
+  ["Funchal", "funchal"], ["Madère", "madere", "madeira"], ["Assise", "assise", "assisi"], ["Pérouse", "perouse", "perugia"],
+  ["Ravenne", "ravenne", "ravenna"], ["Padoue", "padoue", "padova"], ["Mantoue", "mantoue", "mantova"], ["Lucques", "lucques", "lucca"],
+  ["San Gimignano", "san gimignano"], ["Orvieto", "orvieto"], ["Pompéi", "pompei", "pompeii"], ["Amalfi", "amalfi"],
+  ["Sorrente", "sorrente", "sorrento"], ["Capri", "capri"], ["Bari", "bari"], ["Lecce", "lecce"], ["Matera", "matera"],
+  ["Syracuse", "syracuse", "siracusa"], ["Catane", "catane", "catania"], ["Taormine", "taormine", "taormina"],
+  ["Agrigente", "agrigente", "agrigento"], ["Cagliari", "cagliari"], ["Trieste", "trieste"], ["Côme", "come", "como"],
+  ["Bergame", "bergame", "bergamo"], ["Parme", "parme", "parma"], ["Modène", "modene", "modena"], ["Ferrare", "ferrare", "ferrara"],
+  ["Urbino", "urbino"], ["Cinque Terre", "cinque terre"], ["Ljubljana", "ljubljana"], ["Bled", "bled"], ["Piran", "piran"], ["Zagreb", "zagreb"],
+  ["Zadar", "zadar"], ["Šibenik", "sibenik"], ["Belgrade", "belgrade", "beograd"], ["Sarajevo", "sarajevo"], ["Mostar", "mostar"],
+  ["Kotor", "kotor"], ["Tirana", "tirana"], ["Skopje", "skopje"], ["Ohrid", "ohrid"], ["Sofia", "sofia bulgarie", "sofia bulgaria"],
+  ["Plovdiv", "plovdiv"], ["Bucarest", "bucarest", "bucuresti", "bucharest"], ["Brasov", "brasov"], ["Sibiu", "sibiu"], ["Bratislava", "bratislava"],
+  ["Brno", "brno"], ["Český Krumlov", "cesky krumlov"], ["Wroclaw", "wroclaw"], ["Gdansk", "gdansk"], ["Poznan", "poznan"], ["Vilnius", "vilnius"],
+  ["Riga", "riga"], ["Tallinn", "tallinn"], ["Kiev", "kiev", "kyiv"], ["Lviv", "lviv", "lvov"], ["Minsk", "minsk"], ["Innsbruck", "innsbruck"],
+  ["Graz", "graz"], ["Hallstatt", "hallstatt"], ["Berne", "berne", "bern"], ["Bâle", "bale", "basel"], ["Lausanne", "lausanne"],
+  ["Lucerne", "lucerne", "luzern"], ["Lugano", "lugano"], ["Heidelberg", "heidelberg"], ["Nuremberg", "nuremberg", "nurnberg"],
+  ["Stuttgart", "stuttgart"], ["Leipzig", "leipzig"], ["Potsdam", "potsdam"], ["Weimar", "weimar"], ["Rothenburg", "rothenburg"],
+  ["Aix-la-Chapelle", "aix la chapelle", "aachen"], ["Düsseldorf", "dusseldorf"], ["Brême", "breme", "bremen"], ["Lübeck", "lubeck"],
+  ["Utrecht", "utrecht"], ["Delft", "delft"], ["Haarlem", "haarlem"], ["Leyde", "leyde", "leiden"], ["Maastricht", "maastricht"], ["Liège", "liege"],
+  ["Namur", "namur"], ["Louvain", "louvain", "leuven"], ["Malines", "malines", "mechelen"], ["Luxembourg-Ville", "luxembourg ville"],
+  ["Manchester", "manchester"], ["Liverpool", "liverpool"], ["Oxford", "oxford"], ["Cambridge", "cambridge"], ["York", "york"], ["Bath", "bath"],
+  ["Glasgow", "glasgow"], ["Belfast", "belfast"], ["Cardiff", "cardiff"], ["Cork", "cork"], ["Galway", "galway"], ["Bergen", "bergen"],
+  ["Tromsø", "tromso"], ["Göteborg", "goteborg", "gothenburg"], ["Malmö", "malmo"], ["Aarhus", "aarhus"], ["Turku", "turku"],
+  ["Rovaniemi", "rovaniemi"], ["Thessalonique", "thessalonique", "thessaloniki"], ["Santorin", "santorin", "santorini"], ["Mykonos", "mykonos"],
+  ["Rhodes", "rhodes"], ["Héraklion", "heraklion"], ["La Canée", "la canee", "chania"], ["Corfou", "corfou", "corfu"],
+  ["Delphes", "delphes", "delphi"], ["Nauplie", "nauplie", "nafplio"], ["Météores", "meteores", "meteora"], ["La Valette", "la valette", "valletta"],
+  ["Nicosie", "nicosie", "nicosia"], ["Ankara", "ankara"], ["Cappadoce", "cappadoce", "cappadocia"], ["Éphèse", "ephese", "ephesus"],
+  ["Izmir", "izmir"], ["Antalya", "antalya"], ["Tel Aviv", "tel aviv"], ["Haïfa", "haifa"], ["Bethléem", "bethleem", "bethlehem"],
+  ["Amman", "amman"], ["Beyrouth", "beyrouth", "beirut"], ["Byblos", "byblos"], ["Damas", "damas", "damascus"], ["Mascate", "mascate", "muscat"],
+  ["Doha", "doha"], ["Téhéran", "teheran", "tehran"], ["Ispahan", "ispahan", "isfahan"], ["Chiraz", "chiraz", "shiraz"],
+  ["Persépolis", "persepolis"], ["Tbilissi", "tbilissi", "tbilisi"], ["Erevan", "erevan", "yerevan"], ["Bakou", "bakou", "baku"],
+  ["Samarcande", "samarcande", "samarkand"], ["Boukhara", "boukhara", "bukhara"], ["Khiva", "khiva"], ["Tachkent", "tachkent", "tashkent"],
+  ["Rabat", "rabat"], ["Casablanca", "casablanca"], ["Tanger", "tanger", "tangier"], ["Chefchaouen", "chefchaouen"], ["Essaouira", "essaouira"],
+  ["Meknès", "meknes"], ["Ouarzazate", "ouarzazate"], ["Agadir", "agadir"], ["Tunis", "tunis"], ["Carthage", "carthage"],
+  ["Sidi Bou Saïd", "sidi bou said"], ["Djerba", "djerba"], ["Kairouan", "kairouan"], ["Alger", "alger", "algiers"], ["Oran", "oran"],
+  ["Alexandrie", "alexandrie", "alexandria"], ["Assouan", "assouan", "aswan"], ["Abou Simbel", "abou simbel", "abu simbel"], ["Dakar", "dakar"],
+  ["Saint-Louis du Sénégal", "saint louis du senegal"], ["Nairobi", "nairobi"], ["Zanzibar", "stone town"], ["Arusha", "arusha"],
+  ["Le Cap", "le cap", "cape town"], ["Johannesburg", "johannesburg"], ["Durban", "durban"], ["Windhoek", "windhoek"],
+  ["Victoria Falls", "victoria falls"], ["Antananarivo", "antananarivo", "tananarive"], ["Addis-Abeba", "addis abeba", "addis ababa"],
+  ["Lalibela", "lalibela"], ["Kigali", "kigali"], ["Abidjan", "abidjan"], ["Kanazawa", "kanazawa"], ["Takayama", "takayama"], ["Nikko", "nikko"],
+  ["Hakone", "hakone"], ["Nagasaki", "nagasaki"], ["Sapporo", "sapporo"], ["Kamakura", "kamakura"], ["Yokohama", "yokohama"], ["Kobe", "kobe"],
+  ["Himeji", "himeji"], ["Fukuoka", "fukuoka"], ["Okinawa", "okinawa"], ["Busan", "busan", "pusan"], ["Gyeongju", "gyeongju"],
+  ["Xi'an", "xi an", "xian"], ["Guilin", "guilin"], ["Chengdu", "chengdu"], ["Hangzhou", "hangzhou"], ["Suzhou", "suzhou"],
+  ["Lhassa", "lhassa", "lhasa"], ["Macao-Ville", "macao ville"], ["Taipei", "taipei"], ["Oulan-Bator", "oulan bator", "ulaanbaatar"],
+  ["Sukhothai", "sukhothai"], ["Krabi", "krabi"], ["Ko Samui", "ko samui", "koh samui"], ["Pattaya", "pattaya"], ["Kanchanaburi", "kanchanaburi"],
+  ["Battambang", "battambang"], ["Vientiane", "vientiane"], ["Hué", "hue"], ["Hoi An", "hoi an"], ["Da Nang", "da nang", "danang"],
+  ["Baie d'Along", "baie d along", "ha long", "halong"], ["Yangon", "yangon", "rangoun"], ["Bagan", "bagan"], ["Mandalay", "mandalay"],
+  ["Penang", "penang", "george town"], ["Malacca", "malacca", "melaka"], ["Jakarta", "jakarta"], ["Yogyakarta", "yogyakarta", "jogjakarta"],
+  ["Ubud", "ubud"], ["Manille", "manille", "manila"], ["Cebu", "cebu"], ["Colombo", "colombo"], ["Kandy", "kandy"], ["Galle", "galle"],
+  ["Sigiriya", "sigiriya"], ["Calcutta", "calcutta", "kolkata"], ["Madras", "madras", "chennai"], ["Bangalore", "bangalore", "bengaluru"],
+  ["Goa", "goa"], ["Udaipur", "udaipur"], ["Jodhpur", "jodhpur"], ["Jaisalmer", "jaisalmer"], ["Varanasi", "varanasi", "benares", "benares"],
+  ["Amritsar", "amritsar"], ["Pokhara", "pokhara"], ["Thimphou", "thimphou", "thimphu"], ["Malé", "male maldives"], ["Dacca", "dacca", "dhaka"],
+  ["Lahore", "lahore"], ["Islamabad", "islamabad"], ["Almaty", "almaty"], ["Astana", "astana"], ["Canberra", "canberra"], ["Brisbane", "brisbane"],
+  ["Perth", "perth"], ["Adélaïde", "adelaide"], ["Cairns", "cairns"], ["Hobart", "hobart"], ["Uluru", "uluru", "ayers rock"],
+  ["Auckland", "auckland"], ["Wellington", "wellington"], ["Christchurch", "christchurch"], ["Queenstown", "queenstown"], ["Rotorua", "rotorua"],
+  ["Papeete", "papeete"], ["Nouméa", "noumea"], ["Ottawa", "ottawa"], ["Halifax", "halifax"], ["Whistler", "whistler"], ["Winnipeg", "winnipeg"],
+  ["Edmonton", "edmonton"], ["Miami", "miami"], ["Seattle", "seattle"], ["San Diego", "san diego"], ["Philadelphie", "philadelphie", "philadelphia"],
+  ["Baltimore", "baltimore"], ["Atlanta", "atlanta"], ["Houston", "houston"], ["Dallas", "dallas"], ["Denver", "denver"],
+  ["Salt Lake City", "salt lake city"], ["Nashville", "nashville"], ["Honolulu", "honolulu"], ["Anchorage", "anchorage"],
+  ["Grand Canyon", "grand canyon"], ["Yosemite", "yosemite"], ["Yellowstone", "yellowstone"], ["Cancún", "cancun"], ["Tulum", "tulum"],
+  ["Mérida du Yucatán", "merida yucatan"], ["Guadalajara", "guadalajara"], ["Puebla", "puebla"], ["Guanajuato", "guanajuato"],
+  ["San Miguel de Allende", "san miguel de allende"], ["Palenque", "palenque"], ["Chichén Itzá", "chichen itza"], ["Teotihuacán", "teotihuacan"],
+  ["San Cristóbal de las Casas", "san cristobal de las casas"], ["Antigua Guatemala", "antigua guatemala"], ["Tikal", "tikal"],
+  ["Flores", "flores guatemala"], ["San José (Costa Rica)", "san jose costa rica"], ["Monteverde", "monteverde"], ["Tortuguero", "tortuguero"],
+  ["La Fortuna", "la fortuna"], ["Puerto Viejo", "puerto viejo"], ["Granada (Nicaragua)", "granada nicaragua"],
+  ["León (Nicaragua)", "leon nicaragua"], ["Panama City", "panama city", "ciudad de panama"], ["Santo Domingo", "santo domingo", "saint domingue"],
+  ["Trinidad (Cuba)", "trinidad cuba"], ["Viñales", "vinales"], ["Santiago de Cuba", "santiago de cuba"], ["Cienfuegos", "cienfuegos"],
+  ["Varadero", "varadero"], ["Kingston", "kingston"], ["Medellín", "medellin"], ["Cali", "cali"], ["Santa Marta", "santa marta"],
+  ["Villa de Leyva", "villa de leyva"], ["Guayaquil", "guayaquil"], ["Galápagos", "galapagos"], ["Otavalo", "otavalo"], ["Caracas", "caracas"],
+  ["Puno", "puno"], ["Nazca", "nazca"], ["Trujillo", "trujillo"], ["Iquitos", "iquitos"], ["Ollantaytambo", "ollantaytambo"], ["Pisac", "pisac"],
+  ["Aguas Calientes", "aguas calientes"], ["Cochabamba", "cochabamba"], ["Santa Cruz de la Sierra", "santa cruz de la sierra"],
+  ["Tiwanaku", "tiwanaku", "tiahuanaco"], ["Rurrenabaque", "rurrenabaque"], ["Punta Arenas", "punta arenas"], ["Puerto Natales", "puerto natales"],
+  ["Torres del Paine", "torres del paine"], ["Puerto Montt", "puerto montt"], ["Viña del Mar", "vina del mar"],
+  ["Île de Pâques", "ile de paques", "easter island", "rapa nui"], ["Chiloé", "chiloe"], ["Pucón", "pucon"], ["La Serena", "la serena"],
+  ["Mendoza", "mendoza"], ["Salta", "salta"], ["Córdoba (Argentine)", "cordoba argentine"], ["Bariloche", "bariloche"],
+  ["El Calafate", "el calafate"], ["Colonia del Sacramento", "colonia del sacramento"], ["Punta del Este", "punta del este"],
+  ["Brasilia", "brasilia"], ["Manaus", "manaus"], ["Ouro Preto", "ouro preto"], ["Paraty", "paraty"], ["Florianópolis", "florianopolis"],
+  ["Recife", "recife"], ["Olinda", "olinda"], ["Fortaleza", "fortaleza"], ["Foz do Iguaçu", "foz do iguacu"], ["Ciudad del Este", "ciudad del este"],
 ];
 
 // Découpe « rapide » d'un nom de photo : table des mots déjà découpés, pour
@@ -1180,6 +1493,107 @@ function construireTablePhrasesRecherche(liste) {
   return { table, longueurMax };
 }
 
+// v97 — pays d'une ville reconnue : une photo de « La Havane » est à Cuba, même si
+// son nom ne le dit pas. Les villes dont le nom existe dans plusieurs pays
+// (Valence, Mérida, Copacabana…) n'en ont aucun : rien n'est deviné.
+const PAYS_DES_VILLES_RECHERCHE = {
+  "Paris": "France", "Lyon": "France", "Marseille": "France", "Bordeaux": "France", "Nice": "France", "Strasbourg": "France", "Toulouse": "France",
+  "Lille": "France", "Nantes": "France", "Deauville": "France", "Villers-sur-Mer": "France", "Avignon": "France", "Arles": "France",
+  "Nîmes": "France", "Montpellier": "France", "Aix-en-Provence": "France", "Carcassonne": "France", "Rouen": "France", "Reims": "France",
+  "Dijon": "France", "Annecy": "France", "Grenoble": "France", "Colmar": "France", "Rennes": "France", "Saint-Malo": "France", "Honfleur": "France",
+  "Étretat": "France", "Giverny": "France", "Versailles": "France", "Fontainebleau": "France", "Chartres": "France", "Amiens": "France",
+  "Biarritz": "France", "Cannes": "France", "Antibes": "France", "Menton": "France", "Ajaccio": "France", "Bastia": "France", "Albi": "France",
+  "Rocamadour": "France", "Sarlat": "France", "Le Havre": "France", "Caen": "France", "Bayeux": "France", "Metz": "France", "Nancy": "France",
+  "Clermont-Ferrand": "France", "Mont-Saint-Michel": "France", "Madrid": "Espagne", "Barcelone": "Espagne", "Séville": "Espagne",
+  "Grenade": "Espagne", "Cordoue": "Espagne", "Bilbao": "Espagne", "Saint-Jacques-de-Compostelle": "Espagne", "Tolède": "Espagne",
+  "Salamanque": "Espagne", "Saint-Sébastien": "Espagne", "Malaga": "Espagne", "Ronda": "Espagne", "Cadix": "Espagne", "Ségovie": "Espagne",
+  "Ávila": "Espagne", "Cuenca": "Espagne", "Saragosse": "Espagne", "Palma de Majorque": "Espagne", "Ibiza": "Espagne", "Cáceres": "Espagne",
+  "Burgos": "Espagne", "Oviedo": "Espagne", "Pampelune": "Espagne", "Tarragone": "Espagne", "Gérone": "Espagne", "Figueras": "Espagne",
+  "Alicante": "Espagne", "Jerez": "Espagne", "Úbeda": "Espagne", "Almería": "Espagne", "Rome": "Italie", "Florence": "Italie", "Venise": "Italie",
+  "Milan": "Italie", "Naples": "Italie", "Bologne": "Italie", "Turin": "Italie", "Pise": "Italie", "Sienne": "Italie", "Vérone": "Italie",
+  "Gênes": "Italie", "Palerme": "Italie", "Assise": "Italie", "Pérouse": "Italie", "Ravenne": "Italie", "Padoue": "Italie", "Mantoue": "Italie",
+  "Lucques": "Italie", "San Gimignano": "Italie", "Orvieto": "Italie", "Pompéi": "Italie", "Amalfi": "Italie", "Sorrente": "Italie",
+  "Capri": "Italie", "Bari": "Italie", "Lecce": "Italie", "Matera": "Italie", "Syracuse": "Italie", "Catane": "Italie", "Taormine": "Italie",
+  "Agrigente": "Italie", "Cagliari": "Italie", "Trieste": "Italie", "Côme": "Italie", "Bergame": "Italie", "Parme": "Italie", "Modène": "Italie",
+  "Ferrare": "Italie", "Urbino": "Italie", "Cinque Terre": "Italie", "Lisbonne": "Portugal", "Porto": "Portugal", "Sintra": "Portugal",
+  "Coimbra": "Portugal", "Évora": "Portugal", "Faro": "Portugal", "Óbidos": "Portugal", "Braga": "Portugal", "Funchal": "Portugal",
+  "Madère": "Portugal", "Berlin": "Allemagne", "Munich": "Allemagne", "Francfort": "Allemagne", "Hambourg": "Allemagne", "Cologne": "Allemagne",
+  "Dresde": "Allemagne", "Heidelberg": "Allemagne", "Nuremberg": "Allemagne", "Stuttgart": "Allemagne", "Leipzig": "Allemagne",
+  "Potsdam": "Allemagne", "Weimar": "Allemagne", "Rothenburg": "Allemagne", "Aix-la-Chapelle": "Allemagne", "Düsseldorf": "Allemagne",
+  "Brême": "Allemagne", "Lübeck": "Allemagne", "Bruxelles": "Belgique", "Bruges": "Belgique", "Gand": "Belgique", "Anvers": "Belgique",
+  "Liège": "Belgique", "Namur": "Belgique", "Louvain": "Belgique", "Malines": "Belgique", "Amsterdam": "Pays-Bas", "Rotterdam": "Pays-Bas",
+  "La Haye": "Pays-Bas", "Utrecht": "Pays-Bas", "Delft": "Pays-Bas", "Haarlem": "Pays-Bas", "Leyde": "Pays-Bas", "Maastricht": "Pays-Bas",
+  "Genève": "Suisse", "Zurich": "Suisse", "Berne": "Suisse", "Bâle": "Suisse", "Lausanne": "Suisse", "Lucerne": "Suisse", "Lugano": "Suisse",
+  "Vienne": "Autriche", "Salzbourg": "Autriche", "Innsbruck": "Autriche", "Graz": "Autriche", "Hallstatt": "Autriche", "Londres": "Royaume-Uni",
+  "Édimbourg": "Royaume-Uni", "Manchester": "Royaume-Uni", "Liverpool": "Royaume-Uni", "Oxford": "Royaume-Uni", "Cambridge": "Royaume-Uni",
+  "York": "Royaume-Uni", "Bath": "Royaume-Uni", "Glasgow": "Royaume-Uni", "Belfast": "Royaume-Uni", "Cardiff": "Royaume-Uni", "Dublin": "Irlande",
+  "Cork": "Irlande", "Galway": "Irlande", "Stockholm": "Suède", "Göteborg": "Suède", "Malmö": "Suède", "Oslo": "Norvège", "Bergen": "Norvège",
+  "Tromsø": "Norvège", "Copenhague": "Danemark", "Aarhus": "Danemark", "Helsinki": "Finlande", "Turku": "Finlande", "Rovaniemi": "Finlande",
+  "Reykjavik": "Islande", "Prague": "Tchéquie", "Brno": "Tchéquie", "Český Krumlov": "Tchéquie", "Budapest": "Hongrie", "Varsovie": "Pologne",
+  "Cracovie": "Pologne", "Wroclaw": "Pologne", "Gdansk": "Pologne", "Poznan": "Pologne", "Athènes": "Grèce", "Thessalonique": "Grèce",
+  "Santorin": "Grèce", "Mykonos": "Grèce", "Rhodes": "Grèce", "Héraklion": "Grèce", "La Canée": "Grèce", "Corfou": "Grèce", "Delphes": "Grèce",
+  "Nauplie": "Grèce", "Météores": "Grèce", "Dubrovnik": "Croatie", "Split": "Croatie", "Zagreb": "Croatie", "Zadar": "Croatie", "Šibenik": "Croatie",
+  "Ljubljana": "Slovénie", "Bled": "Slovénie", "Piran": "Slovénie", "Belgrade": "Serbie", "Sarajevo": "Bosnie-Herzégovine",
+  "Mostar": "Bosnie-Herzégovine", "Kotor": "Monténégro", "Tirana": "Albanie", "Skopje": "Macédoine du Nord", "Ohrid": "Macédoine du Nord",
+  "Sofia": "Bulgarie", "Plovdiv": "Bulgarie", "Bucarest": "Roumanie", "Brasov": "Roumanie", "Sibiu": "Roumanie", "Bratislava": "Slovaquie",
+  "Vilnius": "Lituanie", "Riga": "Lettonie", "Tallinn": "Estonie", "Kiev": "Ukraine", "Lviv": "Ukraine", "Minsk": "Biélorussie",
+  "Saint-Pétersbourg": "Russie", "Moscou": "Russie", "Luxembourg-Ville": "Luxembourg", "La Valette": "Malte", "Nicosie": "Chypre",
+  "Istanbul": "Turquie", "Ankara": "Turquie", "Cappadoce": "Turquie", "Éphèse": "Turquie", "Izmir": "Turquie", "Antalya": "Turquie",
+  "Jérusalem": "Israël", "Tel Aviv": "Israël", "Haïfa": "Israël", "Bethléem": "Palestine", "Petra": "Jordanie", "Amman": "Jordanie",
+  "Beyrouth": "Liban", "Byblos": "Liban", "Damas": "Syrie", "Mascate": "Oman", "Doha": "Qatar", "Dubaï": "Émirats arabes unis", "Téhéran": "Iran",
+  "Ispahan": "Iran", "Chiraz": "Iran", "Persépolis": "Iran", "Tbilissi": "Géorgie", "Erevan": "Arménie", "Bakou": "Azerbaïdjan",
+  "Samarcande": "Ouzbékistan", "Boukhara": "Ouzbékistan", "Khiva": "Ouzbékistan", "Tachkent": "Ouzbékistan", "Marrakech": "Maroc", "Fès": "Maroc",
+  "Rabat": "Maroc", "Casablanca": "Maroc", "Tanger": "Maroc", "Chefchaouen": "Maroc", "Essaouira": "Maroc", "Meknès": "Maroc", "Ouarzazate": "Maroc",
+  "Agadir": "Maroc", "Tunis": "Tunisie", "Carthage": "Tunisie", "Sidi Bou Saïd": "Tunisie", "Djerba": "Tunisie", "Kairouan": "Tunisie",
+  "Alger": "Algérie", "Oran": "Algérie", "Le Caire": "Égypte", "Louxor": "Égypte", "Alexandrie": "Égypte", "Assouan": "Égypte",
+  "Abou Simbel": "Égypte", "Dakar": "Sénégal", "Saint-Louis du Sénégal": "Sénégal", "Nairobi": "Kenya", "Zanzibar": "Tanzanie", "Arusha": "Tanzanie",
+  "Le Cap": "Afrique du Sud", "Johannesburg": "Afrique du Sud", "Durban": "Afrique du Sud", "Windhoek": "Namibie", "Antananarivo": "Madagascar",
+  "Addis-Abeba": "Éthiopie", "Lalibela": "Éthiopie", "Kigali": "Rwanda", "Abidjan": "Côte d'Ivoire", "Tokyo": "Japon", "Kyoto": "Japon",
+  "Osaka": "Japon", "Hiroshima": "Japon", "Nara": "Japon", "Miyajima": "Japon", "Kanazawa": "Japon", "Takayama": "Japon", "Nikko": "Japon",
+  "Hakone": "Japon", "Nagasaki": "Japon", "Sapporo": "Japon", "Kamakura": "Japon", "Yokohama": "Japon", "Kobe": "Japon", "Himeji": "Japon",
+  "Fukuoka": "Japon", "Okinawa": "Japon", "Pékin": "Chine", "Shanghai": "Chine", "Xi'an": "Chine", "Guilin": "Chine", "Chengdu": "Chine",
+  "Hangzhou": "Chine", "Suzhou": "Chine", "Lhassa": "Chine", "Hong Kong": "Hong Kong", "Macao-Ville": "Macao", "Taipei": "Taïwan",
+  "Oulan-Bator": "Mongolie", "Séoul": "Corée du Sud", "Busan": "Corée du Sud", "Gyeongju": "Corée du Sud", "Bangkok": "Thaïlande",
+  "Chiang Mai": "Thaïlande", "Chiang Rai": "Thaïlande", "Phuket": "Thaïlande", "Ayutthaya": "Thaïlande", "Sukhothai": "Thaïlande",
+  "Krabi": "Thaïlande", "Ko Samui": "Thaïlande", "Pattaya": "Thaïlande", "Kanchanaburi": "Thaïlande", "Siem Reap": "Cambodge", "Angkor": "Cambodge",
+  "Phnom Penh": "Cambodge", "Battambang": "Cambodge", "Luang Prabang": "Laos", "Vientiane": "Laos", "Hanoï": "Vietnam",
+  "Hô Chi Minh-Ville": "Vietnam", "Hué": "Vietnam", "Hoi An": "Vietnam", "Da Nang": "Vietnam", "Baie d'Along": "Vietnam", "Yangon": "Birmanie",
+  "Bagan": "Birmanie", "Mandalay": "Birmanie", "Kuala Lumpur": "Malaisie", "Penang": "Malaisie", "Malacca": "Malaisie", "Singapour": "Singapour",
+  "Bali": "Indonésie", "Jakarta": "Indonésie", "Yogyakarta": "Indonésie", "Ubud": "Indonésie", "Manille": "Philippines", "Cebu": "Philippines",
+  "Colombo": "Sri Lanka", "Kandy": "Sri Lanka", "Galle": "Sri Lanka", "Sigiriya": "Sri Lanka", "Delhi": "Inde", "Agra": "Inde", "Jaipur": "Inde",
+  "Bombay": "Inde", "Calcutta": "Inde", "Madras": "Inde", "Bangalore": "Inde", "Goa": "Inde", "Udaipur": "Inde", "Jodhpur": "Inde",
+  "Jaisalmer": "Inde", "Varanasi": "Inde", "Amritsar": "Inde", "Katmandou": "Népal", "Pokhara": "Népal", "Thimphou": "Bhoutan", "Malé": "Maldives",
+  "Dacca": "Bangladesh", "Lahore": "Pakistan", "Islamabad": "Pakistan", "Almaty": "Kazakhstan", "Astana": "Kazakhstan", "Sydney": "Australie",
+  "Melbourne": "Australie", "Canberra": "Australie", "Brisbane": "Australie", "Perth": "Australie", "Adélaïde": "Australie", "Cairns": "Australie",
+  "Hobart": "Australie", "Uluru": "Australie", "Auckland": "Nouvelle-Zélande", "Wellington": "Nouvelle-Zélande", "Christchurch": "Nouvelle-Zélande",
+  "Queenstown": "Nouvelle-Zélande", "Rotorua": "Nouvelle-Zélande", "Papeete": "Polynésie française", "Nouméa": "Nouvelle-Calédonie",
+  "New York": "États-Unis", "Washington": "États-Unis", "San Francisco": "États-Unis", "Los Angeles": "États-Unis", "Chicago": "États-Unis",
+  "Boston": "États-Unis", "La Nouvelle-Orléans": "États-Unis", "Las Vegas": "États-Unis", "Miami": "États-Unis", "Seattle": "États-Unis",
+  "San Diego": "États-Unis", "Philadelphie": "États-Unis", "Baltimore": "États-Unis", "Atlanta": "États-Unis", "Houston": "États-Unis",
+  "Dallas": "États-Unis", "Denver": "États-Unis", "Salt Lake City": "États-Unis", "Nashville": "États-Unis", "Honolulu": "États-Unis",
+  "Anchorage": "États-Unis", "Grand Canyon": "États-Unis", "Yosemite": "États-Unis", "Yellowstone": "États-Unis", "Montréal": "Canada",
+  "Québec": "Canada", "Toronto": "Canada", "Vancouver": "Canada", "Calgary": "Canada", "Banff": "Canada", "Lake Louise": "Canada",
+  "Drumheller": "Canada", "Ottawa": "Canada", "Halifax": "Canada", "Whistler": "Canada", "Winnipeg": "Canada", "Edmonton": "Canada",
+  "Mexico": "Mexique", "Oaxaca": "Mexique", "Cancún": "Mexique", "Tulum": "Mexique", "Mérida du Yucatán": "Mexique", "Guadalajara": "Mexique",
+  "Puebla": "Mexique", "Guanajuato": "Mexique", "San Miguel de Allende": "Mexique", "Palenque": "Mexique", "Chichén Itzá": "Mexique",
+  "Teotihuacán": "Mexique", "San Cristóbal de las Casas": "Mexique", "Antigua Guatemala": "Guatemala", "Tikal": "Guatemala", "Flores": "Guatemala",
+  "San José (Costa Rica)": "Costa Rica", "Monteverde": "Costa Rica", "Tortuguero": "Costa Rica", "La Fortuna": "Costa Rica",
+  "Puerto Viejo": "Costa Rica", "Granada (Nicaragua)": "Nicaragua", "León (Nicaragua)": "Nicaragua", "Panama City": "Panama",
+  "Santo Domingo": "République dominicaine", "La Havane": "Cuba", "Trinidad (Cuba)": "Cuba", "Viñales": "Cuba", "Santiago de Cuba": "Cuba",
+  "Cienfuegos": "Cuba", "Varadero": "Cuba", "Bogota": "Colombie", "Carthagène": "Colombie", "Medellín": "Colombie", "Cali": "Colombie",
+  "Santa Marta": "Colombie", "Villa de Leyva": "Colombie", "Quito": "Équateur", "Guayaquil": "Équateur", "Galápagos": "Équateur",
+  "Otavalo": "Équateur", "Caracas": "Venezuela", "Cusco": "Pérou", "Lima": "Pérou", "Arequipa": "Pérou", "Machu Picchu": "Pérou", "Puno": "Pérou",
+  "Nazca": "Pérou", "Iquitos": "Pérou", "Ollantaytambo": "Pérou", "Pisac": "Pérou", "Aguas Calientes": "Pérou", "La Paz": "Bolivie",
+  "Sucre": "Bolivie", "Potosí": "Bolivie", "Uyuni": "Bolivie", "Cochabamba": "Bolivie", "Santa Cruz de la Sierra": "Bolivie", "Tiwanaku": "Bolivie",
+  "Rurrenabaque": "Bolivie", "Santiago du Chili": "Chili", "Valparaiso": "Chili", "San Pedro de Atacama": "Chili", "Punta Arenas": "Chili",
+  "Puerto Natales": "Chili", "Torres del Paine": "Chili", "Puerto Montt": "Chili", "Viña del Mar": "Chili", "Île de Pâques": "Chili",
+  "Chiloé": "Chili", "Pucón": "Chili", "La Serena": "Chili", "Buenos Aires": "Argentine", "Ushuaïa": "Argentine", "Mendoza": "Argentine",
+  "Salta": "Argentine", "Córdoba (Argentine)": "Argentine", "Bariloche": "Argentine", "El Calafate": "Argentine", "Montevideo": "Uruguay",
+  "Colonia del Sacramento": "Uruguay", "Punta del Este": "Uruguay", "Encarnación": "Paraguay", "Asunción": "Paraguay", "Ciudad del Este": "Paraguay",
+  "Rio de Janeiro": "Brésil", "São Paulo": "Brésil", "Salvador": "Brésil", "Brasilia": "Brésil", "Manaus": "Brésil", "Ouro Preto": "Brésil",
+  "Paraty": "Brésil", "Florianópolis": "Brésil", "Recife": "Brésil", "Olinda": "Brésil", "Fortaleza": "Brésil", "Foz do Iguaçu": "Brésil",
+};
+
 const TABLE_PAYS_RECHERCHE = construireTablePhrasesRecherche(PAYS_RECHERCHE);
 const TABLE_VILLES_RECHERCHE = construireTablePhrasesRecherche(VILLES_RECHERCHE);
 
@@ -1198,17 +1612,68 @@ const EQUIVALENTS_PAR_MOT_RECHERCHE = (() => {
   return table;
 })();
 
+// v97 — l'expression la plus longue l'emporte et ses mots ne sont plus relus :
+// « Guinée équatoriale » ne donne plus aussi « Guinée », « New York » ne donne
+// plus aussi « York ».
 function reconnaitrePhrasesRecherche(mots, tablePhrases, resultat) {
   const { table, longueurMax } = tablePhrases;
-  for (let i = 0; i < mots.length; i += 1) {
+  let i = 0;
+  while (i < mots.length) {
     let phrase = "";
+    let trouve = "";
+    let longueurTrouvee = 0;
     for (let longueur = 1; longueur <= longueurMax && i + longueur <= mots.length; longueur += 1) {
       phrase = longueur === 1 ? mots[i] : `${phrase} ${mots[i + longueur - 1]}`;
       const canonique = table.get(phrase);
-      if (canonique) resultat.add(canonique);
+      if (canonique) {
+        trouve = canonique;
+        longueurTrouvee = longueur;
+      }
+    }
+    if (trouve) {
+      resultat.add(trouve);
+      i += longueurTrouvee;
+    } else {
+      i += 1;
     }
   }
   return resultat;
+}
+
+// v97 — villes dont le nom seul est trop courant pour être lu sans son pays :
+// « Santiago » est une cathédrale à Bilbao, une ville au Chili.
+const VILLES_SOUS_CONDITION_PAYS_RECHERCHE = [
+  ["santiago", "Santiago du Chili", "Chili"],
+  ["san jose", "San José (Costa Rica)", "Costa Rica"],
+];
+
+function ajouterPaysDesVillesRecherche(villes, pays) {
+  villes.forEach((ville) => {
+    const paysVille = PAYS_DES_VILLES_RECHERCHE[ville];
+    if (paysVille) pays.add(paysVille);
+  });
+  return pays;
+}
+
+function reconnaitreVillesSousConditionRecherche(mots, pays, villes) {
+  if (!mots.length || !pays.size) return villes;
+  const texte = ` ${mots.join(" ")} `;
+  for (let i = 0; i < VILLES_SOUS_CONDITION_PAYS_RECHERCHE.length; i += 1) {
+    const [expression, ville, paysRequis] = VILLES_SOUS_CONDITION_PAYS_RECHERCHE[i];
+    if (pays.has(paysRequis) && texte.includes(` ${expression} `)) villes.add(ville);
+  }
+  return villes;
+}
+
+// v97 — sous-dossiers qu'une visite crée elle-même (musée, église) ou que le
+// renommage produit : leurs photos appartiennent à la visite qui les contient.
+const SOUS_DOSSIERS_DE_VISITE_RECHERCHE = new Set([
+  "oeuvres", "cartels", "jardins", "architecture", "batiments", "structures",
+  "a verifier classification", "a verifier renommage", "facade", "nef",
+]);
+
+function estSousDossierDeVisiteRecherche(nomDossier) {
+  return SOUS_DOSSIERS_DE_VISITE_RECHERCHE.has(decouperEnMotsPhotoCartel(nomDossier).join(" "));
 }
 
 // Année portée par une suite de mots : 2019 isolé, une date collée
@@ -1302,8 +1767,9 @@ function lireNomDossierRecherche(nomDossier) {
   return { mots, marqueurs, annee: anneeDepuisMotsRecherche(tous) };
 }
 
-// Préparation du moteur : UNE FOIS par index chargé ou par mot ajouté.
-function preparerMoteurRecherche(index, motsAjoutes) {
+// Préparation du moteur : UNE FOIS par index chargé, par mot ajouté ou par type
+// de visite modifié.
+function preparerMoteurRecherche(index, motsAjoutes, typesVisites) {
   const vocabulaire = new Map();
   const listeMots = [];
   const identifiant = (mot) => {
@@ -1322,6 +1788,7 @@ function preparerMoteurRecherche(index, motsAjoutes) {
   };
 
   const ajoutes = motsAjoutes && typeof motsAjoutes === "object" ? motsAjoutes : {};
+  const typesPoses = typesVisites && typeof typesVisites === "object" ? typesVisites : {};
   const sourceDossiers = Array.isArray(index?.dossiers) ? index.dossiers : [];
   const sourcePhotos = Array.isArray(index?.photos) ? index.photos : [];
 
@@ -1337,6 +1804,7 @@ function preparerMoteurRecherche(index, motsAjoutes) {
       reconnaitrePhrasesRecherche(lecture.mots, TABLE_VILLES_RECHERCHE, villes);
     }
     return {
+      motsLus: conteneur ? [] : lecture.mots,
       position,
       chemin: dossier.chemin,
       nom: dossier.nom,
@@ -1354,6 +1822,28 @@ function preparerMoteurRecherche(index, motsAjoutes) {
     };
   });
 
+  // v97 — ville posée par la structure : dans Voyages/<voyage>/<ville>/<visite>, le
+  // dossier de deuxième niveau EST la ville, choisie à la création de la visite.
+  // Il n'a pas besoin d'être dans la liste des villes pour être reconnu.
+  const aSousDossierVisite = new Array(dossiers.length).fill(false);
+  for (let i = 0; i < dossiers.length; i += 1) {
+    const parent = dossiers[i].parent;
+    if (parent >= 0 && !estSousDossierDeVisiteRecherche(dossiers[i].nom)) aSousDossierVisite[parent] = true;
+  }
+  for (let i = 0; i < dossiers.length; i += 1) {
+    const dossier = dossiers[i];
+    const segments = dossier.chemin.split("/");
+    if (
+      segments.length === 3 &&
+      decouperEnMotsPhotoCartel(segments[0]).join(" ") === "voyages" &&
+      aSousDossierVisite[i] &&
+      decouperEnMotsPhotoCartel(dossier.nom).join(" ") !== "visites rapides"
+    ) {
+      const ville = TABLE_VILLES_RECHERCHE.table.get(dossier.motsLus.join(" ")) || dossier.nom.trim();
+      if (ville) dossier.villesPropres.add(ville);
+    }
+  }
+
   // Héritage descendant : année, pays et ville du dossier le plus proche.
   for (let i = 0; i < dossiers.length; i += 1) {
     const dossier = dossiers[i];
@@ -1361,7 +1851,15 @@ function preparerMoteurRecherche(index, motsAjoutes) {
     dossier.annee = dossier.anneePropre || (parent ? parent.annee : "");
     dossier.pays = new Set([...(parent ? parent.pays : []), ...dossier.paysPropres]);
     dossier.villes = new Set([...(parent ? parent.villes : []), ...dossier.villesPropres]);
+    reconnaitreVillesSousConditionRecherche(dossier.motsLus, dossier.pays, dossier.villes);
+    ajouterPaysDesVillesRecherche(dossier.villes, dossier.pays);
     dossier.profondeur = parent ? parent.profondeur + 1 : 0;
+    // v97 — visite propriétaire : le dossier lui-même, sauf un sous-dossier de
+    // visite (Oeuvres, Cartels…) qui appartient à la visite qui le contient.
+    if (dossier.conteneur) dossier.proprietaire = -1;
+    else if (parent && parent.proprietaire >= 0 && estSousDossierDeVisiteRecherche(dossier.nom)) {
+      dossier.proprietaire = parent.proprietaire;
+    } else dossier.proprietaire = i;
   }
 
   const photos = sourcePhotos.map((photo, position) => {
@@ -1373,8 +1871,14 @@ function preparerMoteurRecherche(index, motsAjoutes) {
     reconnaitrePhrasesRecherche(lecture.mots, TABLE_VILLES_RECHERCHE, villes);
     if (photo.pays) reconnaitrePhrasesRecherche(decouperEnMotsPhotoCartel(photo.pays), TABLE_PAYS_RECHERCHE, pays);
     if (photo.ville) reconnaitrePhrasesRecherche(decouperEnMotsPhotoCartel(photo.ville), TABLE_VILLES_RECHERCHE, villes);
+    reconnaitreVillesSousConditionRecherche(lecture.mots, pays, villes);
+    ajouterPaysDesVillesRecherche(villes, pays);
+    // v97 — l'année vient d'abord de l'heure de prise de vue, puis de la fiche,
+    // du nom de la photo et enfin du dossier.
+    const horodatage = /^\d{14}$/.test(photo.horodatage || "") ? photo.horodatage : "";
     const anneeFiche = /^(19|20)\d\d/.test(photo.dateIso) ? photo.dateIso.slice(0, 4) : "";
-    const annee = anneeFiche || lecture.annee || (dossier ? dossier.annee : "");
+    const annee = (/^(19|20)\d\d/.test(horodatage) ? horodatage.slice(0, 4) : "") ||
+      anneeFiche || lecture.annee || (dossier ? dossier.annee : "");
     return {
       position,
       nom: photo.nom,
@@ -1386,6 +1890,7 @@ function preparerMoteurRecherche(index, motsAjoutes) {
       institution: photo.institution,
       type: photo.type,
       dateIso: photo.dateIso,
+      horodatage,
       annee,
       pays,
       villes,
@@ -1437,26 +1942,135 @@ function preparerMoteurRecherche(index, motsAjoutes) {
     dossiers[position].motsArtistesDossier = identifiants(decouperEnMotsPhotoCartel(liste.join(" ")));
   });
 
-  // Pastilles : ce qui existe réellement dans la photothèque, par fréquence.
-  const compter = (cle) => {
-    const compte = new Map();
-    for (let i = 0; i < photos.length; i += 1) {
-      const valeurs = cle === "annee" ? (photos[i].annee ? [photos[i].annee] : []) : Array.from(photos[i][cle]);
-      for (let j = 0; j < valeurs.length; j += 1) compte.set(valeurs[j], (compte.get(valeurs[j]) || 0) + 1);
-    }
-    return Array.from(compte, ([valeur, nombre]) => ({ valeur, nombre }));
+  // v97 — artistes : une même personne écrite de deux façons (casse, espaces)
+  // n'en fait qu'une ; la première écriture rencontrée est celle affichée.
+  const artisteAffiche = new Map();
+  const nomArtiste = (texte) => {
+    const brut = String(texte || "").replace(/\s+/g, " ").trim();
+    const cle = decouperEnMotsPhotoCartel(brut).join(" ");
+    if (!cle) return "";
+    if (!artisteAffiche.has(cle)) artisteAffiche.set(cle, brut);
+    return artisteAffiche.get(cle);
   };
-  const pastillesPays = compter("pays").sort((a, b) => b.nombre - a.nombre || a.valeur.localeCompare(b.valeur, "fr"));
-  const pastillesVilles = compter("villes").sort((a, b) => b.nombre - a.nombre || a.valeur.localeCompare(b.valeur, "fr"));
-  const pastillesAnnees = compter("annee").sort((a, b) => Number(b.valeur) - Number(a.valeur));
+  for (let i = 0; i < photos.length; i += 1) {
+    const photo = photos[i];
+    photo.auteurAffiche = photo.analysee ? nomArtiste(photo.auteur) : "";
+    photo.artistes = new Set(
+      [photo.auteurAffiche, ...photo.artistesSujet.map(nomArtiste)].filter(Boolean)
+    );
+  }
+
+  // v97 — RÉSUMÉ DE VISITE (master data). Une visite est un dossier de photos :
+  // ses photos (sous-dossiers de visite compris), son début et sa fin tirés des
+  // heures de prise de vue, ses pays, villes, années et artistes, et son type,
+  // posé à la création ou modifié ensuite, jamais déduit. Un dossier sans photo
+  // n'est une visite que si un type lui a été posé.
+  const visites = [];
+  const visiteParDossier = new Map();
+  const creerVisite = (position) => {
+    const dossier = dossiers[position];
+    const typePose = typeVisiteReconnu(typesPoses[dossier.chemin]);
+    const visite = {
+      position: visites.length,
+      dossier: position,
+      chemin: dossier.chemin,
+      nom: dossier.nom,
+      photos: [],
+      debut: "",
+      fin: "",
+      annees: new Set(),
+      pays: new Set(dossier.pays),
+      villes: new Set(dossier.villes),
+      artistes: new Set(dossier.artistesDossier.map(nomArtiste).filter(Boolean)),
+      type: typePose,
+      typeAffiche: typePose || TYPE_VISITE_NON_RENSEIGNE,
+    };
+    visites.push(visite);
+    visiteParDossier.set(position, visite);
+    return visite;
+  };
+  for (let i = 0; i < photos.length; i += 1) {
+    const photo = photos[i];
+    const proprietaire = photo.dossier >= 0 ? dossiers[photo.dossier].proprietaire : -1;
+    if (proprietaire < 0) {
+      photo.visite = -1;
+      continue;
+    }
+    const visite = visiteParDossier.get(proprietaire) || creerVisite(proprietaire);
+    photo.visite = visite.position;
+    visite.photos.push(i);
+    if (photo.horodatage) {
+      if (!visite.debut || photo.horodatage < visite.debut) visite.debut = photo.horodatage;
+      if (!visite.fin || photo.horodatage > visite.fin) visite.fin = photo.horodatage;
+    }
+    if (photo.annee) visite.annees.add(photo.annee);
+    photo.pays.forEach((valeur) => visite.pays.add(valeur));
+    photo.villes.forEach((valeur) => visite.villes.add(valeur));
+    if (photo.auteurAffiche) visite.artistes.add(photo.auteurAffiche);
+  }
+  for (let i = 0; i < dossiers.length; i += 1) {
+    const dossier = dossiers[i];
+    if (visiteParDossier.has(i) || dossier.proprietaire !== i) continue;
+    if (typeVisiteReconnu(typesPoses[dossier.chemin])) creerVisite(i);
+  }
+  for (let i = 0; i < visites.length; i += 1) {
+    const visite = visites[i];
+    if (visite.annees.size === 0 && dossiers[visite.dossier].annee) visite.annees.add(dossiers[visite.dossier].annee);
+    visite.nombrePhotos = visite.photos.length;
+  }
+  for (let i = 0; i < photos.length; i += 1) {
+    photos[i].typeVisite = photos[i].visite >= 0 ? visites[photos[i].visite].typeAffiche : "";
+  }
+
+  // v97 — RÉFÉRENTIEL DES CRITÈRES : les valeurs qui existent réellement, chacune
+  // avec son nombre de visites, de photos et d'œuvres. Les types de visite sont
+  // une liste fermée : tous sont proposés, même à zéro.
+  const referentiel = { pays: new Map(), villes: new Map(), annees: new Map(), types: new Map(), artistes: new Map() };
+  const compter = (famille, valeur, unite) => {
+    if (!valeur) return;
+    let entree = referentiel[famille].get(valeur);
+    if (!entree) {
+      entree = { valeur, visites: 0, photos: 0, oeuvres: 0 };
+      referentiel[famille].set(valeur, entree);
+    }
+    entree[unite] += 1;
+  };
+  const proposer = (famille, valeur) => {
+    if (!referentiel[famille].has(valeur)) {
+      referentiel[famille].set(valeur, { valeur, visites: 0, photos: 0, oeuvres: 0 });
+    }
+  };
+  TYPES_VISITE_PHOTOCARTEL.forEach(([, type]) => proposer("types", type));
+  proposer("types", TYPE_VISITE_NON_RENSEIGNE);
+  for (let i = 0; i < photos.length; i += 1) {
+    const photo = photos[i];
+    const unites = photo.analysee ? ["photos", "oeuvres"] : ["photos"];
+    for (let u = 0; u < unites.length; u += 1) {
+      photo.pays.forEach((valeur) => compter("pays", valeur, unites[u]));
+      photo.villes.forEach((valeur) => compter("villes", valeur, unites[u]));
+      compter("annees", photo.annee, unites[u]);
+      compter("types", photo.typeVisite, unites[u]);
+      photo.artistes.forEach((valeur) => compter("artistes", valeur, unites[u]));
+    }
+  }
+  for (let i = 0; i < visites.length; i += 1) {
+    const visite = visites[i];
+    visite.pays.forEach((valeur) => compter("pays", valeur, "visites"));
+    visite.villes.forEach((valeur) => compter("villes", valeur, "visites"));
+    visite.annees.forEach((valeur) => compter("annees", valeur, "visites"));
+    compter("types", visite.typeAffiche, "visites");
+    visite.artistes.forEach((valeur) => compter("artistes", valeur, "visites"));
+  }
 
   return {
     vocabulaire: listeMots,
     dossiers,
     photos,
-    pastilles: { pays: pastillesPays, villes: pastillesVilles, annees: pastillesAnnees },
+    visites,
+    referentiel,
     nombrePhotos: photos.length,
     nombreAnalysees: photos.filter((photo) => photo.analysee).length,
+    nombreVisites: visites.length,
   };
 }
 
@@ -1555,6 +2169,10 @@ function photoPasseFiltresRecherche(photo, filtres) {
   if (filtres.annees.length > 0 && !filtres.annees.includes(photo.annee)) return false;
   if (filtres.pays.length > 0 && !filtres.pays.some((valeur) => photo.pays.has(valeur))) return false;
   if (filtres.villes.length > 0 && !filtres.villes.some((valeur) => photo.villes.has(valeur))) return false;
+  // v97 — type de la visite de la photo, et artiste de la photo (sa fiche, ou une
+  // autre prise du même sujet analysée).
+  if (filtres.types.length > 0 && !filtres.types.includes(photo.typeVisite)) return false;
+  if (filtres.artistes.length > 0 && !filtres.artistes.some((valeur) => photo.artistes.has(valeur))) return false;
   return true;
 }
 
@@ -1570,10 +2188,23 @@ function rechercherDansMoteur(moteur, saisie, filtresRecu) {
     annees: Array.isArray(filtresRecu?.annees) ? filtresRecu.annees : [],
     pays: Array.isArray(filtresRecu?.pays) ? filtresRecu.pays : [],
     villes: Array.isArray(filtresRecu?.villes) ? filtresRecu.villes : [],
+    types: Array.isArray(filtresRecu?.types) ? filtresRecu.types : [],
+    artistes: Array.isArray(filtresRecu?.artistes) ? filtresRecu.artistes : [],
   };
+  // v97 — recherche d'œuvres : l'artiste « trouvé dans le dossier » (lecture B)
+  // ne vaut pas pour chaque œuvre du dossier. La Laitière de Vermeer n'est pas un
+  // Rembrandt parce qu'elle est au Rijksmuseum ; le nom du dossier, lui, compte.
+  const sansArtisteDossier = Boolean(filtresRecu?.sansArtisteDossier);
   const mots = decouperSaisieRecherche(saisie);
+  // v97 — « tout » : une recherche lancée sans aucun critère rend toute la photothèque.
   const aucunFiltre =
-    !filtres.analyseesSeulement && !filtres.annees.length && !filtres.pays.length && !filtres.villes.length;
+    !filtresRecu?.tout &&
+    !filtres.analyseesSeulement &&
+    !filtres.annees.length &&
+    !filtres.pays.length &&
+    !filtres.villes.length &&
+    !filtres.types.length &&
+    !filtres.artistes.length;
   const vide = { mots, lignes: [], compteurs: { photos: 0, sujets: 0, dossiers: 0 } };
   if (!moteur || (mots.length === 0 && aucunFiltre)) return vide;
 
@@ -1602,6 +2233,8 @@ function rechercherDansMoteur(moteur, saisie, filtresRecu) {
     }
   }
 
+  const niveauxDossier = sansArtisteDossier ? herite : local;
+
   // Dossier résultat d'un dossier direct : le plus haut de sa chaîne (hors
   // conteneurs) qui porte à lui seul tous les mots. Calculé une fois par dossier.
   const cibleParDossier = new Map();
@@ -1617,7 +2250,7 @@ function rechercherDansMoteur(moteur, saisie, filtresRecu) {
         cible = position >= 0 && !dossiers[position].conteneur ? position : -1;
         break;
       }
-      const tableau = d === position ? local : herite;
+      const tableau = d === position ? niveauxDossier : herite;
       let porteTout = true;
       for (let m = 0; m < nombreMots; m += 1) {
         if (tableau[d * nombreMots + m] === NIVEAU_RECHERCHE_AUCUN) {
@@ -1652,7 +2285,7 @@ function rechercherDansMoteur(moteur, saisie, filtresRecu) {
       propre = Math.min(propre, meilleurNiveauRecherche(photo.motsFiche, niveaux, NIVEAU_RECHERCHE_FICHE));
       propre = Math.min(propre, meilleurNiveauRecherche(photo.motsSujet, niveaux, NIVEAU_RECHERCHE_SUJET));
       const marqueur = meilleurNiveauRecherche(photo.marqueurs, niveaux, NIVEAU_RECHERCHE_MARQUEUR);
-      const parDossier = photo.dossier >= 0 ? local[photo.dossier * nombreMots + m] : NIVEAU_RECHERCHE_AUCUN;
+      const parDossier = photo.dossier >= 0 ? niveauxDossier[photo.dossier * nombreMots + m] : NIVEAU_RECHERCHE_AUCUN;
       if (propre !== NIVEAU_RECHERCHE_AUCUN) photoPorteUnMot = true;
       if (parDossier === NIVEAU_RECHERCHE_AUCUN) dossierPorteTout = false;
       let niveau = Math.min(propre, parDossier);
@@ -1744,7 +2377,7 @@ function rechercherDansMoteur(moteur, saisie, filtresRecu) {
     let score = 0;
     let pire = 0;
     for (let m = 0; m < nombreMots; m += 1) {
-      const niveau = local[cible * nombreMots + m];
+      const niveau = niveauxDossier[cible * nombreMots + m];
       score += niveau;
       if (niveau > pire) pire = niveau;
     }
@@ -1802,15 +2435,287 @@ function nomSujetAffichableRecherche(nomFichier) {
     .trim() || nomSansExtensionRecherche(nomFichier);
 }
 
-// Compteur en langage courant : « 14 photos, 3 sujets, 2 visites ».
-function texteCompteursRecherche(compteurs) {
+
+// ———————————————————————————————————————————————————————————————
+// v97 — RECHERCHE À LA FORME D'EUROCARTEL
+//
+// Trois recherches, une seule forme d'écran : les VISITES (résumés de visite),
+// les PHOTOS, les ŒUVRES (photos analysées). Six critères déclarés, chacun
+// choisi dans sa fenêtre parmi les valeurs qui existent réellement, ET entre
+// critères, OU à l'intérieur d'un critère. Rien ne se lance avant « Lancer la
+// recherche ». Les résultats sont groupés, chaque groupe a son titre.
+// ———————————————————————————————————————————————————————————————
+const TYPES_RECHERCHE_PHOTOCARTEL = [
+  { cle: "visites", libelle: "Visites" },
+  { cle: "photos", libelle: "Photos" },
+  { cle: "oeuvres", libelle: "Œuvres" },
+];
+
+const CRITERES_RECHERCHE_PHOTOCARTEL = [
+  { cle: "pays", libelle: "Pays" },
+  { cle: "villes", libelle: "Ville" },
+  { cle: "annees", libelle: "Année" },
+  { cle: "types", libelle: "Type de visite" },
+  { cle: "artistes", libelle: "Artiste" },
+  { cle: "motsCles", libelle: "Mots-clés", texte: true },
+];
+
+function criteresVidesRecherche() {
+  return { pays: [], villes: [], annees: [], types: [], artistes: [], motsCles: "" };
+}
+
+function normaliserCriteresRecherche(criteres) {
+  const liste = (valeur) =>
+    Array.isArray(valeur) ? Array.from(new Set(valeur.map((element) => String(element || "")).filter(Boolean))) : [];
+  return {
+    pays: liste(criteres?.pays),
+    villes: liste(criteres?.villes),
+    annees: liste(criteres?.annees),
+    types: liste(criteres?.types),
+    artistes: liste(criteres?.artistes),
+    motsCles: String(criteres?.motsCles || "").replace(/\s+/g, " ").trim(),
+  };
+}
+
+function criteresRechercheVides(criteres) {
+  const propres = normaliserCriteresRecherche(criteres);
+  return CRITERES_RECHERCHE_PHOTOCARTEL.every(({ cle, texte }) => (texte ? !propres[cle] : propres[cle].length === 0));
+}
+
+// Rappel des critères, en langage courant, dans l'ordre des boutons.
+function texteCriteresPhotoCartel(criteres) {
+  const propres = normaliserCriteresRecherche(criteres);
   const morceaux = [];
-  const pluriel = (nombre, singulier, plurielTexte) =>
-    `${nombre} ${nombre > 1 ? plurielTexte : singulier}`;
-  if (compteurs.photos) morceaux.push(pluriel(compteurs.photos, "photo", "photos"));
-  if (compteurs.sujets) morceaux.push(pluriel(compteurs.sujets, "sujet", "sujets"));
-  if (compteurs.dossiers) morceaux.push(pluriel(compteurs.dossiers, "visite", "visites"));
-  return morceaux.length > 0 ? morceaux.join(", ") : "Aucune photo trouvée";
+  for (let i = 0; i < CRITERES_RECHERCHE_PHOTOCARTEL.length; i += 1) {
+    const { cle, libelle, texte } = CRITERES_RECHERCHE_PHOTOCARTEL[i];
+    if (texte ? propres[cle] : propres[cle].length) {
+      morceaux.push(`${libelle} : ${texte ? propres[cle] : propres[cle].join(", ")}`);
+    }
+  }
+  return morceaux.length ? morceaux.join(" · ") : "Aucun critère : toute la photothèque";
+}
+
+const MOIS_COURTS_RECHERCHE = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+
+function jourLisibleRecherche(horodatage) {
+  if (!/^\d{14}$/.test(horodatage || "")) return "";
+  const mois = Number(horodatage.slice(4, 6));
+  return `${Number(horodatage.slice(6, 8))} ${MOIS_COURTS_RECHERCHE[mois - 1] || ""} ${horodatage.slice(0, 4)}`;
+}
+
+// Période d'une visite : « 14 janv. 2022 », ou « 14 janv. 2022 → 16 janv. 2022 ».
+function periodeVisiteRecherche(visite) {
+  const debut = jourLisibleRecherche(visite?.debut);
+  const fin = jourLisibleRecherche(visite?.fin);
+  if (!debut) return Array.from(visite?.annees || []).sort().join(", ");
+  return fin && fin !== debut ? `${debut} → ${fin}` : debut;
+}
+
+function lieuVisiteRecherche(visite) {
+  const villes = Array.from(visite?.villes || []).sort((a, b) => a.localeCompare(b, "fr"));
+  const pays = Array.from(visite?.pays || []).sort((a, b) => a.localeCompare(b, "fr"));
+  return [...villes, ...pays].join(", ");
+}
+
+function visitePasseCriteresRecherche(visite, criteres) {
+  const aUn = (liste, ensemble) => liste.length === 0 || liste.some((valeur) => ensemble.has(valeur));
+  return (
+    aUn(criteres.pays, visite.pays) &&
+    aUn(criteres.villes, visite.villes) &&
+    aUn(criteres.annees, visite.annees) &&
+    (criteres.types.length === 0 || criteres.types.includes(visite.typeAffiche)) &&
+    aUn(criteres.artistes, visite.artistes)
+  );
+}
+
+const ORDRE_VISITES_RECHERCHE = (a, b) =>
+  (a.debut && b.debut ? (a.debut < b.debut ? 1 : a.debut > b.debut ? -1 : 0) : a.debut ? -1 : b.debut ? 1 : 0) ||
+  comparerNomsRecherche(a.nom, b.nom);
+
+// Recherche lancée. Renvoie des groupes titrés ; chaque ligne porte les positions
+// de ses photos dans le moteur (ouverture dans la galerie, grille).
+function rechercherPhotoCartel(moteur, criteresRecus, typeRecherche) {
+  const criteres = normaliserCriteresRecherche(criteresRecus);
+  const type = TYPES_RECHERCHE_PHOTOCARTEL.some(({ cle }) => cle === typeRecherche) ? typeRecherche : "photos";
+  const mots = decouperSaisieRecherche(criteres.motsCles);
+  const resultat = { type, mots, groupes: [], compteurs: { visites: 0, photos: 0, oeuvres: 0, artistes: 0 } };
+  if (!moteur) return resultat;
+
+  if (type === "visites") {
+    let candidates = moteur.visites;
+    if (mots.length > 0) {
+      const trouvees = new Set();
+      const brut = rechercherDansMoteur(moteur, criteres.motsCles, {});
+      for (let i = 0; i < brut.lignes.length; i += 1) {
+        for (let j = 0; j < brut.lignes[i].photos.length; j += 1) {
+          const visite = moteur.photos[brut.lignes[i].photos[j]].visite;
+          if (visite >= 0) trouvees.add(visite);
+        }
+      }
+      candidates = Array.from(trouvees, (position) => moteur.visites[position]);
+    }
+    const retenues = candidates.filter((visite) => visitePasseCriteresRecherche(visite, criteres));
+    const parPays = new Map();
+    for (let i = 0; i < retenues.length; i += 1) {
+      const visite = retenues[i];
+      const pays = Array.from(visite.pays).sort((a, b) => a.localeCompare(b, "fr"));
+      const choisi = pays.find((valeur) => criteres.pays.includes(valeur)) || pays[0] || "";
+      if (!parPays.has(choisi)) parPays.set(choisi, []);
+      parPays.get(choisi).push(visite);
+    }
+    const cles = Array.from(parPays.keys()).sort((a, b) => (a && b ? a.localeCompare(b, "fr") : a ? -1 : b ? 1 : 0));
+    for (let i = 0; i < cles.length; i += 1) {
+      const visites = parPays.get(cles[i]).sort(ORDRE_VISITES_RECHERCHE);
+      const photos = visites.reduce((somme, visite) => somme + visite.nombrePhotos, 0);
+      resultat.groupes.push({
+        cle: `pays-${cles[i]}`,
+        titre: cles[i] || "Pays non reconnu",
+        sousTitre: `${visites.length} visite${visites.length > 1 ? "s" : ""} · ${photos} photo${photos > 1 ? "s" : ""}`,
+        lignes: visites.map((visite) => ({
+          type: "visite",
+          cle: `visite-${visite.position}`,
+          visite: visite.position,
+          titre: visite.nom,
+          photos: visite.photos,
+        })),
+      });
+    }
+    resultat.compteurs.visites = retenues.length;
+    resultat.compteurs.photos = retenues.reduce((somme, visite) => somme + visite.nombrePhotos, 0);
+    return resultat;
+  }
+
+  const brut = rechercherDansMoteur(moteur, criteres.motsCles, {
+    pays: criteres.pays,
+    villes: criteres.villes,
+    annees: criteres.annees,
+    types: criteres.types,
+    artistes: criteres.artistes,
+    analyseesSeulement: type === "oeuvres",
+    sansArtisteDossier: type === "oeuvres",
+    tout: true,
+  });
+
+  if (type === "photos") {
+    const groupes = new Map();
+    const groupe = (visite) => {
+      const cle = visite >= 0 ? `visite-${visite}` : "sans-visite";
+      if (!groupes.has(cle)) groupes.set(cle, { cle, visite, lignes: [], nombre: 0 });
+      return groupes.get(cle);
+    };
+    for (let i = 0; i < brut.lignes.length; i += 1) {
+      const ligne = brut.lignes[i];
+      if (ligne.type === "dossier") {
+        // Un dossier trouvé en entier : ses photos, rangées sous leur visite.
+        const parVisite = new Map();
+        for (let j = 0; j < ligne.photos.length; j += 1) {
+          const visite = moteur.photos[ligne.photos[j]].visite;
+          if (!parVisite.has(visite)) parVisite.set(visite, []);
+          parVisite.get(visite).push(ligne.photos[j]);
+        }
+        // Les sous-dossiers d'une visite (Oeuvres, Cartels…) ne font qu'une ligne.
+        parVisite.forEach((positions, visite) => {
+          const cible = groupe(visite);
+          const existante = cible.lignes.find((element) => element.toutLeDossier);
+          if (existante) existante.photos = existante.photos.concat(positions);
+          else cible.lignes.push({ ...ligne, cle: `${ligne.cle}-${visite}`, photos: positions, toutLeDossier: true });
+          cible.nombre += positions.length;
+        });
+      } else {
+        const cible = groupe(moteur.photos[ligne.photos[0]].visite);
+        cible.lignes.push(ligne);
+        cible.nombre += ligne.photos.length;
+      }
+    }
+    groupes.forEach((contenu) => {
+      const visite = contenu.visite >= 0 ? moteur.visites[contenu.visite] : null;
+      const details = visite ? [lieuVisiteRecherche(visite), periodeVisiteRecherche(visite)].filter(Boolean) : [];
+      details.push(`${contenu.nombre} photo${contenu.nombre > 1 ? "s" : ""}`);
+      resultat.groupes.push({
+        cle: contenu.cle,
+        // Photos posées hors de toute visite (à la racine d'un rangement) ou fiches
+        // dont la photo d'origine n'est plus retrouvée.
+        titre: visite ? visite.nom : "Photos isolées",
+        sousTitre: details.join(" · "),
+        visite: contenu.visite,
+        lignes: contenu.lignes,
+      });
+      resultat.compteurs.photos += contenu.nombre;
+    });
+    resultat.compteurs.visites = resultat.groupes.filter((element) => element.visite >= 0).length;
+    return resultat;
+  }
+
+  // Œuvres : chaque photo analysée retenue est une ligne, groupée par artiste.
+  const positions = new Set();
+  for (let i = 0; i < brut.lignes.length; i += 1) {
+    for (let j = 0; j < brut.lignes[i].photos.length; j += 1) positions.add(brut.lignes[i].photos[j]);
+  }
+  const parArtiste = new Map();
+  positions.forEach((position) => {
+    const photo = moteur.photos[position];
+    if (!photo.analysee) return;
+    const artiste = photo.auteurAffiche || "";
+    if (!parArtiste.has(artiste)) parArtiste.set(artiste, []);
+    parArtiste.get(artiste).push(photo);
+  });
+  const artistes = Array.from(parArtiste.keys()).sort((a, b) => (a && b ? a.localeCompare(b, "fr") : a ? -1 : b ? 1 : 0));
+  for (let i = 0; i < artistes.length; i += 1) {
+    const oeuvres = parArtiste
+      .get(artistes[i])
+      .sort((a, b) => comparerNomsRecherche(a.titre || a.nom, b.titre || b.nom));
+    resultat.groupes.push({
+      cle: `artiste-${artistes[i]}`,
+      titre: artistes[i] || "Artiste non identifié",
+      sousTitre: `${oeuvres.length} œuvre${oeuvres.length > 1 ? "s" : ""}`,
+      lignes: oeuvres.map((photo) => ({
+        type: "oeuvre",
+        cle: `oeuvre-${photo.position}`,
+        titre: photo.titre || nomSansExtensionRecherche(photo.nom),
+        photos: [photo.position],
+        dossier: photo.dossier,
+      })),
+    });
+    resultat.compteurs.oeuvres += oeuvres.length;
+  }
+  resultat.compteurs.artistes = artistes.filter(Boolean).length;
+  return resultat;
+}
+
+// Compteurs du résultat, en langage courant.
+function texteResultatPhotoCartel(resultat) {
+  const pluriel = (nombre, singulier, plurielTexte) => `${nombre} ${nombre > 1 ? plurielTexte : singulier}`;
+  const c = resultat.compteurs;
+  if (resultat.type === "visites") {
+    return c.visites ? `${pluriel(c.visites, "visite", "visites")} · ${pluriel(c.photos, "photo", "photos")}` : "Aucune visite trouvée";
+  }
+  if (resultat.type === "oeuvres") {
+    return c.oeuvres
+      ? `${pluriel(c.oeuvres, "œuvre", "œuvres")}${c.artistes ? ` · ${pluriel(c.artistes, "artiste", "artistes")}` : ""}`
+      : "Aucune œuvre trouvée";
+  }
+  return c.photos
+    ? `${pluriel(c.photos, "photo", "photos")}${c.visites ? ` · ${pluriel(c.visites, "visite", "visites")}` : ""}`
+    : "Aucune photo trouvée";
+}
+
+// Toutes les positions de photos d'un résultat, dans l'ordre de l'affichage.
+function positionsResultatPhotoCartel(resultat) {
+  const positions = [];
+  const vues = new Set();
+  for (let g = 0; g < resultat.groupes.length; g += 1) {
+    const lignes = resultat.groupes[g].lignes;
+    for (let l = 0; l < lignes.length; l += 1) {
+      for (let p = 0; p < lignes[l].photos.length; p += 1) {
+        const position = lignes[l].photos[p];
+        if (!vues.has(position)) {
+          vues.add(position);
+          positions.push(position);
+        }
+      }
+    }
+  }
+  return positions;
 }
 
 // v45.5 : déduction locale et déterministe du drapeau depuis le nom du voyage.
@@ -3140,13 +4045,27 @@ const [modeBibliotheques, setModeBibliotheques] = useState(false);
 // qui mêle photos, sujets et dossiers ; la recherche interroge le moteur en
 // mémoire et ne touche jamais le disque.
 const [modeRechercheResultats, setModeRechercheResultats] = useState(false);
-const [rechercheSaisie, setRechercheSaisie] = useState("");
-const [rechercheFiltres, setRechercheFiltres] = useState({
-  pays: [],
-  villes: [],
-  annees: [],
-  analyseesSeulement: false,
-});
+// v97 — forme EuroCartel : type de recherche, critères déclarés choisis chacun dans
+// sa fenêtre, recherche figée au clic sur « Lancer la recherche ».
+const [rechercheType, setRechercheType] = useState("photos");
+const [rechercheCriteres, setRechercheCriteres] = useState(criteresVidesRecherche);
+const [rechercheLancee, setRechercheLancee] = useState(null);
+const [rechercheModaleCritere, setRechercheModaleCritere] = useState("");
+const [rechercheBrouillon, setRechercheBrouillon] = useState([]);
+const [rechercheBrouillonTexte, setRechercheBrouillonTexte] = useState("");
+const [rechercheFiltreModale, setRechercheFiltreModale] = useState("");
+const [rechercheVisiteType, setRechercheVisiteType] = useState(-1);
+const [rechercheMessageType, setRechercheMessageType] = useState("");
+const [rechercheTypeEnCours, setRechercheTypeEnCours] = useState(false);
+const [rechercheEnregistrerOuvert, setRechercheEnregistrerOuvert] = useState(false);
+const [rechercheNomEnregistrement, setRechercheNomEnregistrement] = useState("");
+const [rechercheMessageEnregistrement, setRechercheMessageEnregistrement] = useState("");
+const [rechercheEnregistrementEnCours, setRechercheEnregistrementEnCours] = useState(false);
+const [rechercheEnregistreeNom, setRechercheEnregistreeNom] = useState("");
+const [recherchesEnregistreesOuvert, setRecherchesEnregistreesOuvert] = useState(false);
+const [recherchesEnregistrees, setRecherchesEnregistrees] = useState([]);
+const [recherchesEnregistreesEtat, setRecherchesEnregistreesEtat] = useState("");
+const [rechercheASupprimer, setRechercheASupprimer] = useState("");
 const [rechercheEtat, setRechercheEtat] = useState("chargement");
 const [rechercheVersionMoteur, setRechercheVersionMoteur] = useState(0);
 // v80 — vue des résultats : tableau (par défaut) ou grille de miniatures.
@@ -3162,6 +4081,7 @@ const indexRechercheRef = useRef(null);
 const moteurRechercheRef = useRef(null);
 const signatureIndexRechercheRef = useRef("");
 const motsAjoutesRechercheRef = useRef({});
+const typesVisitesRechercheRef = useRef({});
 const miseAJourRechercheEnCoursRef = useRef(false);
 const miseAJourRechercheFaiteRef = useRef(false);
 const resultatRechercheMemoRef = useRef({ cle: "", resultat: null });
@@ -8893,6 +9813,7 @@ const NOM_STORE_CACHE_RECHERCHE = "recherche";
 const NOM_STORE_MINIATURES_RECHERCHE = "miniatures";
 const CLE_CACHE_RECHERCHE = "index-recherche-format-2";
 const CLE_CACHE_MOTS_AJOUTES = "mots-ajoutes";
+const CLE_CACHE_TYPES_VISITES = "types-visites";
 const VERSION_BASE_CACHE_RECHERCHE = 2;
 const TAILLE_MINIATURE_RECHERCHE = 240;
 
@@ -8959,9 +9880,13 @@ async function ecrireDansBaseRecherche(store, cle, valeur) {
 
 // Parcours complet de DCIM/PhotoCartel côté téléphone, à toutes les profondeurs,
 // dossiers techniques exclus (même règle que le serveur : estDossierHorsRecherche).
-async function parcourirPhotoCartelAndroid(racine) {
+// v97 — l'heure de prise de vue n'est lue qu'une fois par photo : une photo que
+// l'index connaît déjà n'est jamais rouverte ; une photo nouvelle n'est lue que sur
+// son en-tête (64 Ko), huit à la fois.
+async function parcourirPhotoCartelAndroid(racine, horodatagesConnus = new Map()) {
   const dossiers = [];
   const photos = [];
+  const aLire = [];
   const parcourir = async (handle, chemin, profondeur) => {
     for await (const [nom, enfant] of handle.entries()) {
       if (enfant.kind === "directory") {
@@ -8970,27 +9895,58 @@ async function parcourirPhotoCartelAndroid(racine) {
         dossiers.push(cheminEnfant);
         await parcourir(enfant, cheminEnfant, profondeur + 1);
       } else if (enfant.kind === "file" && estFichierImageRecherche(nom)) {
-        photos.push({ nom, dossier: chemin });
+        const photo = { nom, dossier: chemin, horodatage: "" };
+        const connu = horodatagesConnus.get(`${chemin}/${nom}`);
+        if (connu === undefined) aLire.push({ photo, handle: enfant });
+        else photo.horodatage = connu;
+        photos.push(photo);
       }
     }
   };
   await parcourir(racine, "", 0);
-  return { dossiers, photos };
+  let suivante = 0;
+  const lire = async () => {
+    while (suivante < aLire.length) {
+      const { photo, handle } = aLire[suivante];
+      suivante += 1;
+      try {
+        const fichier = await handle.getFile();
+        photo.horodatage =
+          raLireHorodatageExif(await fichier.slice(0, 65536).arrayBuffer()) ||
+          horodatageDepuisNomRecherche(photo.nom);
+      } catch (error) {
+        photo.horodatage = horodatageDepuisNomRecherche(photo.nom);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, aLire.length) }, lire));
+  return { dossiers, photos, photosLues: aLire.length };
 }
 
-async function obtenirRacineRechercheAndroid() {
+// v97 — sans demande : le chargement automatique au démarrage ne fait jamais
+// apparaître de fenêtre d'autorisation ; il attend l'ouverture de la recherche.
+async function obtenirRacineRechercheAndroid({ sansDemande = false } = {}) {
   const resultatRacine = await obtenirDossierRacinePhotoCartelAndroid({
     ouvrirSelecteurSiNecessaire: false,
-    demanderPermissionSiNecessaire: true,
+    demanderPermissionSiNecessaire: !sansDemande,
   });
   return resultatRacine?.dossierPhotoCartel || null;
 }
 
-async function construireIndexRechercheAndroid() {
-  const racine = await obtenirRacineRechercheAndroid();
+async function construireIndexRechercheAndroid({ sansDemande = false } = {}) {
+  const racine = await obtenirRacineRechercheAndroid({ sansDemande });
   if (!racine) throw new Error("Le dossier PhotoCartel n’est pas accessible.");
-
-  const parcours = await parcourirPhotoCartelAndroid(racine);
+  let precedent = null;
+  try {
+    const handleIndex = await racine.getFileHandle(NOM_FICHIER_INDEX_RECHERCHE);
+    precedent = JSON.parse(await (await handleIndex.getFile()).text());
+  } catch (error) {
+    precedent = null;
+  }
+  const parcours = await parcourirPhotoCartelAndroid(
+    racine,
+    horodatagesConnusDepuisContenuIndexRecherche(precedent)
+  );
 
   let fiches = [];
   try {
@@ -9028,6 +9984,17 @@ async function lireFichierIndexRechercheAndroid() {
   }
 }
 
+async function lireTypesVisitesAndroid({ sansDemande = false } = {}) {
+  try {
+    const racine = await obtenirRacineRechercheAndroid({ sansDemande });
+    if (!racine) return null;
+    const handle = await racine.getFileHandle(NOM_FICHIER_TYPES_VISITES);
+    return lireDepuisContenuTypesVisites(JSON.parse(await (await handle.getFile()).text()));
+  } catch (error) {
+    return error?.name === "NotFoundError" ? {} : null;
+  }
+}
+
 async function lireMotsAjoutesAndroid() {
   try {
     const racine = await obtenirRacineRechercheAndroid();
@@ -9053,19 +10020,25 @@ async function obtenirIndexRechercheServeur({ reconstruire = false } = {}) {
   return {
     contenu: data.index,
     motsAjoutes: lireDepuisContenuMotsAjoutes(data.motsAjoutes),
+    typesVisites: lireDepuisContenuTypesVisites(data.typesVisites),
   };
 }
 
 // Installe un index dans le moteur. Renvoie false si l'index est inexploitable.
-function installerIndexRecherche(contenu, motsAjoutes) {
+function installerIndexRecherche(contenu, motsAjoutes, typesVisites) {
   const index = lireEntreesDepuisContenuIndexRecherche(contenu);
   if (!index) return false;
   const signature = signatureIndexRecherche(index);
   const mots = motsAjoutes && typeof motsAjoutes === "object" ? motsAjoutes : motsAjoutesRechercheRef.current;
   motsAjoutesRechercheRef.current = mots || {};
+  if (typesVisites && typeof typesVisites === "object") typesVisitesRechercheRef.current = typesVisites;
   indexRechercheRef.current = index;
   signatureIndexRechercheRef.current = signature;
-  moteurRechercheRef.current = preparerMoteurRecherche(index, motsAjoutesRechercheRef.current);
+  moteurRechercheRef.current = preparerMoteurRecherche(
+    index,
+    motsAjoutesRechercheRef.current,
+    typesVisitesRechercheRef.current
+  );
   // v80 — un nouvel index invalide les photos déjà préparées pour l'affichage.
   photosRechercheRef.current.clear();
   dossiersRechercheAndroidRef.current.clear();
@@ -9075,29 +10048,46 @@ function installerIndexRecherche(contenu, motsAjoutes) {
   return true;
 }
 
-async function mettreAJourRechercheEnArrierePlan() {
+async function mettreAJourRechercheEnArrierePlan({ sansDemande = false } = {}) {
   if (miseAJourRechercheEnCoursRef.current) return;
   miseAJourRechercheEnCoursRef.current = true;
   try {
     let contenu = null;
     let motsAjoutes = null;
+    let typesVisites = null;
     if (estAndroid()) {
-      contenu = await construireIndexRechercheAndroid();
+      contenu = await construireIndexRechercheAndroid({ sansDemande });
       motsAjoutes = await lireMotsAjoutesAndroid();
+      typesVisites = await lireTypesVisitesAndroid({ sansDemande });
     } else {
       const resultat = await obtenirIndexRechercheServeur({ reconstruire: true });
       contenu = resultat.contenu;
       motsAjoutes = resultat.motsAjoutes;
+      typesVisites = resultat.typesVisites;
     }
     const index = lireEntreesDepuisContenuIndexRecherche(contenu);
     if (!index) return;
     miseAJourRechercheFaiteRef.current = true;
     await ecrireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_RECHERCHE, contenu);
     if (motsAjoutes) await ecrireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_MOTS_AJOUTES, motsAjoutes);
+    if (typesVisites) await ecrireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_TYPES_VISITES, typesVisites);
     const motsChanges =
       motsAjoutes && JSON.stringify(motsAjoutes) !== JSON.stringify(motsAjoutesRechercheRef.current);
-    if (signatureIndexRecherche(index) !== signatureIndexRechercheRef.current || motsChanges) {
-      installerIndexRecherche(contenu, motsAjoutes || motsAjoutesRechercheRef.current);
+    const typesChanges =
+      typesVisites && JSON.stringify(typesVisites) !== JSON.stringify(typesVisitesRechercheRef.current);
+    // v97 — un index qui gagne ses heures de prise de vue (format 2 → 3) est installé.
+    const heuresGagnees = index.horodatagesLus && !indexRechercheRef.current?.horodatagesLus;
+    if (
+      signatureIndexRecherche(index) !== signatureIndexRechercheRef.current ||
+      motsChanges ||
+      typesChanges ||
+      heuresGagnees
+    ) {
+      installerIndexRecherche(
+        contenu,
+        motsAjoutes || motsAjoutesRechercheRef.current,
+        typesVisites || typesVisitesRechercheRef.current
+      );
     }
     setRechercheEtat("pret");
   } catch (error) {
@@ -9111,25 +10101,33 @@ async function mettreAJourRechercheEnArrierePlan() {
 // Préparation de la recherche : ce qui est déjà en mémoire répond tout de suite ;
 // sinon le cache du navigateur, puis le fichier d'index. La mise à jour complète
 // suit toujours, en arrière-plan.
-async function preparerRecherche() {
+async function preparerRecherche({ sansDemande = false } = {}) {
   if (!moteurRechercheRef.current) {
     setRechercheEtat("chargement");
-    const [contenuCache, motsCache] = await Promise.all([
+    const [contenuCache, motsCache, typesCache] = await Promise.all([
       lireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_RECHERCHE),
       lireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_MOTS_AJOUTES),
+      lireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_TYPES_VISITES),
     ]);
-    let installe = contenuCache ? installerIndexRecherche(contenuCache, motsCache || {}) : false;
+    let installe =
+      !moteurRechercheRef.current && contenuCache
+        ? installerIndexRecherche(contenuCache, motsCache || {}, typesCache || {})
+        : Boolean(moteurRechercheRef.current);
 
     if (!installe) {
       try {
         if (estAndroid()) {
-          const contenuFichier = await lireFichierIndexRechercheAndroid();
+          const contenuFichier = sansDemande ? null : await lireFichierIndexRechercheAndroid();
           if (contenuFichier) {
-            installe = installerIndexRecherche(contenuFichier, (await lireMotsAjoutesAndroid()) || {});
+            installe = installerIndexRecherche(
+              contenuFichier,
+              (await lireMotsAjoutesAndroid()) || {},
+              (await lireTypesVisitesAndroid()) || {}
+            );
           }
         } else {
           const resultat = await obtenirIndexRechercheServeur();
-          installe = installerIndexRecherche(resultat.contenu, resultat.motsAjoutes);
+          installe = installerIndexRecherche(resultat.contenu, resultat.motsAjoutes, resultat.typesVisites);
           if (installe) {
             await ecrireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_RECHERCHE, resultat.contenu);
           }
@@ -9142,9 +10140,21 @@ async function preparerRecherche() {
   }
 
   if (!miseAJourRechercheFaiteRef.current) {
-    mettreAJourRechercheEnArrierePlan();
+    mettreAJourRechercheEnArrierePlan({ sansDemande });
   }
 }
+
+// v97 — CHARGEMENT AUTOMATIQUE : la photothèque se charge dès l'ouverture de
+// l'application, en arrière-plan, sans message ni fenêtre. Ce qui est déjà connu
+// (cache, index) répond tout de suite ; seules les photos nouvelles sont lues.
+useEffect(() => {
+  const minuterie = setTimeout(() => {
+    preparerRecherche({ sansDemande: true }).catch((error) =>
+      console.warn("Chargement automatique de la recherche :", error)
+    );
+  }, 2500);
+  return () => clearTimeout(minuterie);
+}, []);
 
 function ouvrirEcranRecherche() {
   setModeBibliotheques(false);
@@ -9153,8 +10163,73 @@ function ouvrirEcranRecherche() {
   setRechercheVue("tableau");
   setRechercheMessage("");
   setRechercheDossierMots("");
+  setRechercheModaleCritere("");
+  setRechercheVisiteType(-1);
+  setRechercheEnregistrerOuvert(false);
+  setRecherchesEnregistreesOuvert(false);
   setModeRechercheResultats(true);
   preparerRecherche();
+}
+
+// v97 — TYPE DE VISITE : posé à la création, modifié depuis la recherche. Une
+// seule visite par enregistrement, fusionnée dans le fichier existant.
+async function enregistrerTypeVisiteRecherche(cheminVisite, type) {
+  const chemin = String(cheminVisite || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!chemin) return;
+  let contenu = null;
+  if (estAndroid()) {
+    const racine = await obtenirRacineRechercheAndroid();
+    if (!racine) throw new Error("Le dossier PhotoCartel n’est pas accessible.");
+    let existant = null;
+    try {
+      const handle = await racine.getFileHandle(NOM_FICHIER_TYPES_VISITES);
+      existant = JSON.parse(await (await handle.getFile()).text());
+    } catch (error) {
+      if (error?.name !== "NotFoundError") throw error;
+    }
+    contenu = modifierContenuTypesVisites(existant, chemin, type, VERSION_PHOTOCARTEL);
+    await ecrireBlobDansDossierAndroid(
+      racine,
+      NOM_FICHIER_TYPES_VISITES,
+      new Blob([JSON.stringify(contenu)], { type: "application/json" })
+    );
+  } else {
+    const reponse = await fetch(API_BASE + "/types-visites-recherche", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dossierRacine: dossierRacineGalerieEnvoyeAuServeur(), chemin, type }),
+    });
+    const data = await lireReponseJsonPhotoCartel(reponse, "Enregistrement impossible");
+    if (!reponse.ok || !data.success) throw new Error(data.error || "Enregistrement impossible");
+    contenu = data.typesVisites;
+  }
+  const propres = lireDepuisContenuTypesVisites(contenu);
+  typesVisitesRechercheRef.current = propres;
+  await ecrireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_TYPES_VISITES, propres);
+  if (indexRechercheRef.current) {
+    moteurRechercheRef.current = preparerMoteurRecherche(
+      indexRechercheRef.current,
+      motsAjoutesRechercheRef.current,
+      propres
+    );
+    resultatRechercheMemoRef.current = { cle: "", resultat: null };
+    setRechercheVersionMoteur((valeur) => valeur + 1);
+  }
+}
+
+async function choisirTypeVisiteRecherche(positionVisite, type) {
+  const visite = moteurRechercheRef.current?.visites?.[positionVisite];
+  if (!visite || rechercheTypeEnCours) return;
+  setRechercheTypeEnCours(true);
+  setRechercheMessageType("");
+  try {
+    await enregistrerTypeVisiteRecherche(visite.chemin, type);
+    setRechercheVisiteType(-1);
+  } catch (error) {
+    setRechercheMessageType("Le type n’a pas pu être enregistré : " + (error?.message || "erreur inconnue"));
+  } finally {
+    setRechercheTypeEnCours(false);
+  }
 }
 
 // C — mots ajoutés à un dossier : enregistrés dans un fichier durable à la
@@ -9187,7 +10262,11 @@ async function enregistrerMotsAjoutesRecherche(cheminDossier, mots) {
   await ecrireDansBaseRecherche(NOM_STORE_CACHE_RECHERCHE, CLE_CACHE_MOTS_AJOUTES, propres);
   motsAjoutesRechercheRef.current = propres;
   if (indexRechercheRef.current) {
-    moteurRechercheRef.current = preparerMoteurRecherche(indexRechercheRef.current, propres);
+    moteurRechercheRef.current = preparerMoteurRecherche(
+      indexRechercheRef.current,
+      propres,
+      typesVisitesRechercheRef.current
+    );
     resultatRechercheMemoRef.current = { cle: "", resultat: null };
     setRechercheVersionMoteur((valeur) => valeur + 1);
   }
@@ -9321,18 +10400,22 @@ async function preparerPhotosRecherche(positions) {
 // Ouvre les photos de la recherche dans l'écran de la galerie d'une visite : même
 // grille, même plein écran, même balayage. La « visite » affichée dans le bandeau
 // est le résultat de recherche lui-même.
-async function ouvrirPhotosRechercheDansGalerie(positions, titre, position = 0) {
+async function ouvrirPhotosRechercheDansGalerie(positions, titre, position = 0, enGrille = false, contexte = {}) {
   try {
     setRechercheMessage("");
     const photos = await preparerPhotosRecherche(positions);
-    afficherPhotosRechercheDansGalerie(photos, titre, position);
+    afficherPhotosRechercheDansGalerie(photos, titre, position, enGrille, contexte);
   } catch (error) {
     console.error("Ouverture des photos de la recherche :", error);
     setRechercheMessage("Ces photos n’ont pas pu être ouvertes : " + (error?.message || "erreur inconnue"));
   }
 }
 
-function afficherPhotosRechercheDansGalerie(photos, titre, position = 0) {
+// v97 — un ensemble (une visite, une recherche enregistrée) s'ouvre sur la grille ;
+// une photo seule, en plein écran.
+// Le bandeau de la galerie dit ce qui est ouvert : une visite (son lieu, sa période),
+// une recherche enregistrée ou un résultat — jamais « Date non renseignée ».
+function afficherPhotosRechercheDansGalerie(photos, titre, position = 0, enGrille = false, contexte = {}) {
   {
     if (!Array.isArray(photos) || photos.length === 0) {
       setRechercheMessage("Ces photos ne sont plus dans leur dossier.");
@@ -9344,9 +10427,10 @@ function afficherPhotosRechercheDansGalerie(photos, titre, position = 0) {
     prefetchMiniaturesAnnuleRef.current = false;
     setVisiteGalerieMaquette({
       nom: titre,
-      voyage: "Résultats de recherche",
+      voyage: contexte.voyage || "Résultats de recherche",
       nombrePhotos: photos.length,
       resultatRecherche: true,
+      metaRecherche: contexte.meta || "",
     });
     setPhotosGalerieVisite(photos);
     setNombreTotalPhotosGalerieVisite(photos.length);
@@ -9354,20 +10438,15 @@ function afficherPhotosRechercheDansGalerie(photos, titre, position = 0) {
     setErreurGalerieVisite("");
     setScrollTopGalerieVisite(0);
     setIndexPhotoGalerieVisite(index);
-    setModePhotoGalerieVisite(true);
+    setModePhotoGalerieVisite(!enGrille);
     setModeGalerieVisite(true);
   }
 }
 
-// Photos de la vue Grille : toutes les photos des lignes affichées, dans l'ordre des
-// lignes. Préparées par tranches, au fur et à mesure du défilement.
-async function preparerGrilleRecherche(lignes, nombre, rappel) {
-  const positions = [];
-  for (let i = 0; i < lignes.length && positions.length < nombre; i += 1) {
-    for (let j = 0; j < lignes[i].photos.length && positions.length < nombre; j += 1) {
-      positions.push(lignes[i].photos[j]);
-    }
-  }
+// Photos de la vue Grille : toutes les photos du résultat, dans l'ordre de
+// l'affichage. Préparées par tranches, au fur et à mesure du défilement.
+async function preparerGrilleRecherche(resultat, nombre, rappel) {
+  const positions = positionsResultatPhotoCartel(resultat).slice(0, nombre);
   try {
     rappel(await preparerPhotosRecherche(positions));
   } catch (error) {
@@ -9376,49 +10455,294 @@ async function preparerGrilleRecherche(lignes, nombre, rappel) {
   }
 }
 
-// Rappel des critères, en langage courant : ce qui a été tapé et ce qui est coché.
-function texteCriteresRecherche(mots) {
-  const morceaux = [];
-  if (mots.length > 0) morceaux.push(`Mots : ${mots.join(", ")}`);
-  if (rechercheFiltres.pays.length > 0) morceaux.push(`Pays : ${rechercheFiltres.pays.join(", ")}`);
-  if (rechercheFiltres.villes.length > 0) morceaux.push(`Villes : ${rechercheFiltres.villes.join(", ")}`);
-  if (rechercheFiltres.annees.length > 0) morceaux.push(`Années : ${rechercheFiltres.annees.join(", ")}`);
-  if (rechercheFiltres.analyseesSeulement) morceaux.push("Photos analysées seulement");
-  return morceaux.join(" · ");
-}
-
+// v97 — le résultat affiché est celui de la recherche LANCÉE, jamais recalculé
+// pendant que les critères changent.
 function resultatRechercheCourant() {
-  const cle = `${rechercheVersionMoteur}|${rechercheSaisie}|${JSON.stringify(rechercheFiltres)}`;
+  if (!rechercheLancee) return null;
+  const cle = `${rechercheVersionMoteur}|${JSON.stringify(rechercheLancee)}`;
   if (resultatRechercheMemoRef.current.cle === cle && resultatRechercheMemoRef.current.resultat) {
     return resultatRechercheMemoRef.current.resultat;
   }
-  const resultat = rechercherDansMoteur(moteurRechercheRef.current, rechercheSaisie, rechercheFiltres);
+  const resultat = rechercherPhotoCartel(moteurRechercheRef.current, rechercheLancee.criteres, rechercheLancee.type);
   resultatRechercheMemoRef.current = { cle, resultat };
   return resultat;
+}
+
+function lancerRechercheCourante() {
+  setRechercheLancee({ type: rechercheType, criteres: normaliserCriteresRecherche(rechercheCriteres) });
+  setRechercheEnregistreeNom("");
+  setRechercheNombreLignes(40);
+  setRechercheNombreGrille(60);
+  setRechercheDossierMots("");
+  setRechercheVisiteType(-1);
+  setRechercheMessage("");
+}
+
+// Tout changement de critère ou de type efface le résultat affiché : il ne
+// correspondrait plus à ce qui est sélectionné.
+function modifierCriteresRecherche(modification) {
+  setRechercheCriteres((criteres) => normaliserCriteresRecherche({ ...criteres, ...modification }));
+  setRechercheLancee(null);
+}
+
+function changerTypeRecherche(type) {
+  if (type === rechercheType) return;
+  setRechercheType(type);
+  setRechercheLancee(null);
+  setRechercheVue("tableau");
+}
+
+function effacerCriteresRecherche() {
+  setRechercheCriteres(criteresVidesRecherche());
+  setRechercheLancee(null);
+  setRechercheEnregistreeNom("");
+}
+
+function ouvrirCritereRecherche(cle) {
+  const critere = CRITERES_RECHERCHE_PHOTOCARTEL.find((element) => element.cle === cle);
+  if (!critere) return;
+  setRechercheFiltreModale("");
+  if (critere.texte) setRechercheBrouillonTexte(rechercheCriteres[cle] || "");
+  else setRechercheBrouillon(rechercheCriteres[cle].slice());
+  setRechercheModaleCritere(cle);
+}
+
+function validerCritereRecherche() {
+  const critere = CRITERES_RECHERCHE_PHOTOCARTEL.find((element) => element.cle === rechercheModaleCritere);
+  if (critere) {
+    modifierCriteresRecherche({ [critere.cle]: critere.texte ? rechercheBrouillonTexte : rechercheBrouillon });
+  }
+  setRechercheModaleCritere("");
+}
+
+// Valeurs proposées dans la fenêtre d'un critère, avec leur nombre dans l'unité
+// de la recherche choisie (visites, photos ou œuvres). Les années vont de la plus
+// récente à la plus ancienne, le reste par ordre alphabétique ; une valeur à zéro
+// n'est proposée que si elle est déjà cochée (ou si c'est un type de visite).
+function valeursCritereRecherche(cle) {
+  const moteur = moteurRechercheRef.current;
+  if (!moteur || !moteur.referentiel[cle]) return [];
+  const unite = rechercheType;
+  const valeurs = Array.from(moteur.referentiel[cle].values())
+    .map((entree) => ({ valeur: entree.valeur, nombre: entree[unite] || 0 }))
+    .filter((entree) => entree.nombre > 0 || cle === "types" || rechercheBrouillon.includes(entree.valeur));
+  if (cle === "annees") return valeurs.sort((a, b) => Number(b.valeur) - Number(a.valeur));
+  if (cle === "types") {
+    const ordre = [...TYPES_VISITE_PHOTOCARTEL.map(([, type]) => type), TYPE_VISITE_NON_RENSEIGNE];
+    return valeurs.sort((a, b) => ordre.indexOf(a.valeur) - ordre.indexOf(b.valeur));
+  }
+  return valeurs.sort((a, b) => a.valeur.localeCompare(b.valeur, "fr", { sensitivity: "base" }));
+}
+
+// v97 — RECHERCHES ENREGISTRÉES : sur le téléphone dans
+// DCIM/PhotoCartel/Recherches enregistrées, sur le PC dans C:\\PhotoCartel\\Recherches
+// enregistrées (par le serveur local). Même fichier, même format des deux côtés.
+async function dossierRecherchesEnregistreesAndroid(creer) {
+  const racine = await obtenirRacineRechercheAndroid();
+  if (!racine) throw new Error("Le dossier PhotoCartel n’est pas accessible.");
+  try {
+    return await racine.getDirectoryHandle(DOSSIER_RECHERCHES_ENREGISTREES, { create: creer });
+  } catch (error) {
+    if (!creer && error?.name === "NotFoundError") return null;
+    throw error;
+  }
+}
+
+async function listerRecherchesEnregistrees() {
+  setRecherchesEnregistreesEtat("chargement");
+  try {
+    let liste = [];
+    if (estAndroid()) {
+      const dossier = await dossierRecherchesEnregistreesAndroid(false);
+      if (dossier) {
+        for await (const [nomFichier, handle] of dossier.entries()) {
+          if (handle.kind !== "file" || !estNomFichierRechercheEnregistree(nomFichier)) continue;
+          try {
+            const recherche = lireRechercheEnregistree(JSON.parse(await (await handle.getFile()).text()));
+            if (recherche) {
+              liste.push({
+                fichier: nomFichier,
+                nom: recherche.nom,
+                dateIso: recherche.dateIso,
+                typeRecherche: recherche.typeRecherche,
+                texteCriteres: recherche.texteCriteres,
+                nombrePhotos: recherche.photos.length,
+              });
+            }
+          } catch (error) {
+            console.warn("Recherche enregistrée illisible :", nomFichier, error);
+          }
+        }
+      }
+      liste.sort((a, b) => (a.dateIso < b.dateIso ? 1 : a.dateIso > b.dateIso ? -1 : 0));
+    } else {
+      const reponse = await fetch(
+        API_BASE + "/recherches-enregistrees?dossierRacine=" + encodeURIComponent(dossierRacineGalerieEnvoyeAuServeur())
+      );
+      const data = await lireReponseJsonPhotoCartel(reponse, "Lecture impossible");
+      if (!reponse.ok || !data.success) throw new Error(data.error || "Lecture impossible");
+      liste = Array.isArray(data.recherches) ? data.recherches : [];
+    }
+    setRecherchesEnregistrees(liste);
+    setRecherchesEnregistreesEtat("pret");
+  } catch (error) {
+    setRecherchesEnregistrees([]);
+    setRecherchesEnregistreesEtat("Les recherches enregistrées n’ont pas pu être lues : " + (error?.message || "erreur inconnue"));
+  }
+}
+
+function ouvrirListeRecherchesEnregistrees() {
+  setRechercheASupprimer("");
+  setRecherchesEnregistreesOuvert(true);
+  listerRecherchesEnregistrees();
+}
+
+function proposerNomRechercheEnregistree() {
+  if (!rechercheLancee) return "";
+  const libelleType = TYPES_RECHERCHE_PHOTOCARTEL.find(({ cle }) => cle === rechercheLancee.type)?.libelle || "Photos";
+  const propres = normaliserCriteresRecherche(rechercheLancee.criteres);
+  const valeurs = [
+    ...propres.artistes, ...propres.pays, ...propres.villes, ...propres.types, ...propres.annees,
+    ...(propres.motsCles ? [propres.motsCles] : []),
+  ];
+  return nomPropreRechercheEnregistree(`${libelleType} ${valeurs.join(" ")}`.trim());
+}
+
+function ouvrirEnregistrementRecherche() {
+  setRechercheNomEnregistrement(proposerNomRechercheEnregistree());
+  setRechercheMessageEnregistrement("");
+  setRechercheEnregistrerOuvert(true);
+}
+
+async function enregistrerRechercheCourante() {
+  const resultat = resultatRechercheCourant();
+  const moteur = moteurRechercheRef.current;
+  const nom = nomPropreRechercheEnregistree(rechercheNomEnregistrement);
+  if (!resultat || !moteur || rechercheEnregistrementEnCours) return;
+  if (!nom) {
+    setRechercheMessageEnregistrement("Donne un nom à cette recherche.");
+    return;
+  }
+  const contenu = construireContenuRechercheEnregistree(
+    {
+      nom,
+      typeRecherche: rechercheLancee.type,
+      texteCriteres: texteCriteresPhotoCartel(rechercheLancee.criteres),
+      criteres: rechercheLancee.criteres,
+      photos: positionsResultatPhotoCartel(resultat).map((position) => moteur.photos[position].fichier),
+    },
+    VERSION_PHOTOCARTEL
+  );
+  const nomFichier = nomFichierRechercheEnregistree(nom);
+  setRechercheEnregistrementEnCours(true);
+  setRechercheMessageEnregistrement("");
+  try {
+    if (estAndroid()) {
+      const dossier = await dossierRecherchesEnregistreesAndroid(true);
+      let existe = true;
+      try {
+        await dossier.getFileHandle(nomFichier);
+      } catch (error) {
+        if (error?.name !== "NotFoundError") throw error;
+        existe = false;
+      }
+      if (existe) throw new Error("Une recherche porte déjà ce nom.");
+      await ecrireBlobDansDossierAndroid(
+        dossier,
+        nomFichier,
+        new Blob([JSON.stringify(contenu)], { type: "application/json" })
+      );
+    } else {
+      const reponse = await fetch(API_BASE + "/recherches-enregistrees", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dossierRacine: dossierRacineGalerieEnvoyeAuServeur(), contenu }),
+      });
+      const data = await lireReponseJsonPhotoCartel(reponse, "Enregistrement impossible");
+      if (!reponse.ok || !data.success) throw new Error(data.error || "Enregistrement impossible");
+    }
+    setRechercheEnregistreeNom(nom);
+    setRechercheEnregistrerOuvert(false);
+  } catch (error) {
+    setRechercheMessageEnregistrement(error?.message || "Enregistrement impossible");
+  } finally {
+    setRechercheEnregistrementEnCours(false);
+  }
+}
+
+async function ouvrirRechercheEnregistree(nomFichier) {
+  try {
+    setRecherchesEnregistreesEtat("pret");
+    let recherche = null;
+    if (estAndroid()) {
+      const dossier = await dossierRecherchesEnregistreesAndroid(false);
+      if (!dossier) throw new Error("Cette recherche n’existe plus.");
+      const handle = await dossier.getFileHandle(nomFichier);
+      recherche = lireRechercheEnregistree(JSON.parse(await (await handle.getFile()).text()));
+    } else {
+      const reponse = await fetch(
+        API_BASE +
+          "/recherche-enregistree?dossierRacine=" +
+          encodeURIComponent(dossierRacineGalerieEnvoyeAuServeur()) +
+          "&fichier=" +
+          encodeURIComponent(nomFichier)
+      );
+      const data = await lireReponseJsonPhotoCartel(reponse, "Lecture impossible");
+      if (!reponse.ok || !data.success) throw new Error(data.error || "Lecture impossible");
+      recherche = lireRechercheEnregistree({
+        type_document: TYPE_DOCUMENT_RECHERCHE_ENREGISTREE,
+        nom: data.recherche?.nom,
+        photos: data.recherche?.photos,
+      });
+    }
+    if (!recherche) throw new Error("Recherche illisible.");
+    const moteur = moteurRechercheRef.current;
+    if (!moteur) throw new Error("Tes photos ne sont pas encore prêtes.");
+    const positionParFichier = new Map(moteur.photos.map((photo, position) => [photo.fichier, position]));
+    const positions = recherche.photos
+      .map((fichier) => positionParFichier.get(fichier))
+      .filter((position) => position !== undefined);
+    if (positions.length === 0) throw new Error("Ces photos ne sont plus dans leur dossier.");
+    setRecherchesEnregistreesOuvert(false);
+    await ouvrirPhotosRechercheDansGalerie(positions, recherche.nom, 0, true, { voyage: "Recherche enregistrée" });
+  } catch (error) {
+    setRecherchesEnregistreesEtat(error?.message || "Ouverture impossible");
+  }
+}
+
+async function supprimerRechercheEnregistree(nomFichier) {
+  try {
+    if (estAndroid()) {
+      const dossier = await dossierRecherchesEnregistreesAndroid(false);
+      if (dossier) await dossier.removeEntry(nomFichier);
+    } else {
+      const reponse = await fetch(API_BASE + "/recherches-enregistrees/supprimer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dossierRacine: dossierRacineGalerieEnvoyeAuServeur(), fichier: nomFichier }),
+      });
+      const data = await lireReponseJsonPhotoCartel(reponse, "Suppression impossible");
+      if (!reponse.ok || !data.success) throw new Error(data.error || "Suppression impossible");
+    }
+    setRechercheASupprimer("");
+    await listerRecherchesEnregistrees();
+  } catch (error) {
+    setRecherchesEnregistreesEtat(error?.message || "Suppression impossible");
+  }
 }
 
 // v80 — prépare les photos de la vue Grille quand elle est affichée. La préparation
 // résout les handles ; l'image elle-même est chargée par le mécanisme de la galerie.
 useEffect(() => {
   if (!modeRechercheResultats || rechercheVue !== "grille" || !moteurRechercheRef.current) return;
+  const resultat = resultatRechercheCourant();
+  if (!resultat || resultat.type === "visites") return;
   let actif = true;
-  const lignes = resultatRechercheCourant().lignes;
-  preparerGrilleRecherche(lignes, rechercheNombreGrille, (photos) => {
+  preparerGrilleRecherche(resultat, rechercheNombreGrille, (photos) => {
     if (actif) setPhotosGrilleRecherche(photos);
   });
   return () => { actif = false; };
-}, [modeRechercheResultats, rechercheVue, rechercheNombreGrille, rechercheVersionMoteur, rechercheSaisie, rechercheFiltres]);
-
-function basculerPastilleRecherche(famille, valeur) {
-  setRechercheFiltres((filtres) => {
-    const liste = filtres[famille] || [];
-    return {
-      ...filtres,
-      [famille]: liste.includes(valeur) ? liste.filter((element) => element !== valeur) : [...liste, valeur],
-    };
-  });
-  setRechercheNombreLignes(40);
-}
+}, [modeRechercheResultats, rechercheVue, rechercheNombreGrille, rechercheVersionMoteur, rechercheLancee]);
 
 function contexteDossierRecherche(positionDossier) {
   const moteur = moteurRechercheRef.current;
@@ -11077,6 +12401,12 @@ const validerNouvelleVisite = async () => {
   }
 
   const cheminVisite = cheminVisiteMetier(voyage, ville, nomVisite);
+  // v97 — noms de dossiers réellement créés (même nettoyage que la création).
+  let segmentsVisiteCreee = [
+    nettoyerNomDossierLocal(voyage),
+    nettoyerNomDossierLocal(ville),
+    nettoyerNomDossierLocal(nomVisite),
+  ];
 
   try {
     let cheminVisiteFinal = cheminVisite;
@@ -11149,6 +12479,9 @@ const validerNouvelleVisite = async () => {
         }
 
         cheminVisiteFinal = data.chemin || cheminVisite;
+        if (data.nomVoyage && data.nomVille && data.nomVisite) {
+          segmentsVisiteCreee = [data.nomVoyage, data.nomVille, data.nomVisite];
+        }
       } catch (erreurRouteVisite) {
         console.warn(
           "Route /creer-visite-metier indisponible, fallback /creer-dossier :",
@@ -11189,6 +12522,21 @@ const validerNouvelleVisite = async () => {
     }
 
     const debutNouvelleVisiteMs = Date.now();
+
+    // v97 — le type de la visite est posé ici, une fois, à sa création : la
+    // recherche le lit, elle ne le déduit jamais. Puis la nouvelle visite entre
+    // dans la recherche sans attendre la prochaine ouverture de l'app (seuls les
+    // noms des dossiers sont relus). Un échec ne remet jamais en cause la visite.
+    enregistrerTypeVisiteRecherche(
+      [DOSSIER_METIER_VOYAGES, ...segmentsVisiteCreee].join("/"),
+      type
+    )
+      .catch((erreurType) => console.warn("Type de la visite non enregistré :", erreurType))
+      .then(() => {
+        miseAJourRechercheFaiteRef.current = false;
+        return mettreAJourRechercheEnArrierePlan();
+      })
+      .catch((erreurMiseAJour) => console.warn("Recherche non mise à jour :", erreurMiseAJour));
 
     // v30.x : fermeture éventuelle du dossier tampon actif, puis ouverture de la vraie visite
     // pour le futur rangement automatique des photos.
@@ -15921,7 +17269,9 @@ const validerNouvelleVisite = async () => {
           <div style={styles.galerieVisiteMeta}>
             {fichePhoto
               ? `${visite.nom || "Visite"} · ${Math.min(indexPhotoGalerieVisite + 1, total)} / ${total}`
-              : `${dateCourteGalerieVisite(visite)} · ${libelleNombrePhotosGalerieVisite()}`}
+              : visite.resultatRecherche
+                ? [visite.metaRecherche, libelleNombrePhotosGalerieVisite()].filter(Boolean).join(" · ")
+                : `${dateCourteGalerieVisite(visite)} · ${libelleNombrePhotosGalerieVisite()}`}
           </div>
         </div>
         <img src={LOGO_PHOTOCARTEL_SRC} alt="" style={styles.galerieVisiteLogo} />
@@ -16528,51 +17878,30 @@ const validerNouvelleVisite = async () => {
 
 
       {modeRechercheResultats && !modeGalerieVisite && (() => {
-        // v80 — écran de recherche à la forme d'EuroCartel : bandeau de rappel des
-        // critères, puis tableau, puis grille de miniatures, puis plein écran. Les
-        // images passent par le mécanisme de la galerie d'une visite (ImageGalerieVisite),
-        // jamais par un chemin propre à la recherche.
+        // v97 — ÉCRAN DE RECHERCHE À LA FORME D'EUROCARTEL : le type de recherche
+        // (visites, photos, œuvres), six critères nommés et comptés, chacun choisi
+        // dans sa fenêtre parmi les valeurs qui existent, « Lancer la recherche »,
+        // le rappel des critères, les résultats groupés sous un titre, « Enregistrer
+        // la recherche ». Les images passent par le mécanisme de la galerie d'une
+        // visite (ImageGalerieVisite), jamais par un chemin propre à la recherche.
         const t = themePhotoCartel;
         const moteur = moteurRechercheRef.current;
         const resultat = resultatRechercheCourant();
-        const filtresActifs =
-          rechercheFiltres.pays.length +
-            rechercheFiltres.villes.length +
-            rechercheFiltres.annees.length +
-            (rechercheFiltres.analyseesSeulement ? 1 : 0) >
-          0;
-        const critereSaisi = resultat.mots.length > 0 || filtresActifs;
+        const criteresPresents = !criteresRechercheVides(rechercheCriteres);
+        const nombreFr = (valeur) => Number(valeur || 0).toLocaleString("fr-FR");
+        const pluriel = (nombre, singulier, plurielTexte) => `${nombreFr(nombre)} ${nombre > 1 ? plurielTexte : singulier}`;
+
         const styleChamp = {
           width: "100%",
           boxSizing: "border-box",
-          padding: "14px 16px",
-          fontSize: "17px",
+          padding: "12px 14px",
+          fontSize: "16px",
           borderRadius: t.rayonBouton,
           border: `1.5px solid ${t.or}`,
           background: t.ivoireClair,
           color: t.encre,
           fontFamily: t.font,
           outline: "none",
-        };
-        const stylePastille = (active) => ({
-          flex: "0 0 auto",
-          padding: "7px 12px",
-          borderRadius: "999px",
-          border: `1px solid ${active ? t.or : t.bordureOr}`,
-          background: active ? t.or : t.ivoireClair,
-          color: active ? "#fff" : t.texte,
-          fontSize: "13px",
-          fontWeight: 600,
-          fontFamily: t.font,
-          cursor: "pointer",
-          whiteSpace: "nowrap",
-        });
-        const styleRangee = {
-          display: "flex",
-          gap: "8px",
-          overflowX: "auto",
-          padding: "2px 0 8px",
-          WebkitOverflowScrolling: "touch",
         };
         const styleLibelle = {
           fontSize: "11px",
@@ -16589,12 +17918,26 @@ const validerNouvelleVisite = async () => {
           background: t.ivoireClair,
           color: t.orFonce,
           fontWeight: 700,
+          fontSize: "14px",
           fontFamily: t.font,
+          cursor: "pointer",
+        };
+        const styleBoutonPrincipal = {
+          width: "100%",
+          padding: "14px 16px",
+          borderRadius: t.rayonBouton,
+          border: "none",
+          background: `linear-gradient(180deg, #c49a4a, ${t.or})`,
+          color: "#fff",
+          fontWeight: 800,
+          fontSize: "16px",
+          fontFamily: t.font,
+          boxShadow: t.ombreBouton,
           cursor: "pointer",
         };
         const styleOnglet = (actif) => ({
           flex: 1,
-          padding: "10px 12px",
+          padding: "10px 8px",
           borderRadius: t.rayonBouton,
           border: `1px solid ${actif ? t.or : t.bordureOr}`,
           background: actif ? t.or : t.ivoireClair,
@@ -16604,342 +17947,742 @@ const validerNouvelleVisite = async () => {
           fontFamily: t.font,
           cursor: "pointer",
         });
-        const rangeePastilles = (libelle, famille, liste) =>
-          liste.length > 0 ? (
-            <>
-              <div style={styleLibelle}>{libelle}</div>
-              <div style={styleRangee}>
-                {liste.slice(0, 16).map((pastille) => (
+        const styleCritere = (actif) => ({
+          minWidth: 0,
+          minHeight: "52px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "2px",
+          padding: "7px 10px",
+          borderRadius: "14px",
+          border: `1px solid ${actif ? t.or : t.bordureOr}`,
+          background: actif ? "#f4e7cc" : t.ivoireClair,
+          color: actif ? t.orFonce : t.texte,
+          fontWeight: 700,
+          fontSize: "14px",
+          fontFamily: t.font,
+          cursor: moteur ? "pointer" : "default",
+          opacity: moteur ? 1 : 0.55,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          textAlign: "center",
+        });
+        const styleCarte = {
+          background: t.ivoireCarte,
+          border: `1px solid ${t.bordureOr}`,
+          borderRadius: t.rayonCarte,
+          boxShadow: t.ombreLegere,
+          padding: "12px",
+        };
+        const styleModale = {
+          ...styles.modal,
+          maxHeight: "86vh",
+          display: "flex",
+          flexDirection: "column",
+          boxSizing: "border-box",
+        };
+        const styleCaseCochee = (cochee) => ({
+          flex: "0 0 auto",
+          width: "22px",
+          height: "22px",
+          borderRadius: "6px",
+          border: `2px solid ${cochee ? t.or : "rgba(122, 85, 32, 0.35)"}`,
+          background: cochee ? t.or : "#fff",
+          color: "#fff",
+          fontSize: "14px",
+          lineHeight: "18px",
+          textAlign: "center",
+          fontWeight: 900,
+        });
+
+        const libelleType = (cle) => TYPES_RECHERCHE_PHOTOCARTEL.find((element) => element.cle === cle)?.libelle || "";
+        const uniteType = { visites: ["visite", "visites"], photos: ["photo", "photos"], oeuvres: ["œuvre", "œuvres"] }[rechercheType];
+        const iconeType = (type) => (TYPES_VISITE_PHOTOCARTEL.find(([, libelle]) => libelle === type) || ["🗂️"])[0];
+
+        // Lignes affichées par tranches de 40, groupes compris.
+        const groupesAffiches = [];
+        let restantes = rechercheNombreLignes;
+        let totalLignes = 0;
+        if (resultat) {
+          for (let g = 0; g < resultat.groupes.length; g += 1) {
+            const groupe = resultat.groupes[g];
+            totalLignes += groupe.lignes.length;
+            if (restantes > 0) {
+              groupesAffiches.push({ ...groupe, lignesAffichees: groupe.lignes.slice(0, restantes) });
+              restantes -= groupe.lignes.length;
+            }
+          }
+        }
+        const lignesVisibles = groupesAffiches.reduce((somme, groupe) => somme + groupe.lignesAffichees.length, 0);
+        const totalPhotosResultat = resultat ? positionsResultatPhotoCartel(resultat).length : 0;
+
+        const panneauMots = (chemin) =>
+          rechercheDossierMots === chemin && (
+            <section
+              aria-label="Mots ajoutés à cette visite"
+              style={{ ...styleCarte, boxShadow: "none", marginTop: "8px", background: t.ivoireClair }}
+            >
+              <div style={styleLibelle}>Mots ajoutés à {chemin.split("/").pop()}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+                {(motsAjoutesRechercheRef.current[chemin] || []).map((mot) => (
                   <button
-                    key={pastille.valeur}
+                    key={mot}
                     type="button"
-                    style={stylePastille(rechercheFiltres[famille].includes(pastille.valeur))}
-                    onClick={() => basculerPastilleRecherche(famille, pastille.valeur)}
+                    style={{ ...styleBoutonSecondaire, padding: "6px 10px", background: t.or, color: "#fff" }}
+                    onClick={() => retirerMotRecherche(chemin, mot)}
+                    aria-label={`Retirer ${mot}`}
                   >
-                    {pastille.valeur}
+                    {mot} ✕
                   </button>
                 ))}
               </div>
-            </>
-          ) : null;
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  value={rechercheSaisieMot}
+                  placeholder="Artiste, lieu, thème"
+                  onChange={(event) => setRechercheSaisieMot(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") ajouterMotRecherche(chemin, rechercheSaisieMot);
+                  }}
+                  style={{ ...styleChamp, padding: "10px 12px", fontSize: "15px" }}
+                />
+                <button type="button" style={styleBoutonSecondaire} onClick={() => ajouterMotRecherche(chemin, rechercheSaisieMot)}>
+                  Ajouter
+                </button>
+              </div>
+              {rechercheMessageMot && (
+                <div style={{ color: "#9b2c2c", fontSize: "14px", marginTop: "8px" }}>{rechercheMessageMot}</div>
+              )}
+            </section>
+          );
 
-        const lignesAffichees = resultat.lignes.slice(0, rechercheNombreLignes);
-        const totalPhotos = resultat.lignes.reduce((somme, ligne) => somme + ligne.photos.length, 0);
+        const basculerMots = (chemin) => {
+          setRechercheDossierMots(rechercheDossierMots === chemin ? "" : chemin);
+          setRechercheSaisieMot("");
+          setRechercheMessageMot("");
+        };
+
+        const critereOuvert = CRITERES_RECHERCHE_PHOTOCARTEL.find((element) => element.cle === rechercheModaleCritere);
+        const valeursModale = critereOuvert && !critereOuvert.texte ? valeursCritereRecherche(critereOuvert.cle) : [];
+        const filtreModale = decouperEnMotsPhotoCartel(rechercheFiltreModale).join(" ");
+        const valeursFiltrees = filtreModale
+          ? valeursModale.filter((entree) => decouperEnMotsPhotoCartel(entree.valeur).join(" ").includes(filtreModale))
+          : valeursModale;
+        const visiteTypeOuverte = rechercheVisiteType >= 0 && moteur ? moteur.visites[rechercheVisiteType] : null;
 
         return (
           <div style={{ ...styles.analyseEcran, paddingBottom: "154px" }}>
             <main style={{ ...styles.analyseTelephone, paddingBottom: "148px", fontFamily: t.font }}>
-              <h1 style={{ ...styles.titreFicheResultat, marginTop: 0 }}>Rechercher</h1>
-              <input
-                type="search"
-                autoFocus
-                value={rechercheSaisie}
-                placeholder="Artiste, lieu, ville, année…"
-                onChange={(event) => {
-                  setRechercheSaisie(event.target.value);
-                  setRechercheNombreLignes(40);
-                  setRechercheNombreGrille(60);
-                }}
-                style={styleChamp}
-                aria-label="Rechercher dans mes photos"
-              />
+              <h1 style={{ ...styles.titreFicheResultat, marginTop: 0, marginBottom: "12px" }}>Rechercher</h1>
 
-              {moteur && (
-                <div style={{ marginTop: "10px" }}>
-                  {rangeePastilles("Pays", "pays", moteur.pastilles.pays)}
-                  {rangeePastilles("Villes", "villes", moteur.pastilles.villes)}
-                  {rangeePastilles("Années", "annees", moteur.pastilles.annees)}
-                  <div style={styleRangee}>
+              <div role="tablist" aria-label="Type de recherche" style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+                {TYPES_RECHERCHE_PHOTOCARTEL.map(({ cle, libelle }) => (
+                  <button
+                    key={cle}
+                    type="button"
+                    role="tab"
+                    aria-selected={rechercheType === cle}
+                    style={styleOnglet(rechercheType === cle)}
+                    onClick={() => changerTypeRecherche(cle)}
+                  >
+                    {libelle}
+                  </button>
+                ))}
+              </div>
+
+              <section aria-label="Critères de recherche" style={{ ...styleCarte, marginBottom: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: "26px", margin: "-2px 2px 6px" }}>
+                  <span style={{ ...styleLibelle, margin: 0 }}>Critères</span>
+                  {criteresPresents && (
                     <button
                       type="button"
-                      style={stylePastille(rechercheFiltres.analyseesSeulement)}
-                      onClick={() => {
-                        setRechercheFiltres((filtres) => ({ ...filtres, analyseesSeulement: !filtres.analyseesSeulement }));
-                        setRechercheNombreLignes(40);
-                        setRechercheNombreGrille(60);
-                      }}
+                      onClick={effacerCriteresRecherche}
+                      style={{ background: "none", border: "none", padding: "2px 0", color: t.orFonce, fontWeight: 700, fontSize: "13px", fontFamily: t.font, cursor: "pointer" }}
                     >
-                      Photos analysées
+                      Effacer les critères
                     </button>
-                    {filtresActifs && (
-                      <button
-                        type="button"
-                        style={{ ...stylePastille(false), color: t.orFonce }}
-                        onClick={() => {
-                          setRechercheFiltres({ pays: [], villes: [], annees: [], analyseesSeulement: false });
-                          setRechercheNombreLignes(40);
-                          setRechercheNombreGrille(60);
-                        }}
-                      >
-                        Tout effacer
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
-
-              {/* Bandeau de rappel des critères et du résultat, comme EuroCartel. */}
-              {moteur && critereSaisi && (
-                <section
-                  aria-label="Critères de recherche"
-                  style={{
-                    // v81 — bandeau figé, comme celui de la grille de la galerie : il reste
-                    // visible pendant le défilement des résultats, sur PC comme en PWA.
-                    position: "sticky",
-                    top: "0px",
-                    zIndex: 5,
-                    // Fond opaque : la carte du thème est à 94 %, et les vignettes se
-                    // voyaient à travers le bandeau pendant le défilement.
-                    background: t.ivoireClair,
-                    border: `1px solid ${t.bordureOr}`,
-                    borderRadius: t.rayonCarte,
-                    boxShadow: t.ombreLegere,
-                    padding: "12px 14px",
-                    margin: "6px 0 12px",
-                  }}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px" }}>
+                  {CRITERES_RECHERCHE_PHOTOCARTEL.map(({ cle, libelle, texte }) => {
+                    const valeur = rechercheCriteres[cle];
+                    const nombre = texte ? (valeur ? 1 : 0) : valeur.length;
+                    const selection = texte ? valeur : valeur.join(", ");
+                    return (
+                      <button
+                        key={cle}
+                        type="button"
+                        disabled={!moteur}
+                        style={styleCritere(nombre > 0)}
+                        onClick={() => ouvrirCritereRecherche(cle)}
+                        title={selection || undefined}
+                      >
+                        <span>{!texte && nombre > 0 ? `${libelle} (${nombre})` : libelle}</span>
+                        {selection && (
+                          <span
+                            style={{
+                              maxWidth: "100%",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              color: t.texte,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {selection}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  disabled={!moteur}
+                  onClick={lancerRechercheCourante}
+                  style={{ ...styleBoutonPrincipal, marginTop: "10px", opacity: moteur ? 1 : 0.55, cursor: moteur ? "pointer" : "default" }}
                 >
-                  <div style={styleLibelle}>Critères de recherche</div>
-                  <div style={{ fontSize: "14px", color: t.texte, overflowWrap: "anywhere" }}>
-                    {texteCriteresRecherche(resultat.mots)}
-                  </div>
-                  <div style={{ fontSize: "19px", fontWeight: 800, color: t.encre, marginTop: "8px" }}>
-                    {texteCompteursRecherche(resultat.compteurs)}
-                  </div>
-                  <div style={{ fontSize: "13px", color: t.texteDoux }}>
-                    {totalPhotos} photo{totalPhotos > 1 ? "s" : ""} au total
-                  </div>
-                </section>
-              )}
+                  Lancer la recherche
+                </button>
+                <button
+                  type="button"
+                  style={{ ...styleBoutonSecondaire, width: "100%", marginTop: "8px" }}
+                  onClick={ouvrirListeRecherchesEnregistrees}
+                >
+                  Recherches enregistrées
+                </button>
+              </section>
 
-              {!moteur && (
-                <div style={{ color: t.texteDoux, fontSize: "14px", margin: "8px 0 12px" }}>
-                  {rechercheEtat === "indisponible"
+              <div style={{ color: t.texteDoux, fontSize: "13px", textAlign: "center", margin: "0 0 12px" }}>
+                {moteur
+                  ? `Photothèque : ${pluriel(moteur.nombreVisites, "visite", "visites")} · ${pluriel(moteur.nombrePhotos, "photo", "photos")} · ${pluriel(moteur.nombreAnalysees, "œuvre", "œuvres")}`
+                  : rechercheEtat === "indisponible"
                     ? "Tes photos ne sont pas accessibles pour le moment."
                     : "Préparation de tes photos…"}
-                </div>
-              )}
-              {moteur && !critereSaisi && (
-                <div style={{ color: t.texteDoux, fontSize: "14px", margin: "8px 0 12px" }}>
-                  {moteur.nombrePhotos} photo{moteur.nombrePhotos > 1 ? "s" : ""}. Tape un mot ou touche une pastille.
-                </div>
-              )}
+              </div>
+
               {rechercheMessage && (
                 <div style={{ color: "#9b2c2c", fontSize: "14px", marginBottom: "10px" }}>{rechercheMessage}</div>
               )}
 
-              {/* Bascule Tableau / Grille. */}
-              {critereSaisi && resultat.lignes.length > 0 && (
-                <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-                  <button type="button" style={styleOnglet(rechercheVue === "tableau")} onClick={() => setRechercheVue("tableau")}>
-                    Tableau
-                  </button>
-                  <button type="button" style={styleOnglet(rechercheVue === "grille")} onClick={() => setRechercheVue("grille")}>
-                    Grille
-                  </button>
-                </div>
-              )}
+              {resultat && (
+                <>
+                  {/* Rappel des critères et du résultat, figé pendant le défilement. */}
+                  <section
+                    aria-label="Rappel de la recherche"
+                    style={{
+                      position: "sticky",
+                      top: "0px",
+                      zIndex: 5,
+                      background: t.ivoireClair,
+                      border: `1px solid ${t.bordureOr}`,
+                      borderRadius: t.rayonCarte,
+                      boxShadow: t.ombreLegere,
+                      padding: "12px 14px",
+                      margin: "0 0 10px",
+                    }}
+                  >
+                    <div style={styleLibelle}>{libelleType(resultat.type)}</div>
+                    <div style={{ fontSize: "14px", color: t.texte, overflowWrap: "anywhere" }}>
+                      {texteCriteresPhotoCartel(rechercheLancee.criteres)}
+                    </div>
+                    <div style={{ fontSize: "19px", fontWeight: 800, color: t.encre, marginTop: "6px" }}>
+                      {texteResultatPhotoCartel(resultat)}
+                    </div>
+                    {rechercheEnregistreeNom && (
+                      <div style={{ fontSize: "13px", color: t.orFonce, marginTop: "4px" }}>
+                        Enregistrée sous « {rechercheEnregistreeNom} »
+                      </div>
+                    )}
+                  </section>
 
-              {/* Tableau des résultats. */}
-              {critereSaisi && rechercheVue === "tableau" && (
-                <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px", color: t.texte }}>
-                    <thead>
-                      <tr>
-                        {["Photo", "Dossier", "Année", "Trouvé par"].map((colonne) => (
-                          <th
-                            key={colonne}
-                            scope="col"
-                            style={{
-                              textAlign: "left",
-                              padding: "8px 10px",
-                              background: t.ivoireCarte,
-                              color: t.orFonce,
-                              fontWeight: 800,
-                              fontSize: "12px",
-                              textTransform: "uppercase",
-                              letterSpacing: "0.06em",
-                              borderBottom: `1px solid ${t.bordureOr}`,
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {colonne}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lignesAffichees.map((ligne) => {
-                        const premiere = moteur ? moteur.photos[ligne.photos[0]] : null;
-                        const complement =
-                          ligne.type === "sujet"
-                            ? ` · ${ligne.photos.length} prises`
-                            : ligne.type === "dossier"
-                              ? ` · ${ligne.photos.length} photo${ligne.photos.length > 1 ? "s" : ""}`
-                              : "";
-                        return (
-                          <tr
-                            key={ligne.cle}
-                            onClick={() => ouvrirPhotosRechercheDansGalerie(ligne.photos, ligne.titre, 0)}
-                            style={{ cursor: "pointer", borderBottom: `1px solid ${t.bordureOr}` }}
-                          >
-                            <td style={{ padding: "10px", overflowWrap: "anywhere" }}>
-                              <span style={{ fontWeight: 700, color: t.encre }}>
-                                {ligne.type === "dossier" ? "📁 " : ""}
-                                {ligne.titre}
-                              </span>
-                              {complement}
-                              {premiere && premiere.auteur ? (
-                                <span style={{ display: "block", color: t.texteDoux }}>{premiere.auteur}</span>
-                              ) : null}
-                            </td>
-                            <td style={{ padding: "10px", color: t.texteDoux, overflowWrap: "anywhere" }}>
-                              {ligne.type === "dossier"
-                                ? contexteDossierRecherche(moteur.dossiers[ligne.dossier].parent)
-                                : contexteDossierRecherche(ligne.dossier)}
-                            </td>
-                            <td style={{ padding: "10px", whiteSpace: "nowrap" }}>{premiere ? premiere.annee : ""}</td>
-                            <td style={{ padding: "10px", color: t.orFonce, whiteSpace: "nowrap" }}>
-                              {ligne.origine}
-                              {ligne.type === "dossier" && (
+                  <button
+                    type="button"
+                    disabled={totalPhotosResultat === 0}
+                    onClick={ouvrirEnregistrementRecherche}
+                    style={{ ...styleBoutonSecondaire, width: "100%", marginBottom: "8px", opacity: totalPhotosResultat === 0 ? 0.5 : 1 }}
+                  >
+                    Enregistrer la recherche
+                  </button>
+                  {resultat.type !== "visites" && totalPhotosResultat > 0 && (
+                    <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+                      <button type="button" style={styleOnglet(rechercheVue === "tableau")} onClick={() => setRechercheVue("tableau")}>
+                        Tableau
+                      </button>
+                      <button type="button" style={styleOnglet(rechercheVue === "grille")} onClick={() => setRechercheVue("grille")}>
+                        Grille
+                      </button>
+                    </div>
+                  )}
+
+                  {(resultat.type === "visites" || rechercheVue === "tableau") &&
+                    groupesAffiches.map((groupe) => (
+                      <section key={groupe.cle} aria-label={groupe.titre} style={{ marginBottom: "14px" }}>
+                        <div style={{ borderBottom: `2px solid ${t.orClair}`, padding: "4px 2px 6px", marginBottom: "8px" }}>
+                          <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 800, color: t.encre, overflowWrap: "anywhere" }}>
+                            {groupe.titre}
+                          </h2>
+                          <div style={{ fontSize: "12.5px", color: t.texteDoux, marginTop: "2px" }}>{groupe.sousTitre}</div>
+                        </div>
+
+                        {groupe.lignesAffichees.map((ligne, indexLigne) => {
+                          if (ligne.type === "visite") {
+                            const visite = moteur.visites[ligne.visite];
+                            const artistes = Array.from(visite.artistes).sort((a, b) => a.localeCompare(b, "fr"));
+                            const details = [lieuVisiteRecherche(visite), periodeVisiteRecherche(visite)].filter(Boolean);
+                            return (
+                              <div key={ligne.cle} style={{ ...styleCarte, padding: "10px 12px", marginBottom: "8px" }}>
                                 <button
                                   type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    const chemin = moteur.dossiers[ligne.dossier].chemin;
-                                    setRechercheDossierMots(rechercheDossierMots === chemin ? "" : chemin);
-                                    setRechercheSaisieMot("");
-                                    setRechercheMessageMot("");
+                                  disabled={visite.nombrePhotos === 0}
+                                  onClick={() =>
+                                    ouvrirPhotosRechercheDansGalerie(visite.photos, visite.nom, 0, true, {
+                                      voyage: lieuVisiteRecherche(visite) || "Visite",
+                                      meta: periodeVisiteRecherche(visite),
+                                    })
+                                  }
+                                  style={{
+                                    display: "block",
+                                    width: "100%",
+                                    textAlign: "left",
+                                    background: "none",
+                                    border: "none",
+                                    padding: 0,
+                                    fontFamily: t.font,
+                                    cursor: visite.nombrePhotos ? "pointer" : "default",
                                   }}
-                                  style={{ ...stylePastille(false), marginLeft: "8px", padding: "4px 10px", fontSize: "12px" }}
                                 >
-                                  Mots
+                                  <div style={{ fontWeight: 800, color: t.encre, fontSize: "15px", overflowWrap: "anywhere" }}>
+                                    {visite.nom}
+                                  </div>
+                                  {details.length > 0 && (
+                                    <div style={{ color: t.texte, fontSize: "13px", marginTop: "2px" }}>{details.join(" · ")}</div>
+                                  )}
+                                  <div style={{ color: t.texteDoux, fontSize: "13px", marginTop: "2px" }}>
+                                    {iconeType(visite.typeAffiche)} {visite.typeAffiche} · {pluriel(visite.nombrePhotos, "photo", "photos")}
+                                    {artistes.length > 0 &&
+                                      ` · ${artistes.slice(0, 3).join(", ")}${artistes.length > 3 ? ` et ${artistes.length - 3} autre${artistes.length - 3 > 1 ? "s" : ""}` : ""}`}
+                                  </div>
                                 </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                                <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                                  <button
+                                    type="button"
+                                    style={{ ...styleBoutonSecondaire, padding: "6px 12px", fontSize: "13px" }}
+                                    onClick={() => {
+                                      setRechercheMessageType("");
+                                      setRechercheVisiteType(visite.position);
+                                    }}
+                                  >
+                                    Type de visite
+                                  </button>
+                                  <button
+                                    type="button"
+                                    style={{ ...styleBoutonSecondaire, padding: "6px 12px", fontSize: "13px" }}
+                                    onClick={() => basculerMots(visite.chemin)}
+                                  >
+                                    Mots
+                                  </button>
+                                </div>
+                                {panneauMots(visite.chemin)}
+                              </div>
+                            );
+                          }
 
-                  {/* Mots ajoutés à un dossier (lecture C), depuis sa ligne du tableau. */}
-                  {rechercheDossierMots && (
-                    <section
-                      aria-label="Mots ajoutés à ce dossier"
-                      style={{
-                        background: t.ivoireCarte,
-                        border: `1px solid ${t.bordureOr}`,
-                        borderRadius: t.rayonCarte,
-                        padding: "12px 14px",
-                        marginTop: "12px",
-                      }}
+                          const premiere = moteur.photos[ligne.photos[0]];
+                          const complement =
+                            ligne.type === "sujet"
+                              ? `${ligne.photos.length} prises`
+                              : ligne.toutLeDossier || ligne.type === "dossier"
+                                ? pluriel(ligne.photos.length, "photo", "photos")
+                                : "";
+                          const infos =
+                            ligne.type === "oeuvre"
+                              ? [premiere.institution, premiere.visite >= 0 ? moteur.visites[premiere.visite].nom : "", premiere.annee]
+                              : [complement, premiere.auteurAffiche, premiere.annee, ligne.origine ? `trouvé par ${ligne.origine}` : ""];
+                          const ouvrir = () => {
+                            if (ligne.type === "oeuvre") {
+                              const positions = groupe.lignes.map((element) => element.photos[0]);
+                              const debut = groupe.lignes.findIndex((element) => element.cle === ligne.cle);
+                              ouvrirPhotosRechercheDansGalerie(positions, groupe.titre, Math.max(0, debut), false);
+                            } else {
+                              ouvrirPhotosRechercheDansGalerie(ligne.photos, ligne.titre, 0, ligne.photos.length > 1);
+                            }
+                          };
+                          return (
+                            <button
+                              key={ligne.cle}
+                              type="button"
+                              onClick={ouvrir}
+                              style={{
+                                display: "block",
+                                width: "100%",
+                                textAlign: "left",
+                                background: indexLigne % 2 ? "transparent" : "rgba(255, 253, 248, 0.7)",
+                                border: "none",
+                                borderBottom: `1px solid ${t.bordureOr}`,
+                                padding: "9px 6px",
+                                fontFamily: t.font,
+                                cursor: "pointer",
+                              }}
+                            >
+                              <div style={{ fontWeight: 700, color: t.encre, fontSize: "14px", overflowWrap: "anywhere" }}>
+                                {ligne.toutLeDossier
+                                  ? groupe.visite >= 0 && ligne.photos.length === moteur.visites[groupe.visite].nombrePhotos
+                                    ? "📁 Toute la visite"
+                                    : `📁 ${pluriel(ligne.photos.length, "photo", "photos")} de la visite`
+                                  : ligne.titre}
+                              </div>
+                              <div style={{ color: t.texteDoux, fontSize: "12.5px", marginTop: "2px", overflowWrap: "anywhere" }}>
+                                {infos.filter(Boolean).join(" · ")}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </section>
+                    ))}
+
+                  {(resultat.type === "visites" || rechercheVue === "tableau") && totalLignes > lignesVisibles && (
+                    <button
+                      type="button"
+                      style={{ ...styleBoutonSecondaire, width: "100%" }}
+                      onClick={() => setRechercheNombreLignes((valeur) => valeur + 40)}
                     >
-                      <div style={styleLibelle}>Mots ajoutés à {rechercheDossierMots.split("/").pop()}</div>
-                      <div style={{ ...styleRangee, flexWrap: "wrap" }}>
-                        {(motsAjoutesRechercheRef.current[rechercheDossierMots] || []).length === 0 && (
-                          <span style={{ color: t.texteDoux, fontSize: "13px" }}>
-                            Un artiste, un lieu, un thème : toutes les photos du dossier le reçoivent.
-                          </span>
-                        )}
-                        {(motsAjoutesRechercheRef.current[rechercheDossierMots] || []).map((mot) => (
+                      Voir la suite ({nombreFr(totalLignes - lignesVisibles)})
+                    </button>
+                  )}
+
+                  {resultat.type !== "visites" && rechercheVue === "grille" && (
+                    <>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px" }}>
+                        {photosGrilleRecherche.map((photo, position) => (
                           <button
-                            key={mot}
+                            key={photo.id}
                             type="button"
-                            style={stylePastille(true)}
-                            onClick={() => retirerMotRecherche(rechercheDossierMots, mot)}
-                            aria-label={`Retirer ${mot}`}
+                            title={photo.nom}
+                            onClick={() =>
+                              afficherPhotosRechercheDansGalerie(
+                                photosGrilleRecherche,
+                                texteCriteresPhotoCartel(rechercheLancee.criteres),
+                                position
+                              )
+                            }
+                            style={{
+                              padding: 0,
+                              border: "none",
+                              background: "#efe6d6",
+                              borderRadius: "10px",
+                              overflow: "hidden",
+                              cursor: "pointer",
+                              aspectRatio: "1 / 1",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
                           >
-                            {mot} ✕
+                            <ImageGalerieVisite
+                              photo={photo}
+                              miniature
+                              alt={photo.nom}
+                              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                            />
                           </button>
                         ))}
                       </div>
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        <input
-                          type="text"
-                          value={rechercheSaisieMot}
-                          placeholder="Ajouter un mot"
-                          onChange={(event) => setRechercheSaisieMot(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") ajouterMotRecherche(rechercheDossierMots, rechercheSaisieMot);
-                          }}
-                          style={{ ...styleChamp, padding: "10px 12px", fontSize: "15px" }}
-                        />
+                      {totalPhotosResultat > photosGrilleRecherche.length && (
                         <button
                           type="button"
-                          style={styleBoutonSecondaire}
-                          onClick={() => ajouterMotRecherche(rechercheDossierMots, rechercheSaisieMot)}
+                          style={{ ...styleBoutonSecondaire, width: "100%", marginTop: "12px" }}
+                          onClick={() => setRechercheNombreGrille((valeur) => valeur + 60)}
                         >
-                          Ajouter
+                          Voir les photos suivantes
                         </button>
-                      </div>
-                      {rechercheMessageMot && (
-                        <div style={{ color: "#9b2c2c", fontSize: "14px", marginTop: "8px" }}>{rechercheMessageMot}</div>
                       )}
-                    </section>
-                  )}
-
-                  {resultat.lignes.length > lignesAffichees.length && (
-                    <button
-                      type="button"
-                      style={{ ...styleBoutonSecondaire, width: "100%", marginTop: "12px" }}
-                      onClick={() => setRechercheNombreLignes((valeur) => valeur + 40)}
-                    >
-                      Voir les résultats suivants
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Grille de miniatures : images servies par le mécanisme de la galerie. */}
-              {critereSaisi && rechercheVue === "grille" && (
-                <>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px" }}>
-                    {photosGrilleRecherche.map((photo, position) => (
-                      <button
-                        key={photo.id}
-                        type="button"
-                        title={photo.nom}
-                        onClick={() =>
-                          afficherPhotosRechercheDansGalerie(
-                            photosGrilleRecherche,
-                            texteCriteresRecherche(resultat.mots) || "Résultats de recherche",
-                            position
-                          )
-                        }
-                        style={{
-                          padding: 0,
-                          border: "none",
-                          background: "#efe6d6",
-                          borderRadius: "10px",
-                          overflow: "hidden",
-                          cursor: "pointer",
-                          aspectRatio: "1 / 1",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <ImageGalerieVisite
-                          photo={photo}
-                          miniature
-                          alt={photo.nom}
-                          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                        />
-                      </button>
-                    ))}
-                  </div>
-                  {totalPhotos > photosGrilleRecherche.length && (
-                    <button
-                      type="button"
-                      style={{ ...styleBoutonSecondaire, width: "100%", marginTop: "12px" }}
-                      onClick={() => setRechercheNombreGrille((valeur) => valeur + 60)}
-                    >
-                      Voir les photos suivantes
-                    </button>
+                    </>
                   )}
                 </>
               )}
             </main>
+
+            {critereOuvert && (
+              <div style={styles.modalOverlay} role="dialog" aria-modal="true" aria-label={critereOuvert.libelle}>
+                <div style={styleModale}>
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
+                    <h3 style={{ margin: 0 }}>{critereOuvert.libelle}</h3>
+                    {!critereOuvert.texte && (
+                      <span style={{ fontSize: "12px", color: t.texteDoux }}>nombre de {uniteType[1]}</span>
+                    )}
+                  </div>
+
+                  {critereOuvert.texte ? (
+                    <input
+                      type="search"
+                      autoFocus
+                      value={rechercheBrouillonTexte}
+                      placeholder="Artiste, lieu, monument, œuvre…"
+                      onChange={(event) => setRechercheBrouillonTexte(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") validerCritereRecherche();
+                      }}
+                      style={styleChamp}
+                      aria-label="Mots-clés"
+                    />
+                  ) : (
+                    <>
+                      {valeursModale.length > 12 && (
+                        <input
+                          type="search"
+                          value={rechercheFiltreModale}
+                          placeholder={`Filtrer les ${critereOuvert.libelle.toLowerCase()}`}
+                          onChange={(event) => setRechercheFiltreModale(event.target.value)}
+                          style={{ ...styleChamp, padding: "10px 12px", fontSize: "15px", marginBottom: "8px" }}
+                          aria-label={`Filtrer la liste ${critereOuvert.libelle}`}
+                        />
+                      )}
+                      <div style={{ overflowY: "auto", minHeight: 0, flex: "1 1 auto", margin: "0 -6px", padding: "0 6px" }}>
+                        {valeursFiltrees.length === 0 && (
+                          <div style={{ color: t.texteDoux, fontSize: "14px", padding: "10px 2px" }}>Aucune valeur</div>
+                        )}
+                        {valeursFiltrees.map((entree) => {
+                          const cochee = rechercheBrouillon.includes(entree.valeur);
+                          return (
+                            <button
+                              key={entree.valeur}
+                              type="button"
+                              role="checkbox"
+                              aria-checked={cochee}
+                              onClick={() =>
+                                setRechercheBrouillon((liste) =>
+                                  liste.includes(entree.valeur)
+                                    ? liste.filter((valeur) => valeur !== entree.valeur)
+                                    : [...liste, entree.valeur]
+                                )
+                              }
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "12px",
+                                width: "100%",
+                                padding: "10px 8px",
+                                border: "none",
+                                borderBottom: `1px solid ${t.bordureOr}`,
+                                background: cochee ? "#f7ecd6" : "transparent",
+                                fontFamily: t.font,
+                                fontSize: "15px",
+                                color: entree.nombre > 0 ? t.encre : t.texteDoux,
+                                textAlign: "left",
+                                cursor: "pointer",
+                              }}
+                            >
+                              <span aria-hidden="true" style={styleCaseCochee(cochee)}>{cochee ? "✓" : ""}</span>
+                              <span style={{ flex: 1, overflowWrap: "anywhere" }}>
+                                {critereOuvert.cle === "types" ? `${iconeType(entree.valeur)} ${entree.valeur}` : entree.valeur}
+                              </span>
+                              <span style={{ color: t.texteDoux, fontSize: "13px" }}>{nombreFr(entree.nombre)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+                    <button type="button" style={{ ...styleBoutonSecondaire, flex: 1 }} onClick={() => setRechercheModaleCritere("")}>
+                      Annuler
+                    </button>
+                    <button type="button" style={{ ...styleBoutonPrincipal, flex: 1, width: "auto", padding: "10px 14px", fontSize: "15px" }} onClick={validerCritereRecherche}>
+                      Valider
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {visiteTypeOuverte && (
+              <div style={styles.modalOverlay} role="dialog" aria-modal="true" aria-label="Type de visite">
+                <div style={styleModale}>
+                  <h3 style={{ margin: "0 0 4px" }}>Type de visite</h3>
+                  <div style={{ color: t.texteDoux, fontSize: "13px", marginBottom: "10px", overflowWrap: "anywhere" }}>
+                    {visiteTypeOuverte.nom}
+                  </div>
+                  <div style={{ overflowY: "auto", minHeight: 0, flex: "1 1 auto" }}>
+                    {TYPES_VISITE_PHOTOCARTEL.map(([icone, type]) => {
+                      const choisi = visiteTypeOuverte.type === type;
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          role="radio"
+                          aria-checked={choisi}
+                          disabled={rechercheTypeEnCours}
+                          onClick={() => choisirTypeVisiteRecherche(visiteTypeOuverte.position, type)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "12px",
+                            width: "100%",
+                            padding: "11px 8px",
+                            border: "none",
+                            borderBottom: `1px solid ${t.bordureOr}`,
+                            background: choisi ? "#f7ecd6" : "transparent",
+                            fontFamily: t.font,
+                            fontSize: "15px",
+                            fontWeight: choisi ? 800 : 600,
+                            color: t.encre,
+                            textAlign: "left",
+                            cursor: rechercheTypeEnCours ? "default" : "pointer",
+                          }}
+                        >
+                          <span aria-hidden="true" style={{ width: "26px", textAlign: "center" }}>{icone}</span>
+                          <span style={{ flex: 1 }}>{type}</span>
+                          <span aria-hidden="true" style={{ ...styleCaseCochee(choisi), borderRadius: "50%" }}>{choisi ? "✓" : ""}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {rechercheMessageType && (
+                    <div style={{ color: "#9b2c2c", fontSize: "14px", marginTop: "8px" }}>{rechercheMessageType}</div>
+                  )}
+                  <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+                    {visiteTypeOuverte.type && (
+                      <button
+                        type="button"
+                        disabled={rechercheTypeEnCours}
+                        style={{ ...styleBoutonSecondaire, flex: 1 }}
+                        onClick={() => choisirTypeVisiteRecherche(visiteTypeOuverte.position, "")}
+                      >
+                        Retirer le type
+                      </button>
+                    )}
+                    <button type="button" style={{ ...styleBoutonSecondaire, flex: 1 }} onClick={() => setRechercheVisiteType(-1)}>
+                      Fermer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {rechercheEnregistrerOuvert && (
+              <div style={styles.modalOverlay} role="dialog" aria-modal="true" aria-label="Enregistrer la recherche">
+                <div style={styleModale}>
+                  <h3 style={{ margin: "0 0 10px" }}>Enregistrer la recherche</h3>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={rechercheNomEnregistrement}
+                    placeholder="Nom de la recherche"
+                    onChange={(event) => setRechercheNomEnregistrement(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") enregistrerRechercheCourante();
+                    }}
+                    style={styleChamp}
+                    aria-label="Nom de la recherche"
+                  />
+                  {resultat && (
+                    <div style={{ color: t.texteDoux, fontSize: "13px", marginTop: "8px" }}>
+                      {pluriel(totalPhotosResultat, "photo", "photos")}
+                    </div>
+                  )}
+                  {rechercheMessageEnregistrement && (
+                    <div style={{ color: "#9b2c2c", fontSize: "14px", marginTop: "8px" }}>{rechercheMessageEnregistrement}</div>
+                  )}
+                  <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+                    <button type="button" style={{ ...styleBoutonSecondaire, flex: 1 }} onClick={() => setRechercheEnregistrerOuvert(false)}>
+                      Annuler
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rechercheEnregistrementEnCours}
+                      style={{ ...styleBoutonPrincipal, flex: 1, width: "auto", padding: "10px 14px", fontSize: "15px", opacity: rechercheEnregistrementEnCours ? 0.6 : 1 }}
+                      onClick={enregistrerRechercheCourante}
+                    >
+                      Enregistrer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {recherchesEnregistreesOuvert && (
+              <div style={styles.modalOverlay} role="dialog" aria-modal="true" aria-label="Recherches enregistrées">
+                <div style={styleModale}>
+                  <h3 style={{ margin: "0 0 10px" }}>Recherches enregistrées</h3>
+                  <div style={{ overflowY: "auto", minHeight: 0, flex: "1 1 auto" }}>
+                    {recherchesEnregistreesEtat === "chargement" && (
+                      <div style={{ color: t.texteDoux, fontSize: "14px" }}>Lecture…</div>
+                    )}
+                    {recherchesEnregistreesEtat === "pret" && recherchesEnregistrees.length === 0 && (
+                      <div style={{ color: t.texteDoux, fontSize: "14px" }}>Aucune recherche enregistrée.</div>
+                    )}
+                    {recherchesEnregistreesEtat !== "chargement" &&
+                      recherchesEnregistreesEtat !== "pret" &&
+                      recherchesEnregistreesEtat && (
+                        <div style={{ color: "#9b2c2c", fontSize: "14px", marginBottom: "8px" }}>{recherchesEnregistreesEtat}</div>
+                      )}
+                    {recherchesEnregistrees.map((recherche) => (
+                      <div
+                        key={recherche.fichier}
+                        style={{ display: "flex", alignItems: "center", gap: "8px", borderBottom: `1px solid ${t.bordureOr}`, padding: "8px 0" }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => ouvrirRechercheEnregistree(recherche.fichier)}
+                          style={{ flex: 1, textAlign: "left", background: "none", border: "none", padding: 0, fontFamily: t.font, cursor: "pointer", minWidth: 0 }}
+                        >
+                          <div style={{ fontWeight: 800, color: t.encre, fontSize: "15px", overflowWrap: "anywhere" }}>{recherche.nom}</div>
+                          <div style={{ color: t.texteDoux, fontSize: "12.5px", marginTop: "2px", overflowWrap: "anywhere" }}>
+                            {[
+                              libelleType(recherche.typeRecherche),
+                              pluriel(recherche.nombrePhotos, "photo", "photos"),
+                              recherche.dateIso ? new Date(recherche.dateIso).toLocaleDateString("fr-FR") : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                          {recherche.texteCriteres && (
+                            <div style={{ color: t.texte, fontSize: "12.5px", marginTop: "2px", overflowWrap: "anywhere" }}>
+                              {recherche.texteCriteres}
+                            </div>
+                          )}
+                        </button>
+                        {rechercheASupprimer === recherche.fichier ? (
+                          <button
+                            type="button"
+                            onClick={() => supprimerRechercheEnregistree(recherche.fichier)}
+                            style={{ ...styleBoutonSecondaire, padding: "6px 10px", fontSize: "13px", color: "#fff", background: "#a8322a", border: "none" }}
+                          >
+                            Supprimer
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label={`Supprimer ${recherche.nom}`}
+                            onClick={() => setRechercheASupprimer(recherche.fichier)}
+                            style={{ ...styleBoutonSecondaire, padding: "6px 10px", fontSize: "14px" }}
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    style={{ ...styleBoutonSecondaire, width: "100%", marginTop: "12px" }}
+                    onClick={() => {
+                      setRechercheASupprimer("");
+                      setRecherchesEnregistreesOuvert(false);
+                    }}
+                  >
+                    Fermer
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -17284,7 +19027,6 @@ const validerNouvelleVisite = async () => {
             <MessageSousBouton cible="bibliotheques-voyages" />
             <BoutonMenuPopup icone="🏛️" titre="Bibliothèque des visites" onClick={() => afficherMessageSousBouton("bibliotheques-visites")} />
             <MessageSousBouton cible="bibliotheques-visites" />
-            <BoutonMenuPopup icone="🔎" titre="Rechercher" onClick={ouvrirEcranRecherche} />
             <BoutonMenuPopup titre="Fermer" secondaire onClick={() => {
               setModeBibliotheques(false);
               setMessageMenuAccueil("");

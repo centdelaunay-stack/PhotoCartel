@@ -1,3 +1,9 @@
+// PhotoCartel v97 — RECHERCHE : index format 3 (heure de prise de vue par photo, lue
+// une seule fois), types de visite (/types-visites-recherche) et recherches
+// enregistrées (/recherches-enregistrees, /recherche-enregistree,
+// /recherches-enregistrees/supprimer). Le bloc d'index est identique, caractère pour
+// caractère, à celui de l'App.
+//
 // PhotoCartel v81 — serveur inchangé depuis la v78 hormis le numéro de version.
 //
 // PhotoCartel v78 — RECHERCHE : l'index couvre toute la racine (toutes profondeurs,
@@ -119,7 +125,7 @@ const app = express();
 // v94 — numéro aligné sur l'App (correctif v93 côté App uniquement).
 // v95 — le tri d'une photo douteuse envoyée par l'app passe en détail d'image bas.
 // v96 — /renommer-oeuvres/proposer : les œuvres d'un lot sont nommées toutes en même temps.
-const VERSION_PHOTOCARTEL = "v96";
+const VERSION_PHOTOCARTEL = "v97";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -6093,7 +6099,10 @@ function signatureAffichageGalerie(fiches) {
 
 const NOM_FICHIER_INDEX_RECHERCHE = "_PhotoCartel_index_recherche.json";
 const TYPE_DOCUMENT_INDEX_RECHERCHE = "PHOTOCARTEL_INDEX_RECHERCHE";
-const VERSION_FORMAT_INDEX_RECHERCHE = 2;
+// v97 — format 3 : chaque photo porte son heure de prise de vue (« horodatage »,
+// AAAAMMJJHHMMSS), lue UNE fois dans son EXIF puis gardée dans l'index. Un index
+// de format 2 reste lisible : ses photos n'ont simplement pas encore d'heure.
+const VERSION_FORMAT_INDEX_RECHERCHE = 3;
 
 // Mots ajoutés à la main à un dossier (lecture C). Fichier séparé de l'index :
 // reconstruire l'index ne l'efface jamais.
@@ -6122,6 +6131,8 @@ const DOSSIERS_HORS_RECHERCHE = [
   "Photos à analyser",
   "Collecte Photo en cours",
   "Classifications",
+  // v97 — les recherches enregistrées sont des listes de photos, pas des visites.
+  "Recherches enregistrées",
 ];
 
 // Dossiers de premier niveau parcourus, mais dont le nom n'est pas un mot de
@@ -6314,13 +6325,21 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
   const photos = [];
   const photosParNom = new Map();
   const listeTriee = photosListees
-    .map((photo) => ({ nom: String(photo?.nom || ""), dossier: String(photo?.dossier || "") }))
+    .map((photo) => ({
+      nom: String(photo?.nom || ""),
+      dossier: String(photo?.dossier || ""),
+      horodatage: String(photo?.horodatage || ""),
+    }))
     .filter((photo) => photo.nom)
     .sort((a, b) =>
       a.dossier === b.dossier ? (a.nom < b.nom ? -1 : a.nom > b.nom ? 1 : 0) : a.dossier < b.dossier ? -1 : 1
     );
   for (let i = 0; i < listeTriee.length; i += 1) {
-    const photo = { nom: listeTriee[i].nom, dossier: ajouterDossier(listeTriee[i].dossier) };
+    const photo = {
+      nom: listeTriee[i].nom,
+      dossier: ajouterDossier(listeTriee[i].dossier),
+      horodatage: listeTriee[i].horodatage,
+    };
     photos.push(photo);
     if (!photosParNom.has(photo.nom)) photosParNom.set(photo.nom, []);
     photosParNom.get(photo.nom).push(photo);
@@ -6385,6 +6404,7 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
       photos.push({
         nom: nomOriginal || String(fiche.nomPhoto || ""),
         dossier: dossierFiches,
+        horodatage: "",
         ...valeurs,
       });
     }
@@ -6408,7 +6428,8 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
 function lireEntreesDepuisContenuIndexRecherche(contenu) {
   if (!contenu || typeof contenu !== "object") return null;
   if (String(contenu.type_document || "") !== TYPE_DOCUMENT_INDEX_RECHERCHE) return null;
-  if (Number(contenu.version_format_index) !== VERSION_FORMAT_INDEX_RECHERCHE) return null;
+  const versionFormat = Number(contenu.version_format_index);
+  if (versionFormat !== 2 && versionFormat !== VERSION_FORMAT_INDEX_RECHERCHE) return null;
   if (!Array.isArray(contenu.dossiers) || !Array.isArray(contenu.photos)) return null;
 
   const dossiers = contenu.dossiers.map((dossier) => ({
@@ -6426,6 +6447,7 @@ function lireEntreesDepuisContenuIndexRecherche(contenu) {
           : -1,
       fichier: String(photo.fichier || ""),
       nomJson: String(photo.nomJson || ""),
+      horodatage: /^\d{14}$/.test(String(photo.horodatage || "")) ? String(photo.horodatage) : "",
       analysee: Boolean(photo.analysee),
       dateIso: String(photo.dateIso || ""),
       titre: String(photo.titre || ""),
@@ -6439,9 +6461,35 @@ function lireEntreesDepuisContenuIndexRecherche(contenu) {
 
   return {
     dateIndexIso: String(contenu.date_index_iso || ""),
+    horodatagesLus: versionFormat >= 3,
     dossiers,
     photos,
   };
+}
+
+// v97 — heures de prise de vue déjà connues, par photo (« chemin du dossier/nom »,
+// racine = ""). Un index de format 2 n'en connaît aucune : chaque photo sera lue
+// une fois, puis plus jamais. Une photo sans heure lisible est connue aussi (valeur
+// vide) : elle n'est pas relue à chaque ouverture.
+function horodatagesConnusDepuisContenuIndexRecherche(contenu) {
+  const connus = new Map();
+  const index = lireEntreesDepuisContenuIndexRecherche(contenu);
+  if (!index || !index.horodatagesLus) return connus;
+  for (let i = 0; i < index.photos.length; i += 1) {
+    const photo = index.photos[i];
+    const dossier = photo.dossier >= 0 ? index.dossiers[photo.dossier].chemin : "";
+    connus.set(`${dossier}/${photo.nom}`, photo.horodatage);
+  }
+  return connus;
+}
+
+// Heure portée par le nom quand l'EXIF n'en donne pas : IMG_20260809_114601,
+// PXL_20220115_103012345, 20190209-101500. Jamais inventée : sinon "".
+function horodatageDepuisNomRecherche(nomFichier) {
+  const m = String(nomFichier || "").match(
+    /(?:^|\D)((?:19|20)\d\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_\- ]?([01]\d|2[0-3])([0-5]\d)([0-5]\d)/
+  );
+  return m ? m.slice(1, 7).join("") : "";
 }
 
 // Signature de ce qui a été LISTÉ : sert à savoir si une mise à jour a changé
@@ -6476,6 +6524,138 @@ function lireDepuisContenuMotsAjoutes(contenu) {
     if (chemin && mots.length > 0) resultat[chemin] = mots;
   }
   return resultat;
+}
+
+// v97 — TYPE DE VISITE. Posé à la création de la visite, modifiable ensuite, jamais
+// déduit. Fichier durable à la racine, séparé de l'index : reconstruire l'index ne
+// l'efface jamais. Une visite sans type posé vaut « Non renseigné ».
+const NOM_FICHIER_TYPES_VISITES = "_PhotoCartel_types_visites.json";
+const TYPE_DOCUMENT_TYPES_VISITES = "PHOTOCARTEL_TYPES_VISITES";
+const VERSION_FORMAT_TYPES_VISITES = 1;
+const TYPE_VISITE_NON_RENSEIGNE = "Non renseigné";
+// Même liste, même ordre et mêmes icônes que l'écran « Nouvelle visite ».
+const TYPES_VISITE_PHOTOCARTEL = [
+  ["🏛️", "Musée"],
+  ["⛪", "Église"],
+  ["🚆", "Transport"],
+  ["🏞️", "Site naturel"],
+  ["🏘️", "Ville / Village"],
+  ["🌳", "Jardin / Parc"],
+  ["🏙️", "Architecture"],
+  ["🏰", "Château"],
+  ["🍽️", "Restaurant / Repas"],
+  ["•••", "Autre"],
+];
+
+function typeVisiteReconnu(type) {
+  const valeur = String(type || "").trim();
+  if (valeur === "Eglise") return "Église";
+  return TYPES_VISITE_PHOTOCARTEL.some(([, libelle]) => libelle === valeur) ? valeur : "";
+}
+
+// { "<chemin de la visite>": "Musée", ... } — une entrée illisible est ignorée.
+function lireDepuisContenuTypesVisites(contenu) {
+  const resultat = {};
+  if (!contenu || typeof contenu !== "object") return resultat;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_TYPES_VISITES) return resultat;
+  const visites = contenu.visites && typeof contenu.visites === "object" ? contenu.visites : {};
+  const chemins = Object.keys(visites);
+  for (let i = 0; i < chemins.length; i += 1) {
+    const chemin = String(chemins[i] || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const type = typeVisiteReconnu(visites[chemins[i]]);
+    if (chemin && !chemin.split("/").includes("..") && type) resultat[chemin] = type;
+  }
+  return resultat;
+}
+
+function construireContenuTypesVisites(typesParChemin, versionApplication) {
+  return {
+    type_document: TYPE_DOCUMENT_TYPES_VISITES,
+    version_format: VERSION_FORMAT_TYPES_VISITES,
+    version_photocartel: String(versionApplication || ""),
+    date_modification_iso: new Date().toISOString(),
+    visites: lireDepuisContenuTypesVisites({
+      type_document: TYPE_DOCUMENT_TYPES_VISITES,
+      visites: typesParChemin || {},
+    }),
+  };
+}
+
+// Pose (ou retire, type vide) le type d'UNE visite dans le contenu existant.
+function modifierContenuTypesVisites(contenuExistant, chemin, type, versionApplication) {
+  const types = lireDepuisContenuTypesVisites(contenuExistant);
+  const cle = String(chemin || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const valeur = typeVisiteReconnu(type);
+  if (cle) {
+    if (valeur) types[cle] = valeur;
+    else delete types[cle];
+  }
+  return construireContenuTypesVisites(types, versionApplication);
+}
+
+// v97 — RECHERCHES ENREGISTRÉES. Une recherche enregistrée est une liste de photos
+// (leurs chemins relatifs à la racine), avec les critères qui l'ont produite. Elle
+// ne copie aucune photo : un fichier .json par recherche, dans
+// « Recherches enregistrées » à la racine. Un nom déjà pris n'est jamais écrasé.
+const DOSSIER_RECHERCHES_ENREGISTREES = "Recherches enregistrées";
+const TYPE_DOCUMENT_RECHERCHE_ENREGISTREE = "PHOTOCARTEL_RECHERCHE_ENREGISTREE";
+const VERSION_FORMAT_RECHERCHE_ENREGISTREE = 1;
+
+function nomPropreRechercheEnregistree(nom) {
+  return String(nom || "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+/, "")
+    .slice(0, 90)
+    .trim();
+}
+
+function nomFichierRechercheEnregistree(nom) {
+  const propre = nomPropreRechercheEnregistree(nom);
+  return propre ? `${propre}.json` : "";
+}
+
+function estNomFichierRechercheEnregistree(nomFichier) {
+  const nom = String(nomFichier || "");
+  return (
+    nom.toLowerCase().endsWith(".json") &&
+    !nom.includes("/") &&
+    !nom.includes("\\") &&
+    nomFichierRechercheEnregistree(nom.slice(0, -5)) === nom
+  );
+}
+
+function lireRechercheEnregistree(contenu) {
+  if (!contenu || typeof contenu !== "object") return null;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_RECHERCHE_ENREGISTREE) return null;
+  const nom = nomPropreRechercheEnregistree(contenu.nom);
+  if (!nom || !Array.isArray(contenu.photos)) return null;
+  const photos = contenu.photos
+    .map((fichier) => String(fichier || "").replace(/\\/g, "/"))
+    .filter((fichier) => fichier && !fichier.split("/").includes(".."));
+  return {
+    nom,
+    dateIso: String(contenu.date_enregistrement_iso || ""),
+    typeRecherche: String(contenu.type_recherche || ""),
+    texteCriteres: String(contenu.texte_criteres || ""),
+    criteres: contenu.criteres && typeof contenu.criteres === "object" ? contenu.criteres : {},
+    photos,
+  };
+}
+
+function construireContenuRechercheEnregistree({ nom, typeRecherche, texteCriteres, criteres, photos }, versionApplication) {
+  return {
+    type_document: TYPE_DOCUMENT_RECHERCHE_ENREGISTREE,
+    version_format: VERSION_FORMAT_RECHERCHE_ENREGISTREE,
+    version_photocartel: String(versionApplication || ""),
+    date_enregistrement_iso: new Date().toISOString(),
+    nom: nomPropreRechercheEnregistree(nom),
+    type_recherche: String(typeRecherche || ""),
+    texte_criteres: String(texteCriteres || ""),
+    criteres: criteres && typeof criteres === "object" ? criteres : {},
+    photos: Array.isArray(photos) ? photos.map(String) : [],
+  };
 }
 
 function construireContenuMotsAjoutes(motsParDossier, versionApplication) {
@@ -6588,9 +6768,12 @@ function racineRechercheDepuisRequete(dossierRacineRecu) {
   return cheminDansRacineDonnees(dossierRacineRecu || DOSSIER_RACINE_DONNEES) || DOSSIER_RACINE_DONNEES;
 }
 
-function parcourirRacineRechercheServeur(racineEffective) {
+// v97 — l'heure de prise de vue d'une photo est lue UNE fois (EXIF, sinon nom) ;
+// une photo déjà connue de l'index précédent n'est jamais rouverte.
+function parcourirRacineRechercheServeur(racineEffective, horodatagesConnus = new Map()) {
   const dossiers = [];
   const photos = [];
+  let photosLues = 0;
   const parcourir = (cheminAbsolu, cheminRelatif, profondeur) => {
     let entrees = [];
     try {
@@ -6605,12 +6788,20 @@ function parcourirRacineRechercheServeur(racineEffective) {
         dossiers.push(relatifEnfant);
         parcourir(path.join(cheminAbsolu, entree.name), relatifEnfant, profondeur + 1);
       } else if (entree.isFile() && estFichierImageRecherche(entree.name)) {
-        photos.push({ nom: entree.name, dossier: cheminRelatif });
+        const cle = `${cheminRelatif}/${entree.name}`;
+        let horodatage = horodatagesConnus.get(cle);
+        if (horodatage === undefined) {
+          photosLues += 1;
+          horodatage =
+            lireHorodatageExifPriseDeVue(path.join(cheminAbsolu, entree.name)) ||
+            horodatageDepuisNomRecherche(entree.name);
+        }
+        photos.push({ nom: entree.name, dossier: cheminRelatif, horodatage });
       }
     }
   };
   parcourir(racineEffective, "", 0);
-  return { dossiers, photos };
+  return { dossiers, photos, photosLues };
 }
 
 function construireIndexRechercheServeur(racineEffective) {
@@ -6622,11 +6813,13 @@ function construireIndexRechercheServeur(racineEffective) {
       if (fiche) fiches.push(fiche);
     }
   }
-  return construireContenuIndexRecherche(
-    parcourirRacineRechercheServeur(racineEffective),
-    fiches,
-    VERSION_PHOTOCARTEL
+  const connus = horodatagesConnusDepuisContenuIndexRecherche(
+    lireJsonRacineRecherche(racineEffective, NOM_FICHIER_INDEX_RECHERCHE)
   );
+  const parcours = parcourirRacineRechercheServeur(racineEffective, connus);
+  const contenu = construireContenuIndexRecherche(parcours, fiches, VERSION_PHOTOCARTEL);
+  console.log(`INDEX RECHERCHE : ${parcours.photosLues} heure(s) de prise de vue lue(s)`);
+  return contenu;
 }
 
 function lireJsonRacineRecherche(racineEffective, nomFichier) {
@@ -6666,7 +6859,8 @@ app.get("/index-recherche", async (req, res) => {
     }
 
     const motsAjoutes = lireJsonRacineRecherche(racineEffective, NOM_FICHIER_MOTS_AJOUTES);
-    return res.json({ success: true, version: VERSION_PHOTOCARTEL, index, motsAjoutes });
+    const typesVisites = lireJsonRacineRecherche(racineEffective, NOM_FICHIER_TYPES_VISITES);
+    return res.json({ success: true, version: VERSION_PHOTOCARTEL, index, motsAjoutes, typesVisites });
   } catch (error) {
     console.error("ERREUR /index-recherche =", error);
     return res.status(500).json({ success: false, error: error.message });
@@ -6686,6 +6880,144 @@ app.post("/mots-ajoutes-recherche", async (req, res) => {
     return res.json({ success: true, motsAjoutes: contenu });
   } catch (error) {
     console.error("ERREUR /mots-ajoutes-recherche =", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// v97 — type d'une visite : posé à la création, modifié depuis la recherche.
+// Une seule visite par appel, fusionnée dans le fichier existant.
+app.post("/types-visites-recherche", async (req, res) => {
+  try {
+    const racineEffective = racineRechercheDepuisRequete(req.body?.dossierRacine);
+    const chemin = String(req.body?.chemin || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!chemin || chemin.split("/").includes("..")) {
+      return res.status(400).json({ success: false, error: "Visite non valide." });
+    }
+    const type = String(req.body?.type || "");
+    if (type && !typeVisiteReconnu(type)) {
+      return res.status(400).json({ success: false, error: "Type de visite inconnu." });
+    }
+    const contenu = modifierContenuTypesVisites(
+      lireJsonRacineRecherche(racineEffective, NOM_FICHIER_TYPES_VISITES),
+      chemin,
+      type,
+      VERSION_PHOTOCARTEL
+    );
+    if (!ecrireJsonRacineRecherche(racineEffective, NOM_FICHIER_TYPES_VISITES, contenu)) {
+      return res.status(500).json({ success: false, error: "Le type de la visite n’a pas pu être enregistré." });
+    }
+    return res.json({ success: true, typesVisites: contenu });
+  } catch (error) {
+    console.error("ERREUR /types-visites-recherche =", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// v97 — recherches enregistrées : un fichier .json par recherche dans
+// « Recherches enregistrées » à la racine. Un nom déjà pris n'est jamais écrasé.
+function dossierRecherchesEnregistreesServeur(racineEffective) {
+  return path.join(racineEffective, DOSSIER_RECHERCHES_ENREGISTREES);
+}
+
+app.get("/recherches-enregistrees", async (req, res) => {
+  try {
+    const dossier = dossierRecherchesEnregistreesServeur(racineRechercheDepuisRequete(req.query.dossierRacine));
+    const recherches = [];
+    if (fs.existsSync(dossier)) {
+      for (const nomFichier of fs.readdirSync(dossier)) {
+        if (!estNomFichierRechercheEnregistree(nomFichier)) continue;
+        try {
+          const recherche = lireRechercheEnregistree(
+            JSON.parse(fs.readFileSync(path.join(dossier, nomFichier), "utf-8"))
+          );
+          if (!recherche) continue;
+          recherches.push({
+            fichier: nomFichier,
+            nom: recherche.nom,
+            dateIso: recherche.dateIso,
+            typeRecherche: recherche.typeRecherche,
+            texteCriteres: recherche.texteCriteres,
+            nombrePhotos: recherche.photos.length,
+          });
+        } catch (erreurLecture) {
+          console.warn("Recherche enregistrée illisible :", nomFichier, erreurLecture.message);
+        }
+      }
+    }
+    recherches.sort((a, b) => (a.dateIso < b.dateIso ? 1 : a.dateIso > b.dateIso ? -1 : 0));
+    return res.json({ success: true, recherches });
+  } catch (error) {
+    console.error("ERREUR /recherches-enregistrees =", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/recherche-enregistree", async (req, res) => {
+  try {
+    const nomFichier = String(req.query.fichier || "");
+    if (!estNomFichierRechercheEnregistree(nomFichier)) {
+      return res.status(400).json({ success: false, error: "Recherche non valide." });
+    }
+    const chemin = path.join(
+      dossierRecherchesEnregistreesServeur(racineRechercheDepuisRequete(req.query.dossierRacine)),
+      nomFichier
+    );
+    if (!fs.existsSync(chemin)) {
+      return res.status(404).json({ success: false, error: "Cette recherche n’existe plus." });
+    }
+    const recherche = lireRechercheEnregistree(JSON.parse(fs.readFileSync(chemin, "utf-8")));
+    if (!recherche) return res.status(422).json({ success: false, error: "Recherche illisible." });
+    return res.json({ success: true, recherche });
+  } catch (error) {
+    console.error("ERREUR /recherche-enregistree =", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/recherches-enregistrees", async (req, res) => {
+  try {
+    const racineEffective = racineRechercheDepuisRequete(req.body?.dossierRacine);
+    const recherche = lireRechercheEnregistree(req.body?.contenu);
+    if (!recherche) return res.status(400).json({ success: false, error: "Recherche non valide." });
+    const nomFichier = nomFichierRechercheEnregistree(recherche.nom);
+    if (!fs.existsSync(racineEffective)) {
+      return res.status(404).json({ success: false, error: "Le dossier PhotoCartel est introuvable." });
+    }
+    const dossier = dossierRecherchesEnregistreesServeur(racineEffective);
+    fs.mkdirSync(dossier, { recursive: true });
+    const chemin = path.join(dossier, nomFichier);
+    if (fs.existsSync(chemin)) {
+      return res.status(409).json({ success: false, error: "Une recherche porte déjà ce nom." });
+    }
+    fs.writeFileSync(
+      chemin,
+      JSON.stringify(construireContenuRechercheEnregistree(recherche, VERSION_PHOTOCARTEL)),
+      { encoding: "utf-8", flag: "wx" }
+    );
+    return res.json({ success: true, fichier: nomFichier });
+  } catch (error) {
+    if (error && error.code === "EEXIST") {
+      return res.status(409).json({ success: false, error: "Une recherche porte déjà ce nom." });
+    }
+    console.error("ERREUR POST /recherches-enregistrees =", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/recherches-enregistrees/supprimer", async (req, res) => {
+  try {
+    const nomFichier = String(req.body?.fichier || "");
+    if (!estNomFichierRechercheEnregistree(nomFichier)) {
+      return res.status(400).json({ success: false, error: "Recherche non valide." });
+    }
+    const chemin = path.join(
+      dossierRecherchesEnregistreesServeur(racineRechercheDepuisRequete(req.body?.dossierRacine)),
+      nomFichier
+    );
+    if (fs.existsSync(chemin)) fs.unlinkSync(chemin);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("ERREUR /recherches-enregistrees/supprimer =", error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
