@@ -1,3 +1,34 @@
+// PhotoCartel v100 — PRENDRE DES PHOTOS RÉPARÉ, BOUTONS GRISÉS À L'APPUI, RENOMMER UNE PHOTO.
+// Base : v99.
+// 1. « Prendre des photos » ouvre l'appareil photo dans le geste même de l'appui. Avant, 13 accès
+//    au stockage précédaient l'ouverture : au-delà de 5 s (stockage lent ou occupé par le
+//    chargement automatique v97) Chrome refusait l'ouverture, et une erreur de stockage était
+//    rangée dans un message jamais affiché. Les erreurs s'affichent désormais sous les boutons.
+// 2. Seul « Collecte Photo en cours » est indispensable à la prise de photo.
+// 3. Le chargement automatique de la photothèque se met en pause pendant les gestes de
+//    l'utilisateur sur le stockage (photo, enregistrement, modification de visite).
+// 4. Principe général : tout bouton touché se grise aussitôt ; un bouton désactivé reste grisé.
+// 5. « Renommer une photo » : plus de « Dossier_selectionne » ; deux photos = une œuvre et son
+//    cartel, imposé quand le tri ne le donne pas ; dossier résultat « Photos_renommées_<date> ».
+// 6. Lecture d'un cartel sur l'image entière : réparée (le moteur recevait une ImageBitmap qu'il
+//    ne sait pas lire, la lecture rendait toujours zéro caractère).
+//
+// PhotoCartel v99 — VOYAGES ET VISITES DÉCRITS PAR LEURS JSON ; UNE VISITE SE TROUVE PAR SON NOM.
+// Base : v97 (version en production). La v98, construite sans être livrée, n'est pas reprise.
+// 1. Préparation des voyages sur le PC, avant la copie vers DCIM (Preparer_voyages_PhotoCartel.cmd,
+//    dans server.js) : chaque dossier de photos reçoit _PhotoCartel_visite.json (son voyage, la
+//    fiche de chaque photo : nom, taille, heure de prise de vue, pays, ville), chaque voyage
+//    _PhotoCartel_voyage.json ; le récapitulatif des incohérences (I1 à I7) s'ouvre dans le
+//    navigateur. Les photos ne sont jamais déplacées, renommées ni modifiées.
+// 2. Le lien visite → voyage est porté par le JSON : une visite copiée seule, à plat, garde son
+//    voyage, son pays et sa ville. Une photo décrite par sa fiche n'est jamais rouverte (PC et
+//    téléphone, même règle).
+// 3. Recherche « Visites » : une visite se trouve d'abord par son nom (dossier, voyage, pays et
+//    ville de ce dossier), sans le nom des photos ; « musée de l'or Bogota » rend la seule visite
+//    « Musée de l'or Bogota ». Si aucun nom ne porte tous les mots, règle v97.
+// 4. Lieu écrit en tête du nom (« Colombie, Zipaquira_… ») reconnu comme pays et ville.
+// 5. Le voyage de chaque visite est affiché dans les résultats.
+//
 // PhotoCartel v97 — RECHERCHE À LA FORME D'EUROCARTEL, SUR LE RÉSUMÉ DE VISITE.
 // Base : v96.
 // 1. Résumé de visite (master data) : une visite = un dossier de photos (ses
@@ -324,7 +355,7 @@ const PHOTO_ACCUEIL_PHOTOCARTEL_SRC =
 // clic ; durée de chaque étape affichée sur l'écran de fin.
 // v96 — noms des œuvres demandés tous en même temps (compteur « Noms : x / n ») ; un seul exemplaire
 // par cartel, nommé d'après son œuvre ; bouton « Lancer le renommage ».
-const VERSION_PHOTOCARTEL = "v97";
+const VERSION_PHOTOCARTEL = "v100";
 
 const VERSION = {
   numero: VERSION_PHOTOCARTEL,
@@ -791,6 +822,9 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
   const cheminsListes = Array.isArray(parcours?.dossiers) ? parcours.dossiers : [];
   const photosListees = Array.isArray(parcours?.photos) ? parcours.photos : [];
   const listeFiches = Array.isArray(fiches) ? fiches : [];
+  // v99 — voyage d'une visite, lu dans son _PhotoCartel_visite.json : { chemin: voyage }.
+  const voyagesParChemin =
+    parcours?.voyages && typeof parcours.voyages === "object" ? parcours.voyages : {};
 
   const dossiers = [];
   const positionParChemin = new Map();
@@ -801,7 +835,12 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
     const coupure = valeur.lastIndexOf("/");
     const parent = coupure > 0 ? ajouterDossier(valeur.slice(0, coupure)) : -1;
     const position = dossiers.length;
-    dossiers.push({ chemin: valeur, nom: valeur.slice(coupure + 1), parent });
+    const voyage = String(voyagesParChemin[valeur] || "").trim();
+    dossiers.push(
+      voyage
+        ? { chemin: valeur, nom: valeur.slice(coupure + 1), parent, voyage }
+        : { chemin: valeur, nom: valeur.slice(coupure + 1), parent }
+    );
     positionParChemin.set(valeur, position);
     return position;
   };
@@ -926,6 +965,7 @@ function lireEntreesDepuisContenuIndexRecherche(contenu) {
     chemin: String(dossier?.chemin || ""),
     nom: String(dossier?.nom || ""),
     parent: Number.isInteger(dossier?.parent) ? dossier.parent : -1,
+    voyage: String(dossier?.voyage || ""),
   }));
   const photos = contenu.photos
     .filter((photo) => photo && typeof photo === "object" && photo.nom)
@@ -986,7 +1026,9 @@ function horodatageDepuisNomRecherche(nomFichier) {
 // quelque chose, sans comparer les textes.
 function signatureIndexRecherche(index) {
   if (!index) return "";
-  const dossiers = (index.dossiers || []).map((dossier) => dossier.chemin).join("|");
+  const dossiers = (index.dossiers || [])
+    .map((dossier) => (dossier.voyage ? `${dossier.chemin}>${dossier.voyage}` : dossier.chemin))
+    .join("|");
   const photos = (index.photos || [])
     .map((photo) => `${photo.dossier}:${photo.nom}:${photo.nomJson || ""}`)
     .join("|");
@@ -1767,6 +1809,158 @@ function lireNomDossierRecherche(nomDossier) {
   return { mots, marqueurs, annee: anneeDepuisMotsRecherche(tous) };
 }
 
+// ————————————————————————————————————————————————————————————————————————
+// v99 — VOYAGES ET VISITES DÉCRITS PAR LEURS JSON
+//
+// Chaque dossier de photos (une visite) peut porter _PhotoCartel_visite.json,
+// écrit sur le PC par la préparation des voyages, AVANT la copie vers DCIM :
+//   - le voyage auquel la visite est rattachée (ou aucun) : le lien est écrit
+//     dans le JSON, il ne dépend pas de l'endroit où le dossier est rangé. Une
+//     visite copiée seule, à plat, garde son voyage ;
+//   - la fiche de chaque photo (nom, taille, heure de prise de vue, pays, ville
+//     lus dans son nom) : l'app ne rouvre jamais une photo dont la fiche est là.
+// Chaque dossier de voyage porte _PhotoCartel_voyage.json (son résumé, ses visites).
+// Les photos posées directement dans un voyage, sans visite, ont leurs fiches dans
+// le _PhotoCartel_visite.json de ce dossier, marqué « sans_visite ».
+// Les deux fichiers commencent par « _ » : ce ne sont jamais des photos, ni des
+// fiches de la galerie, ni des dossiers parcourus.
+//
+// Ce bloc est VOLONTAIREMENT IDENTIQUE, caractère pour caractère, dans App.jsx
+// et dans server.js, avec la lecture des noms qui le précède.
+// ————————————————————————————————————————————————————————————————————————
+
+const NOM_FICHIER_VISITE = "_PhotoCartel_visite.json";
+const NOM_FICHIER_VOYAGE = "_PhotoCartel_voyage.json";
+const TYPE_DOCUMENT_VISITE = "PHOTOCARTEL_VISITE";
+const TYPE_DOCUMENT_VOYAGE = "PHOTOCARTEL_VOYAGE";
+const VERSION_FORMAT_VISITE = 1;
+
+// Lieu écrit en tête du nom selon la convention de Vincent :
+// « Colombie, Zipaquira_'Catedral de Sal'… », « Uruguay, Punta del Este_Sculpture… ».
+// La ville n'est retenue que si ce qui précède la virgule est un pays reconnu, et
+// si ce qui suit est un nom de ville : une ville connue, ou au plus quatre mots
+// sans mot de monument (« Paraguay, Réduction San Cosme y Damian_… » nomme un
+// site, pas une ville). Rien n'est deviné.
+const MOTS_DE_MONUMENT_PHOTOCARTEL = new Set([
+  "musee", "museum", "museo", "eglise", "iglesia", "chiesa", "cathedrale", "catedral", "basilique",
+  "basilica", "mission", "reduction", "palais", "palacio", "palazzo", "place", "plaza", "piazza",
+  "chateau", "castillo", "castello", "parc", "park", "parque", "jardin", "pont", "tour", "torre",
+  "monastere", "couvent", "convento", "temple", "templo", "rue", "calle", "avenue", "avenida", "gare",
+  "hotel", "restaurant", "marche", "mercado", "plage", "playa", "lac", "lake", "lago", "mont",
+  "cerro", "colline", "port", "aeroport", "site", "ruines", "fort", "fortaleza",
+]);
+
+// Une lettre de travers dans un nom de ville connu (« Vaparaiso ») : c'est la ville
+// connue (« Valparaiso »). Cinq lettres au moins, une seule ville possible.
+function ecartUneLettrePhotoCartel(a, b) {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let ecarts = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    ecarts += 1;
+    if (ecarts > 1) return false;
+    if (a.length > b.length) i += 1;
+    else if (b.length > a.length) j += 1;
+    else {
+      i += 1;
+      j += 1;
+    }
+  }
+  return ecarts + (a.length - i) + (b.length - j) <= 1;
+}
+
+function villeConnueApprocheePhotoCartel(phrase) {
+  if (phrase.length < 5) return "";
+  const trouvees = new Set();
+  TABLE_VILLES_RECHERCHE.table.forEach((ville, cle) => {
+    if (Math.abs(cle.length - phrase.length) <= 1 && ecartUneLettrePhotoCartel(cle, phrase)) trouvees.add(ville);
+  });
+  return trouvees.size === 1 ? Array.from(trouvees)[0] : "";
+}
+
+function lirePrefixeLieuPhotoCartel(nom) {
+  const m = String(nom || "").match(/^\s*([^,_]{2,40}?)\s*,\s*([^,_]{2,60}?)\s*_/);
+  if (!m) return { pays: "", ville: "" };
+  const motsPays = decouperEnMotsPhotoCartel(m[1]);
+  const pays = TABLE_PAYS_RECHERCHE.table.get(motsPays.join(" ")) || "";
+  if (!pays) return { pays: "", ville: "" };
+  const motsVille = decouperEnMotsPhotoCartel(m[2]);
+  const villeConnue =
+    TABLE_VILLES_RECHERCHE.table.get(motsVille.join(" ")) || villeConnueApprocheePhotoCartel(motsVille.join(" "));
+  const villeLibre =
+    motsVille.length > 0 &&
+    motsVille.length <= 4 &&
+    !estMotNombreRecherche(motsVille[0]) &&
+    !motsVille.some((mot) => MOTS_DE_MONUMENT_PHOTOCARTEL.has(mot));
+  return { pays, ville: villeConnue || (villeLibre ? m[2].trim() : "") };
+}
+
+// Pays et villes lus dans un nom (photo ou dossier). Quand le nom commence par le
+// lieu (« Colombie, Bogota_Eglise San Francisco »), c'est ce lieu qui compte : la
+// suite décrit le sujet (une église San Francisco n'est pas aux États-Unis). Sinon :
+// liste des pays, liste des villes, villes sous condition de pays, pays des villes.
+// « deTete » dit si le lieu vient de la tête du nom.
+function lieuxDepuisNomPhotoCartel(nom) {
+  const prefixe = lirePrefixeLieuPhotoCartel(nom);
+  if (prefixe.pays) {
+    return {
+      pays: new Set([prefixe.pays]),
+      villes: new Set(prefixe.ville ? [prefixe.ville] : []),
+      deTete: true,
+    };
+  }
+  const mots = decouperEnMotsPhotoCartel(nomSansExtensionRecherche(nom));
+  const pays = new Set();
+  const villes = new Set();
+  reconnaitrePhrasesRecherche(mots, TABLE_PAYS_RECHERCHE, pays);
+  reconnaitrePhrasesRecherche(mots, TABLE_VILLES_RECHERCHE, villes);
+  reconnaitreVillesSousConditionRecherche(mots, pays, villes);
+  ajouterPaysDesVillesRecherche(villes, pays);
+  return { pays, villes, deTete: false };
+}
+
+// Clé d'une ville pour comparer deux écritures (« Bogota », « Bogotá »).
+function cleVillePhotoCartel(ville) {
+  return decouperEnMotsPhotoCartel(ville).join(" ");
+}
+
+// Lecture d'un _PhotoCartel_visite.json. Renvoie null s'il est absent, illisible
+// ou d'un autre type : la visite est alors lue comme en v97 (photos rouvertes).
+function lireContenuVisitePhotoCartel(contenu) {
+  if (!contenu || typeof contenu !== "object") return null;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_VISITE) return null;
+  if (!Array.isArray(contenu.photos)) return null;
+  const photos = new Map();
+  for (let i = 0; i < contenu.photos.length; i += 1) {
+    const photo = contenu.photos[i];
+    if (!photo || typeof photo !== "object" || !photo.nom) continue;
+    photos.set(String(photo.nom), {
+      taille: Number.isFinite(Number(photo.taille)) ? Number(photo.taille) : -1,
+      horodatage: /^\d{14}$/.test(String(photo.horodatage || "")) ? String(photo.horodatage) : "",
+    });
+  }
+  return {
+    voyage: String(contenu.visite?.voyage || "").trim(),
+    voyageChoisi: Boolean(contenu.visite?.voyage_choisi),
+    type: String(contenu.visite?.type || ""),
+    photos,
+  };
+}
+
+// Heure de prise de vue « AAAAMMJJHHMMSS » rendue lisible : « 14/02/2021 09:21 ».
+function horodatageLisiblePhotoCartel(horodatage) {
+  const h = String(horodatage || "");
+  if (!/^\d{14}$/.test(h)) return "";
+  return `${h.slice(6, 8)}/${h.slice(4, 6)}/${h.slice(0, 4)} ${h.slice(8, 10)}:${h.slice(10, 12)}`;
+}
+
 // Préparation du moteur : UNE FOIS par index chargé, par mot ajouté ou par type
 // de visite modifié.
 function preparerMoteurRecherche(index, motsAjoutes, typesVisites) {
@@ -1799,24 +1993,38 @@ function preparerMoteurRecherche(index, motsAjoutes, typesVisites) {
     const motsC = ajoutes[dossier.chemin] || [];
     const pays = new Set();
     const villes = new Set();
+    // v99 — voyage de la visite, écrit dans son _PhotoCartel_visite.json : ses mots,
+    // son pays et sa ville valent pour la visite, où que le dossier soit rangé.
+    const voyage = conteneur ? "" : String(dossier.voyage || "");
+    const lectureVoyage = voyage ? lireNomDossierRecherche(voyage) : null;
     if (!conteneur) {
       reconnaitrePhrasesRecherche(lecture.mots, TABLE_PAYS_RECHERCHE, pays);
       reconnaitrePhrasesRecherche(lecture.mots, TABLE_VILLES_RECHERCHE, villes);
+      // v99 — lieu écrit en tête du nom (« Colombie, Zipaquira_… »).
+      const prefixe = lirePrefixeLieuPhotoCartel(dossier.nom);
+      if (prefixe.pays) pays.add(prefixe.pays);
+      if (prefixe.ville) villes.add(prefixe.ville);
+      if (voyage) {
+        const lieuxVoyage = lieuxDepuisNomPhotoCartel(voyage);
+        lieuxVoyage.pays.forEach((valeur) => pays.add(valeur));
+        if (villes.size === 0) lieuxVoyage.villes.forEach((valeur) => villes.add(valeur));
+      }
     }
     return {
       motsLus: conteneur ? [] : lecture.mots,
       position,
       chemin: dossier.chemin,
       nom: dossier.nom,
+      voyage,
       parent,
       conteneur,
-      motsNom: conteneur ? [] : identifiants(lecture.mots),
+      motsNom: conteneur ? [] : identifiants(lectureVoyage ? [...lecture.mots, ...lectureVoyage.mots] : lecture.mots),
       marqueurs: conteneur ? [] : identifiants(lecture.marqueurs),
       motsAjoutes: identifiants(decouperEnMotsPhotoCartel(motsC.join(" "))),
       motsAjoutesAffiches: motsC.slice(),
       motsArtistesDossier: [],
       artistesDossier: [],
-      anneePropre: conteneur ? "" : lecture.annee,
+      anneePropre: conteneur ? "" : lecture.annee || (lectureVoyage ? lectureVoyage.annee : ""),
       paysPropres: pays,
       villesPropres: villes,
     };
@@ -1869,6 +2077,10 @@ function preparerMoteurRecherche(index, motsAjoutes, typesVisites) {
     const villes = new Set(dossier ? dossier.villes : []);
     reconnaitrePhrasesRecherche(lecture.mots, TABLE_PAYS_RECHERCHE, pays);
     reconnaitrePhrasesRecherche(lecture.mots, TABLE_VILLES_RECHERCHE, villes);
+    // v99 — lieu écrit en tête du nom (« Colombie, Zipaquira_… »).
+    const prefixePhoto = lirePrefixeLieuPhotoCartel(photo.nom);
+    if (prefixePhoto.pays) pays.add(prefixePhoto.pays);
+    if (prefixePhoto.ville) villes.add(prefixePhoto.ville);
     if (photo.pays) reconnaitrePhrasesRecherche(decouperEnMotsPhotoCartel(photo.pays), TABLE_PAYS_RECHERCHE, pays);
     if (photo.ville) reconnaitrePhrasesRecherche(decouperEnMotsPhotoCartel(photo.ville), TABLE_VILLES_RECHERCHE, villes);
     reconnaitreVillesSousConditionRecherche(lecture.mots, pays, villes);
@@ -1967,6 +2179,16 @@ function preparerMoteurRecherche(index, motsAjoutes, typesVisites) {
   // n'est une visite que si un type lui a été posé.
   const visites = [];
   const visiteParDossier = new Map();
+  const voyageDeVisite = (position) => {
+    for (let d = position; d >= 0; d = dossiers[d].parent) {
+      if (dossiers[d].voyage) return dossiers[d].voyage;
+      const segments = dossiers[d].chemin.split("/");
+      if (segments.length === 2 && decouperEnMotsPhotoCartel(segments[0]).join(" ") === "voyages") {
+        return dossiers[d].nom;
+      }
+    }
+    return "";
+  };
   const creerVisite = (position) => {
     const dossier = dossiers[position];
     const typePose = typeVisiteReconnu(typesPoses[dossier.chemin]);
@@ -1975,6 +2197,8 @@ function preparerMoteurRecherche(index, motsAjoutes, typesVisites) {
       dossier: position,
       chemin: dossier.chemin,
       nom: dossier.nom,
+      // v99 — voyage de la visite : celui de son JSON, sinon celui du dossier qui la contient.
+      voyage: voyageDeVisite(position),
       photos: [],
       debut: "",
       fin: "",
@@ -2532,6 +2756,71 @@ const ORDRE_VISITES_RECHERCHE = (a, b) =>
   (a.debut && b.debut ? (a.debut < b.debut ? 1 : a.debut > b.debut ? -1 : 0) : a.debut ? -1 : b.debut ? 1 : 0) ||
   comparerNomsRecherche(a.nom, b.nom);
 
+// v99 — NIVEAU 1 : UNE VISITE SE TROUVE PAR SON NOM. « musée de l'or Bogota » rend
+// la visite « Musée de l'or Bogota » ; le nom des photos n'intervient pas. Le nom
+// lu est celui du dossier de la visite, des dossiers qui la contiennent et de son
+// voyage (écrit dans son JSON), avec les pays et villes de ce dossier. Les mots
+// courts qui portent le sens (« or ») sont gardés ; « de », « la », « l' » ne le
+// sont pas. Une lettre de travers est tolérée
+// sur un mot de cinq lettres ou plus. Si aucun nom de visite ne porte tous les
+// mots, la recherche retombe sur les photos (règle v97).
+const MOTS_COURTS_VIDES_VISITE_RECHERCHE = new Set([
+  "a", "au", "d", "de", "du", "el", "en", "et", "l", "la", "le", "di", "of", "un", "y",
+]);
+
+function formeSinguliereRecherche(mot) {
+  if (estMotNombreRecherche(mot)) return mot;
+  if (mot.endsWith("eaux") && mot.length > 5) return mot.slice(0, -1);
+  if (mot.endsWith("s") && !mot.endsWith("ss") && mot.length > 3) return mot.slice(0, -1);
+  return mot;
+}
+
+function motsSaisieVisiteRecherche(saisie) {
+  const mots = [];
+  const bruts = decouperEnMotsPhotoCartel(saisie);
+  for (let i = 0; i < bruts.length; i += 1) {
+    const brut = bruts[i];
+    if (!brut || MOTS_VIDES_RECHERCHE.has(brut) || MOTS_COURTS_VIDES_VISITE_RECHERCHE.has(brut)) continue;
+    const mot = formeSinguliereRecherche(brut);
+    if (!mots.includes(mot)) mots.push(mot);
+  }
+  return mots;
+}
+
+function motNomVisiteCorrespond(mot, motsNom) {
+  for (const motNom of motsNom) {
+    if (motNom === mot) return true;
+    if (mot.length >= 4 && motNom.startsWith(mot)) return true;
+    if (mot.length >= 5 && motNom.length >= 5 && ecartUneLettreRecherche(motNom, mot)) return true;
+  }
+  return false;
+}
+
+function visitesParNomRecherche(moteur, saisie) {
+  const mots = motsSaisieVisiteRecherche(saisie);
+  if (mots.length === 0) return [];
+  const dossiers = moteur.dossiers;
+  return moteur.visites.filter((visite) => {
+    const motsNom = new Set();
+    for (let d = visite.dossier; d >= 0; d = dossiers[d].parent) {
+      if (dossiers[d].conteneur) continue;
+      dossiers[d].motsLus.forEach((mot) => motsNom.add(formeSinguliereRecherche(mot)));
+    }
+    if (visite.voyage) {
+      lireNomDossierRecherche(visite.voyage).mots.forEach((mot) => motsNom.add(formeSinguliereRecherche(mot)));
+    }
+    // Pays et villes du dossier de la visite (son nom, les dossiers qui la contiennent,
+    // son voyage) : « Colombie » rend toutes les visites en Colombie, même celles dont
+    // le nom ne le dit pas (« Musée de l'or Bogota »). Les lieux lus dans le nom des
+    // photos n'interviennent pas.
+    const dossierVisite = dossiers[visite.dossier];
+    [...dossierVisite.pays, ...dossierVisite.villes].forEach((lieu) =>
+      decouperEnMotsPhotoCartel(lieu).forEach((mot) => motsNom.add(formeSinguliereRecherche(mot)))
+    );
+    return mots.every((mot) => motNomVisiteCorrespond(mot, motsNom));
+  });
+}
+
 // Recherche lancée. Renvoie des groupes titrés ; chaque ligne porte les positions
 // de ses photos dans le moteur (ouverture dans la galerie, grille).
 function rechercherPhotoCartel(moteur, criteresRecus, typeRecherche) {
@@ -2543,7 +2832,10 @@ function rechercherPhotoCartel(moteur, criteresRecus, typeRecherche) {
 
   if (type === "visites") {
     let candidates = moteur.visites;
-    if (mots.length > 0) {
+    const parNom = mots.length > 0 ? visitesParNomRecherche(moteur, criteres.motsCles) : [];
+    if (parNom.length > 0) {
+      candidates = parNom;
+    } else if (mots.length > 0) {
       const trouvees = new Set();
       const brut = rechercherDansMoteur(moteur, criteres.motsCles, {});
       for (let i = 0; i < brut.lignes.length; i += 1) {
@@ -3309,6 +3601,14 @@ class RaLecteurCartels {
 
 // Même règle que lireTexteCartelParOCR (server.js v92) : zone d'abord, reprise sur la photo
 // entière seulement si la zone s'est lue sans assez de texte. C2 : aucune lecture.
+// v100 — le moteur de lecture n'accepte pas une ImageBitmap (« truncated file ») : la lecture
+// de l'image entière, quand aucune zone de texte n'est retenue ou qu'elle lit trop peu, ne lisait
+// donc jamais rien. Elle passe désormais par une toile, limitée à 2048 px de large.
+function raImageEntierePourOcr(bitmap) {
+  if (bitmap.width > 2048) return raReduire(bitmap, 2048).c;
+  return raDessiner(bitmap, 0, 0, bitmap.width, bitmap.height, bitmap.width, bitmap.height).c;
+}
+
 async function raLireCartel(lecteur, bitmap) {
   const debut = performance.now();
   const zone = raTrouverZoneTexteCartel(bitmap);
@@ -3320,11 +3620,11 @@ async function raLireCartel(lecteur, bitmap) {
   if (zoneRetenue) {
     lecture = await lecteur.lire(raPreparerImageOcr(bitmap, zoneRetenue));
     if (!lecture.lectureArretee && !lecture.moteurAbsent && lecture.caracteres < RA_SEUIL_CARACTERES) {
-      const reprise = await lecteur.lire(bitmap);
+      const reprise = await lecteur.lire(raImageEntierePourOcr(bitmap));
       if (reprise.caracteres > lecture.caracteres) lecture = reprise;
     }
   } else {
-    lecture = await lecteur.lire(bitmap);
+    lecture = await lecteur.lire(raImageEntierePourOcr(bitmap));
   }
   return { ...lecture, deuxTextes: false, dureeMs: performance.now() - debut };
 }
@@ -3379,10 +3679,11 @@ async function raTrierPhotos(fichiers, apiBase, signal, surAvancement = () => {}
     const horodatage = raLireHorodatageExif(await fichier.slice(0, 262144).arrayBuffer());
     let categorie = "A_verifier_renommage";
     let raison = "";
+    let traits = null;
     if (!erreurServeur) {
       try {
         const bitmap = await raDecoder(fichier);
-        const traits = raMesurerTraits(bitmap);
+        traits = raMesurerTraits(bitmap);
         const locale = raCategorieLocale(traits);
         if (locale) {
           categorie = locale;
@@ -3400,7 +3701,7 @@ async function raTrierPhotos(fichiers, apiBase, signal, surAvancement = () => {}
         else raison = `photo illisible (${e?.message || e})`;
       }
     }
-    photos[index] = { fichier, nom: fichier.name, horodatage, categorie, raison };
+    photos[index] = { fichier, nom: fichier.name, horodatage, categorie, raison, traits };
     faites += 1;
     surAvancement(faites, fichiers.length);
   });
@@ -3555,6 +3856,36 @@ async function raEcrireParServeurLocal(apiBase, dossierRacine, nomSortie, plan, 
 
 function raHorodatageSortie(date = new Date()) {
   return date.toISOString().replace(/:/g, "-").replace("T", "_").slice(0, 16) + "Z";
+}
+
+// v100 — « Renommer une photo » : dossier résultat « Photos_renommées_AAAA-MM-JJ_HH-MM », à l'heure
+// de l'appareil (Paris), et non plus « Dossier_selectionne_renommé_… » à l'heure universelle.
+function raNomSortiePhotos(date = new Date()) {
+  const d2 = (n) => String(n).padStart(2, "0");
+  return `Photos_renommées_${date.getFullYear()}-${d2(date.getMonth() + 1)}-${d2(date.getDate())}_${d2(date.getHours())}-${d2(date.getMinutes())}`;
+}
+
+// v100 — « Renommer une photo » : deux photos choisies = une œuvre et son cartel. Quand le tri ne
+// rend pas exactement une œuvre et un cartel, la photo la moins colorée est le cartel, l'autre l'œuvre.
+// L'heure de prise de vue n'intervient pas (association directe côté serveur pour une seule paire).
+function raImposerOeuvreEtCartel(photos) {
+  if (!Array.isArray(photos) || photos.length !== 2) return photos;
+  const [a, b] = photos;
+  const cats = [a.categorie, b.categorie];
+  if (cats.includes("Oeuvres") && cats.includes("Cartels")) return photos;
+  let cartel;
+  if (a.categorie === "Cartels" || b.categorie === "Cartels") cartel = a.categorie === "Cartels" ? a : b;
+  else if (a.categorie === "Oeuvres" || b.categorie === "Oeuvres") cartel = a.categorie === "Oeuvres" ? b : a;
+  if (a.categorie === b.categorie || !cartel) {
+    const pa = Number(a.traits?.partColoree ?? 1);
+    const pb = Number(b.traits?.partColoree ?? 1);
+    cartel = pa <= pb ? a : b;
+  }
+  for (const p of photos) {
+    p.categorie = p === cartel ? "Cartels" : "Oeuvres";
+    p.raison = "";
+  }
+  return photos;
 }
 
 function raNomSortie(nomDossierSource, date = new Date()) {
@@ -3859,6 +4190,10 @@ const [avancementRenommage, setAvancementRenommage] = useState(null);
 const cheminRenommagePrepareRef = useRef("");
 // v93 — photos du dossier en cours de renommage (fichiers locaux, jamais envoyés en entier).
 const photosRenommageRef = useRef(null);
+// v100 — « Renommer une photo » et « Renommer un dossier » partagent le même moteur ; seuls les
+// libellés, le nom du dossier résultat et la règle des deux photos (une œuvre + son cartel) diffèrent.
+const modeRenommagePhotosRef = useRef(false);
+const [modeRenommagePhotos, setModeRenommagePhotos] = useState(false);
 const inputPrendrePhotosRef = useRef(null);
 const inputActualiserPhotosRef = useRef(null);
 const inputAnalyserPhotoCameraRef = useRef(null);
@@ -3908,6 +4243,11 @@ const autorisationStockageHandleCandidatRef = useRef(null);
 // étaient réinitialisées à chaque changement d’état, ce qui forçait une nouvelle demande.
 const photoCartelHandleDcimSessionRef = useRef(null);
 const photoCartelHandleRacineAndroidSessionRef = useRef(null);
+// v100 — priorité aux gestes de l'utilisateur sur le stockage du téléphone : tant qu'une
+// action de l'utilisateur lit ou écrit dans DCIM/PhotoCartel, le chargement automatique de la
+// photothèque (v97) se met en pause entre deux accès, au lieu de les mettre en file d'attente.
+const actionsStockageUtilisateurRef = useRef(0);
+const [modeAppareilPhotoPret, setModeAppareilPhotoPret] = useState(false);
 // v47.2 : le handle persistant est préchargé avant tout clic sur « Ouvrir la visite ».
 // Le clic peut ainsi appeler requestPermission() comme toute première opération asynchrone.
 const autorisationGalerieHandleCandidatRef = useRef(null);
@@ -5493,7 +5833,7 @@ const afficherMessageDiscretArborescence = (message, duree = 5000) => {
       setMessageModificationVisite("Enregistrement des modifications…");
       let resultat;
       if (estAndroid()) {
-        resultat = await modifierIdentiteVisiteAndroid(payload);
+        resultat = await avecPrioriteStockage(() => modifierIdentiteVisiteAndroid(payload));
       } else {
         resultat = await appelerModificationIdentiteVisite(payload);
       }
@@ -7158,13 +7498,35 @@ async function installerContexteStockageAndroid({
   };
 }
 
+async function avecPrioriteStockage(action) {
+  actionsStockageUtilisateurRef.current += 1;
+  try {
+    return await action();
+  } finally {
+    actionsStockageUtilisateurRef.current -= 1;
+  }
+}
+
+async function attendreStockageLibre() {
+  while (actionsStockageUtilisateurRef.current > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function validerCollecteVisiteAndroid(resultatRacineAndroid, origine = "inconnue") {
   const dossierPhotoCartel = resultatRacineAndroid?.dossierPhotoCartel;
   if (!estHandlePhotoCartelValide(dossierPhotoCartel)) {
     throw new Error("Le dossier PhotoCartel n’est pas disponible.");
   }
 
-  await verifierInfrastructureDansPhotoCartelAndroid(dossierPhotoCartel);
+  // v100 — seule « Collecte Photo en cours » est indispensable pour enregistrer une photo :
+  // une anomalie sur un autre dossier d'infrastructure est signalée dans la console mais
+  // n'empêche plus la prise de photo (avant : toute anomalie bloquait sans aucun message).
+  try {
+    await verifierInfrastructureDansPhotoCartelAndroid(dossierPhotoCartel);
+  } catch (error) {
+    console.warn("Infrastructure PhotoCartel incomplète (prise de photo maintenue) :", error);
+  }
   await dossierPhotoCartel.getDirectoryHandle("Collecte Photo en cours", { create: true });
   tracerStockageV39("collecte validée", {
     origine,
@@ -7668,6 +8030,10 @@ async function ecrireBlobDansDossierAndroid(dossierHandle, nomFichier, blob) {
 }
 
 async function enregistrerPhotosVisiteDansCollecteAndroid(fichiers) {
+  return avecPrioriteStockage(() => enregistrerPhotosVisiteDansCollecteAndroidSansPriorite(fichiers));
+}
+
+async function enregistrerPhotosVisiteDansCollecteAndroidSansPriorite(fichiers) {
   // v38.13 : l'enregistrement déclenché au retour de l'appareil photo ne doit
   // jamais ouvrir un sélecteur ni demander une nouvelle autorisation.
   // Il réutilise exclusivement le handle racine validé avant l'ouverture de la caméra.
@@ -7757,36 +8123,64 @@ async function handlePrendreDesPhotos() {
     return;
   }
 
-  try {
-    // v38.13 : la permission de stockage est vérifiée/réactivée pendant le clic
-    // utilisateur, AVANT l'ouverture de l'appareil photo. Le retour de la caméra
-    // peut ainsi enregistrer immédiatement la photo sans nouvelle boîte système.
+  // v100 — l'appareil photo s'ouvre dans le geste même de l'appui. Chrome n'accepte
+  // d'ouvrir l'appareil photo que dans les 5 secondes qui suivent l'appui : quand l'accès
+  // au stockage était lent (chargement automatique de la photothèque) ou en erreur, la
+  // demande arrivait trop tard ou jamais, et rien ne s'affichait.
+  afficherMessageSousBouton("prendre-photos", "");
+  if (!localStorage.getItem("photoCartelDebutVisiteMs")) {
+    localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
+  }
+
+  const accesDejaOuvert =
+    estHandlePhotoCartelValide(photoCartelHandleRacineAndroidSessionRef.current) ||
+    estHandleDcimValide(photoCartelHandleDcimSessionRef.current);
+
+  if (!estAndroid() || accesDejaOuvert) {
+    setDerniereActionVisite("Appareil photo ouvert le " + formaterDate(new Date()) + ". Reviens ensuite dans PhotoCartel pour ranger les photos de la visite.");
+    ouvrirAppareilPhoto();
     if (estAndroid()) {
-      const resultatRacineAndroid = await obtenirDossierRacinePhotoCartelAndroid({
+      // Vérification de la collecte pendant que l'appareil photo est ouvert, sans boîte système.
+      avecPrioriteStockage(async () => {
+        const resultatRacineAndroid = await obtenirDossierRacinePhotoCartelAndroid({
+          ouvrirSelecteurSiNecessaire: false,
+          demanderPermissionSiNecessaire: false,
+        });
+        if (resultatRacineAndroid) {
+          await validerCollecteVisiteAndroid(resultatRacineAndroid, "avant-prise-photo");
+        }
+      }).catch((error) => console.warn("Vérification de la collecte :", error));
+    }
+    return;
+  }
+
+  try {
+    // Premier accès de la session : l'autorisation du stockage peut afficher une boîte
+    // système, qui consomme l'appui. L'appareil photo s'ouvre alors par un second appui.
+    const resultatRacineAndroid = await avecPrioriteStockage(async () => {
+      const resultat = await obtenirDossierRacinePhotoCartelAndroid({
         ouvrirSelecteurSiNecessaire: true,
         demanderPermissionSiNecessaire: true,
       });
-
-      if (!resultatRacineAndroid) {
+      if (!resultat) {
         throw new Error("Le dossier racine PhotoCartel n’est pas autorisé.");
       }
-
-      // v39 : la caméra ne s’ouvre qu’après une validation réelle de la collecte.
-      await validerCollecteVisiteAndroid(resultatRacineAndroid, "avant-prise-photo");
-    }
-
-    if (!localStorage.getItem("photoCartelDebutVisiteMs")) {
-      localStorage.setItem("photoCartelDebutVisiteMs", String(Date.now()));
-    }
+      await validerCollecteVisiteAndroid(resultat, "avant-prise-photo");
+      return resultat;
+    });
 
     setDerniereActionVisite("Appareil photo ouvert le " + formaterDate(new Date()) + ". Reviens ensuite dans PhotoCartel pour ranger les photos de la visite.");
+    if (resultatRacineAndroid && navigator.userActivation && !navigator.userActivation.isActive) {
+      setModeAppareilPhotoPret(true);
+      return;
+    }
     ouvrirAppareilPhoto();
   } catch (error) {
     if (error?.name === "AbortError") return;
     console.error("Autorisation avant prise de photo :", error);
-    setDerniereActionVisite(
-      "Impossible d’ouvrir l’appareil photo : " + (error?.message || String(error))
-    );
+    const message = "Impossible d’ouvrir l’appareil photo : " + (error?.message || String(error));
+    setDerniereActionVisite(message);
+    afficherMessageSousBouton("prendre-photos", "⚠️ " + message);
   }
 }
 
@@ -9883,12 +10277,32 @@ async function ecrireDansBaseRecherche(store, cle, valeur) {
 // v97 — l'heure de prise de vue n'est lue qu'une fois par photo : une photo que
 // l'index connaît déjà n'est jamais rouverte ; une photo nouvelle n'est lue que sur
 // son en-tête (64 Ko), huit à la fois.
+// v99 — une photo décrite dans le _PhotoCartel_visite.json de son dossier n'est pas
+// rouverte, et le voyage de la visite est pris dans ce JSON (même règle que le PC).
 async function parcourirPhotoCartelAndroid(racine, horodatagesConnus = new Map()) {
   const dossiers = [];
   const photos = [];
+  const voyages = {};
   const aLire = [];
+  let photosDecrites = 0;
   const parcourir = async (handle, chemin, profondeur) => {
-    for await (const [nom, enfant] of handle.entries()) {
+    const entrees = [];
+    await attendreStockageLibre();
+    for await (const entree of handle.entries()) {
+      entrees.push(entree);
+      if (actionsStockageUtilisateurRef.current > 0) await attendreStockageLibre();
+    }
+    let visite = null;
+    const entreeVisite = entrees.find(([nom, enfant]) => enfant.kind === "file" && nom === NOM_FICHIER_VISITE);
+    if (entreeVisite) {
+      try {
+        visite = lireContenuVisitePhotoCartel(JSON.parse(await (await entreeVisite[1].getFile()).text()));
+      } catch (error) {
+        visite = null;
+      }
+      if (visite && visite.voyage && chemin) voyages[chemin] = visite.voyage;
+    }
+    for (const [nom, enfant] of entrees) {
       if (enfant.kind === "directory") {
         if (estDossierHorsRecherche(nom, profondeur)) continue;
         const cheminEnfant = chemin ? `${chemin}/${nom}` : nom;
@@ -9896,7 +10310,12 @@ async function parcourirPhotoCartelAndroid(racine, horodatagesConnus = new Map()
         await parcourir(enfant, cheminEnfant, profondeur + 1);
       } else if (enfant.kind === "file" && estFichierImageRecherche(nom)) {
         const photo = { nom, dossier: chemin, horodatage: "" };
-        const connu = horodatagesConnus.get(`${chemin}/${nom}`);
+        let connu = horodatagesConnus.get(`${chemin}/${nom}`);
+        const decrite = visite ? visite.photos.get(nom) : undefined;
+        if (connu === undefined && decrite) {
+          photosDecrites += 1;
+          connu = decrite.horodatage || horodatageDepuisNomRecherche(nom);
+        }
         if (connu === undefined) aLire.push({ photo, handle: enfant });
         else photo.horodatage = connu;
         photos.push(photo);
@@ -9910,6 +10329,7 @@ async function parcourirPhotoCartelAndroid(racine, horodatagesConnus = new Map()
       const { photo, handle } = aLire[suivante];
       suivante += 1;
       try {
+        if (actionsStockageUtilisateurRef.current > 0) await attendreStockageLibre();
         const fichier = await handle.getFile();
         photo.horodatage =
           raLireHorodatageExif(await fichier.slice(0, 65536).arrayBuffer()) ||
@@ -9920,7 +10340,7 @@ async function parcourirPhotoCartelAndroid(racine, horodatagesConnus = new Map()
     }
   };
   await Promise.all(Array.from({ length: Math.min(8, aLire.length) }, lire));
-  return { dossiers, photos, photosLues: aLire.length };
+  return { dossiers, photos, voyages, photosLues: aLire.length, photosDecrites };
 }
 
 // v97 — sans demande : le chargement automatique au démarrage ne fait jamais
@@ -10143,6 +10563,56 @@ async function preparerRecherche({ sansDemande = false } = {}) {
     mettreAJourRechercheEnArrierePlan({ sansDemande });
   }
 }
+
+// v100 — PRINCIPE GÉNÉRAL : tout bouton touché se grise aussitôt, pour montrer que l'appui
+// est pris en compte. Un bouton désactivé (action en cours) reste grisé jusqu'à la fin.
+useEffect(() => {
+  if (typeof document === "undefined") return undefined;
+  if (!document.getElementById("photocartel-style-clic")) {
+    const style = document.createElement("style");
+    style.id = "photocartel-style-clic";
+    style.textContent =
+      ".photocartel-clic-pris{opacity:.45 !important;filter:grayscale(.7);transition:none !important}" +
+      "button:disabled{opacity:.5;filter:grayscale(.5);cursor:default}";
+    document.head.appendChild(style);
+  }
+  // Les cartes d'action sont redessinées à chaque mise à jour de l'écran : le grisage suit donc
+  // le libellé du bouton touché pendant 700 ms, et non le seul élément d'origine.
+  const CLASSE = "photocartel-clic-pris";
+  const enCours = new Map();
+  let observateur = null;
+  let minuterie = null;
+  const appliquer = () => {
+    const maintenant = Date.now();
+    for (const [texte, fin] of enCours) if (fin <= maintenant) enCours.delete(texte);
+    document.querySelectorAll('button, [role="button"]').forEach((element) => {
+      if (enCours.has(element.textContent)) element.classList.add(CLASSE);
+      else if (element.classList.contains(CLASSE)) element.classList.remove(CLASSE);
+    });
+    if (!enCours.size && observateur) {
+      observateur.disconnect();
+      observateur = null;
+    }
+  };
+  const surAppui = (event) => {
+    const bouton = event.target?.closest?.('button, [role="button"]');
+    if (!bouton || bouton.disabled) return;
+    enCours.set(bouton.textContent, Date.now() + 700);
+    bouton.classList.add(CLASSE);
+    if (!observateur && typeof MutationObserver !== "undefined") {
+      observateur = new MutationObserver(appliquer);
+      observateur.observe(document.body, { childList: true, subtree: true });
+    }
+    clearTimeout(minuterie);
+    minuterie = setTimeout(appliquer, 720);
+  };
+  document.addEventListener("click", surAppui, true);
+  return () => {
+    document.removeEventListener("click", surAppui, true);
+    clearTimeout(minuterie);
+    if (observateur) observateur.disconnect();
+  };
+}, []);
 
 // v97 — CHARGEMENT AUTOMATIQUE : la photothèque se charge dès l'ouverture de
 // l'application, en arrière-plan, sans message ni fenêtre. Ce qui est déjà connu
@@ -11449,6 +11919,11 @@ async function handlePhotosPrises(event) {
     setDerniereActionVisite(
       "Accès au stockage à rétablir. La visite reste active et aucune nouvelle visite n’est nécessaire."
     );
+    afficherMessageSousBouton(
+      "prendre-photos",
+      "⚠️ Photo non enregistrée : " + (error?.message || String(error)) +
+        " Appuyer de nouveau sur Prendre des photos."
+    );
   }
 
   // v38.13 : on ne rouvre automatiquement la caméra qu'après confirmation
@@ -11720,7 +12195,7 @@ function handleSelectionDossierRenommage(event) {
 
   const nomDossier = premierChemin?.includes("/")
     ? premierChemin.split("/")[0]
-    : "Dossier sélectionné";
+    : modeRenommagePhotosRef.current ? "" : "Dossier sélectionné";
 
   setFichiersRenommage(photos);
   setDossierRenommage(nomDossier);
@@ -11909,16 +12384,21 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
       return;
     }
 
+    const modePhotos = modeRenommagePhotosRef.current;
     const cheminRelatif = listeFichiers[0]?.webkitRelativePath || "";
-    const nomDossierSource = cheminRelatif
-      ? cheminRelatif.split("/")[0]
-      : dossierRenommage || "Dossier_selectionne";
+    const nomDossierSource = modePhotos
+      ? ""
+      : cheminRelatif
+        ? cheminRelatif.split("/")[0]
+        : dossierRenommage || "Dossier_selectionne";
 
     setDossierRenommage(nomDossierSource);
     setNombrePhotosRenommage(listeFichiers.length);
     setRenommageFinalEnCours(true);
     setMessageRenommage(
-      `Renommage en cours du dossier "${nomDossierSource}" : ${listeFichiers.length} photos à traiter.`
+      modePhotos
+        ? `Renommage en cours : ${listeFichiers.length} photo(s) à traiter.`
+        : `Renommage en cours du dossier "${nomDossierSource}" : ${listeFichiers.length} photos à traiter.`
     );
 
     const debut = new Date();
@@ -11929,13 +12409,14 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
     });
     const dureeTriMs = performance.now() - debutTri;
     if (!operation.estActive()) return;
+    if (modePhotos) raImposerOeuvreEtCartel(photos);
 
-    const nomSortie = raNomSortie(nomDossierSource, debut);
+    const nomSortie = modePhotos ? raNomSortiePhotos(debut) : raNomSortie(nomDossierSource, debut);
     const cheminPrepare = estAndroid()
       ? `DCIM/PhotoCartel/Oeuvres renommées/${nomSortie}`
       : `${dossierRacine}\\Oeuvres renommées\\${nomSortie}`;
 
-    photosRenommageRef.current = { photos, nomSortie, nomDossierSource, debut, durees: { triMs: dureeTriMs, appelsIA: photos.appelsIA || 0 } };
+    photosRenommageRef.current = { photos, nomSortie, nomDossierSource, modePhotos, debut, durees: { triMs: dureeTriMs, appelsIA: photos.appelsIA || 0 } };
     setAvancementRenommage(null);
     cheminRenommagePrepareRef.current = cheminPrepare;
     setCheminRenommagePrepare(cheminPrepare);
@@ -11949,7 +12430,9 @@ async function renommerOeuvresTest(fichiersAUtiliser = fichiersRenommage) {
 
     setRenommageFinalEnCours(false);
     setMessageRenommage(
-      `Tri terminé pour "${nomDossierSource}". Clique sur « Lancer le renommage » pour continuer.` +
+      (modePhotos
+        ? `Tri terminé : ${photos.filter((p) => p.categorie === "Oeuvres").length} œuvre(s) et ${photos.filter((p) => p.categorie === "Cartels").length} cartel(s). Clique sur « Lancer le renommage » pour continuer.`
+        : `Tri terminé pour "${nomDossierSource}". Clique sur « Lancer le renommage » pour continuer.`) +
         complementErreursTri
     );
     amenerEtapeALaVue("etape-renommage");
@@ -11975,7 +12458,7 @@ async function lancerAnalyseRenommage() {
 
   if (!cheminVisite || !preparation) {
     setMessageRenommage(
-      "Analyse impossible : clique d'abord sur « Renommer un dossier » et attends la fin du tri."
+      "Analyse impossible : choisir d'abord les photos ou le dossier à renommer, puis attendre la fin du tri."
     );
     return;
   }
@@ -12065,7 +12548,10 @@ async function validerRenommage(propositionsForcees = null, racineAndroidPreauto
     const photosAnalysees = propositionsAValider.length;
     setDashboardRenommage({
       statut: "RENOMMAGE TERMINÉ",
-      dossierSource: preparation.nomSortie,
+      dossierSource: preparation.modePhotos
+        ? preparation.photos.map((p) => p.nom).join(", ")
+        : preparation.nomSortie,
+      modePhotos: Boolean(preparation.modePhotos),
       cheminResultat: cheminVisite,
       photosAnalysees,
       oeuvresRenommees: renommes,
@@ -15984,7 +16470,9 @@ const validerNouvelleVisite = async () => {
           <div style={styles.resultatIconeSucces}>✓</div>
           <div>
             <h2 style={styles.resultatTitre}>
-              Dossier « {dossierRenommage || dashboardRenommage.dossierSource} » renommé
+              {dashboardRenommage.modePhotos
+                ? dashboardRenommage.oeuvresRenommees > 1 ? "Photos renommées" : dashboardRenommage.oeuvresRenommees === 1 ? "Photo renommée" : "Photo non renommée"
+                : `Dossier « ${dossierRenommage || dashboardRenommage.dossierSource} » renommé`}
             </h2>
             <p style={{ ...styles.resultatTexte, wordBreak: "break-all" }}>
               {dashboardRenommage.cheminResultat}
@@ -16011,7 +16499,7 @@ const validerNouvelleVisite = async () => {
 
         <section style={styles.carteDerniereVisite}>
           <div style={styles.sectionTitre}>Détails</div>
-          <DetailLigne icone="📁" label="Dossier source" valeur={dashboardRenommage.dossierSource} />
+          <DetailLigne icone="📁" label={dashboardRenommage.modePhotos ? "Photos sélectionnées" : "Dossier source"} valeur={dashboardRenommage.dossierSource} />
           <DetailLigne icone="🖼️" label="Photos analysées" valeur={dashboardRenommage.photosAnalysees} />
           <DetailLigne icone="✅" label="Œuvres renommées" valeur={dashboardRenommage.oeuvresRenommees} />
           <DetailLigne icone="⚠️" label="À vérifier" valeur={dashboardRenommage.fichiersAVerifier} />
@@ -18234,7 +18722,12 @@ const validerNouvelleVisite = async () => {
                           if (ligne.type === "visite") {
                             const visite = moteur.visites[ligne.visite];
                             const artistes = Array.from(visite.artistes).sort((a, b) => a.localeCompare(b, "fr"));
-                            const details = [lieuVisiteRecherche(visite), periodeVisiteRecherche(visite)].filter(Boolean);
+                            // v99 — le voyage de la visite est dit, qu'il vienne du JSON ou du rangement.
+                            const details = [
+                              lieuVisiteRecherche(visite),
+                              periodeVisiteRecherche(visite),
+                              visite.voyage ? `Voyage : ${visite.voyage}` : "",
+                            ].filter(Boolean);
                             return (
                               <div key={ligne.cle} style={{ ...styleCarte, padding: "10px 12px", marginBottom: "8px" }}>
                                 <button
@@ -18888,7 +19381,7 @@ const validerNouvelleVisite = async () => {
         <div style={styles.modalOverlay}>
           <div style={styles.modal}>
             <h2>Renommage en cours</h2>
-            <p>Dossier : {dossierRenommage}</p>
+            {!modeRenommagePhotos && <p>Dossier : {dossierRenommage}</p>}
             <p>Photos à traiter : {nombrePhotosRenommage}</p>
             {avancementRenommage ? (
               <p data-avancement-renommage>
@@ -19047,6 +19540,8 @@ const validerNouvelleVisite = async () => {
                 setModeRenommerAccueil(false);
                 setMessageMenuAccueil("");
                 setCibleMessageMenuAccueil("");
+                modeRenommagePhotosRef.current = true;
+                setModeRenommagePhotos(true);
                 document.getElementById("selection-photos-renommage")?.click();
               }}
             />
@@ -19058,6 +19553,8 @@ const validerNouvelleVisite = async () => {
                 setModeRenommerAccueil(false);
                 setMessageMenuAccueil("");
                 setCibleMessageMenuAccueil("");
+                modeRenommagePhotosRef.current = false;
+                setModeRenommagePhotos(false);
                 document.getElementById("selection-dossier-renommage")?.click();
               }}
             />
@@ -19146,6 +19643,25 @@ const validerNouvelleVisite = async () => {
             >
               Annuler
             </button>
+          </div>
+        </div>
+      )}
+
+      {modeAppareilPhotoPret && (
+        <div style={{ ...styles.modalOverlay, zIndex: 10030 }}>
+          <div style={styles.modal} role="dialog" aria-modal="true" aria-labelledby="titre-appareil-photo-pret">
+            <h3 id="titre-appareil-photo-pret" style={{ marginTop: 0 }}>Stockage autorisé</h3>
+            <button
+              type="button"
+              onClick={() => {
+                setModeAppareilPhotoPret(false);
+                ouvrirAppareilPhoto();
+              }}
+              style={styles.modalBoutonPrincipal}
+            >
+              📷 Ouvrir l’appareil photo
+            </button>
+            <button type="button" onClick={() => setModeAppareilPhotoPret(false)} style={styles.modalBoutonAnnuler}>Annuler</button>
           </div>
         </div>
       )}
@@ -19686,6 +20202,7 @@ const validerNouvelleVisite = async () => {
                 couleur="#e7a000"
               />
             </div>
+            <MessageSousBouton cible="prendre-photos" />
 
             {messageActualisation && (
               <div style={styles.panneauInfo}>
@@ -19883,9 +20400,11 @@ const validerNouvelleVisite = async () => {
                 style={{ ...styles.panneauInfo, scrollMarginTop: "70px" }}
               >
                 <strong>{messageRenommage}</strong>
-                <p>
-                  <strong>Dossier sélectionné :</strong> {dossierRenommage}
-                </p>
+                {!modeRenommagePhotos && (
+                  <p>
+                    <strong>Dossier sélectionné :</strong> {dossierRenommage}
+                  </p>
+                )}
                 <p>
                   <strong>Photos sélectionnées :</strong> {nombrePhotosRenommage}
                 </p>

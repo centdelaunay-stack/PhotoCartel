@@ -11,6 +11,14 @@ REM  Ne tue que les processus de PhotoCartel (ses deux ports).
 REM  Les sondes d'attente visent 127.0.0.1 et non localhost :
 REM  Vite ecoute en IPv4 (--host 0.0.0.0) alors que localhost
 REM  resout d'abord ::1 sous Windows, ce qui faisait echouer l'attente.
+REM  16/10/2026 : attentes faites avec curl.exe et non PowerShell :
+REM  sur le nouveau PC, une commande PowerShell ouvrant une connexion
+REM  reseau est bloquee (code 9020, mesure Diag2 du 16/10).
+REM  17/10/2026 : une relance ferme TOUT ce que la precedente a ouvert
+REM  (fenetres Server et Vite, npm, node), y compris les fenetres
+REM  laissees par les anciennes versions du lanceur. Les deux fenetres
+REM  s'ouvrent en console classique (conhost) et portent un marqueur
+REM  CARTEL_TAG propre a l'application : rien d'autre n'est touche.
 REM ============================================================
 
 set "APP_NAME=PhotoCartel"
@@ -44,13 +52,18 @@ where node >nul 2>&1
 if errorlevel 1 goto ERREUR_NODE
 where npm >nul 2>&1
 if errorlevel 1 goto ERREUR_NPM
+where curl.exe >nul 2>&1
+if errorlevel 1 goto ERREUR_CURL
 echo       OK.
 
 echo [3/7] Arret des anciennes instances %APP_NAME% uniquement...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr /C:":%PORT_SERVER% " ^| findstr /C:"LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr /C:":%PORT_VITE% " ^| findstr /C:"LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-taskkill /F /FI "WINDOWTITLE eq %APP_NAME% Server*" >nul 2>&1
-taskkill /F /FI "WINDOWTITLE eq %APP_NAME% Vite*" >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /C:":%PORT_SERVER% " ^| findstr /C:"LISTENING"') do taskkill /F /T /PID %%a >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /C:":%PORT_VITE% " ^| findstr /C:"LISTENING"') do taskkill /F /T /PID %%a >nul 2>&1
+taskkill /F /T /FI "WINDOWTITLE eq %APP_NAME% Server*" >nul 2>&1
+taskkill /F /T /FI "WINDOWTITLE eq %APP_NAME% Vite*" >nul 2>&1
+set "TAG=%APP_NAME%_DEV"
+set "PSK=$a=Get-CimInstance Win32_Process; $p=($a|Where-Object{$_.Name -ne 'conhost.exe'}).ParentProcessId; $t='CARTEL_'+'TAG='+'%TAG%'; $a|Where-Object{ $c=[string]$_.CommandLine; $c.Contains($t) -or ($_.Name -eq 'node.exe' -and $c -like ('*run d'+'ev*--port %PORT_VITE% *')) -or ($_.Name -eq 'cmd.exe' -and $c -like ('*/k np'+'m run dev*--port %PORT_VITE% *')) -or ($_.Name -eq 'cmd.exe' -and $c -like ('*/k no'+'de server.js') -and $p -notcontains $_.ProcessId) }|ForEach-Object{$_.ProcessId}"
+for /f %%p in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "%PSK%" 2^>nul') do taskkill /F /T /PID %%p >nul 2>&1
 timeout /t 2 /nobreak >nul
 echo       OK : les autres applications Node ne sont pas touchees.
 
@@ -64,15 +77,29 @@ if defined BUSY_PID goto ERREUR_PORT_VITE
 echo       OK : ports %PORT_SERVER% et %PORT_VITE% libres.
 
 echo [5/7] Demarrage du serveur Express sur le port %PORT_SERVER%...
-start "%APP_NAME% Server" /D "%PROJECT_DIR%" cmd /k node server.js
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$fin=(Get-Date).AddSeconds(60); while((Get-Date) -lt $fin){ try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%PORT_SERVER%); $c.Close(); exit 0 } catch { Start-Sleep -Milliseconds 500 } }; exit 1"
-if errorlevel 1 goto ERREUR_SERVEUR
+start "%APP_NAME% Server" /D "%PROJECT_DIR%" "%SystemRoot%\System32\conhost.exe" cmd /k "set CARTEL_TAG=%TAG%_SERVER&& title %APP_NAME% Server&& node server.js"
+set /a ESSAIS=0
+:ATTENTE_SERVEUR
+curl.exe -s -o nul --max-time 1 http://127.0.0.1:%PORT_SERVER%/
+if not errorlevel 1 goto SERVEUR_PRET
+set /a ESSAIS+=1
+if %ESSAIS% GEQ 60 goto ERREUR_SERVEUR
+timeout /t 1 /nobreak >nul
+goto ATTENTE_SERVEUR
+:SERVEUR_PRET
 echo       OK : serveur pret.
 
 echo [6/7] Demarrage de Vite sur le port %PORT_VITE% (port impose)...
-start "%APP_NAME% Vite" /D "%PROJECT_DIR%" cmd /k npm run dev -- --host 0.0.0.0 --port %PORT_VITE% --strictPort
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$fin=(Get-Date).AddSeconds(90); while((Get-Date) -lt $fin){ try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%PORT_VITE%); $c.Close(); exit 0 } catch { Start-Sleep -Milliseconds 500 } }; exit 1"
-if errorlevel 1 goto ERREUR_VITE
+start "%APP_NAME% Vite" /D "%PROJECT_DIR%" "%SystemRoot%\System32\conhost.exe" cmd /k "set CARTEL_TAG=%TAG%_VITE&& title %APP_NAME% Vite&& npm run dev -- --host 0.0.0.0 --port %PORT_VITE% --strictPort"
+set /a ESSAIS=0
+:ATTENTE_VITE
+curl.exe -s -o nul --max-time 1 http://127.0.0.1:%PORT_VITE%/
+if not errorlevel 1 goto VITE_PRET
+set /a ESSAIS+=1
+if %ESSAIS% GEQ 90 goto ERREUR_VITE
+timeout /t 1 /nobreak >nul
+goto ATTENTE_VITE
+:VITE_PRET
 echo       OK : Vite pret.
 
 echo [7/7] Ouverture de Google Chrome...
@@ -84,7 +111,7 @@ if not defined CHROME_PATH goto ERREUR_CHROME
 start "" "%CHROME_PATH%" --new-window "%VITE_URL%"
 
 set "SERVER_VERSION=non renseignee"
-for /f "usebackq delims=" %%V in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r=Invoke-RestMethod -Uri 'http://127.0.0.1:%PORT_SERVER%/api/health' -TimeoutSec 3; if($r.version){$r.version}else{'non renseignee'} } catch { 'non renseignee' }"`) do set "SERVER_VERSION=%%V"
+for /f "usebackq delims=" %%V in (`node -e "fetch('http://127.0.0.1:%PORT_SERVER%/api/health').then(function(r){return r.json()}).then(function(j){console.log(j.version ? j.version : 'non renseignee')}).catch(function(){console.log('non renseignee')})"`) do set "SERVER_VERSION=%%V"
 
 echo.
 echo ============================================================
@@ -185,6 +212,14 @@ echo Regarde la fenetre "%APP_NAME% Vite" : le message d'erreur y est affiche.
 echo Si le message parle du port %PORT_VITE% deja utilise, c'est volontaire :
 echo le port est impose pour eviter que l'application glisse sur un autre port.
 echo Le navigateur n'a pas ete ouvert.
+echo.
+pause
+exit /b 1
+
+:ERREUR_CURL
+echo.
+echo ECHEC : curl.exe est introuvable (outil integre a Windows).
+echo Rien n'a ete lance.
 echo.
 pause
 exit /b 1

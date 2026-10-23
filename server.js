@@ -97,7 +97,7 @@ import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 
-import { exec } from "child_process";
+import { exec, spawnSync } from "child_process";
 
 dotenv.config();
 
@@ -125,7 +125,11 @@ const app = express();
 // v94 — numéro aligné sur l'App (correctif v93 côté App uniquement).
 // v95 — le tri d'une photo douteuse envoyée par l'app passe en détail d'image bas.
 // v96 — /renommer-oeuvres/proposer : les œuvres d'un lot sont nommées toutes en même temps.
-const VERSION_PHOTOCARTEL = "v97";
+// v99 — préparation des voyages (« node server.js --preparer », lancé par
+// Preparer_voyages_PhotoCartel.cmd) : JSON de visite et de voyage, récapitulatif des
+// incohérences ; l'index lit les fiches de visite au lieu de rouvrir les photos, et le
+// voyage d'une visite dans son JSON. Lecture des noms reprise de l'App, à l'identique.
+const VERSION_PHOTOCARTEL = "v100";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1924,11 +1928,13 @@ function timestampVersDate(timestamp) {
 
 // Interne — heure de prise de vue lue dans l'EXIF (DateTimeOriginal, sinon DateTime).
 // Lecture directe de l'en-tete JPEG, sans dependance nouvelle. Renvoie "AAAAMMJJHHMMSS" ou "".
-function lireHorodatageExifPriseDeVue(cheminFichier) {
+// v99 — taille lue facultative : la préparation des voyages lit 96 Ko (le bloc EXIF
+// d'une photo tient en 64 Ko) ; le renommage garde ses 256 Ko.
+function lireHorodatageExifPriseDeVue(cheminFichier, tailleLecture = 262144) {
   try {
     if (!cheminFichier || !fs.existsSync(cheminFichier)) return "";
     const fd = fs.openSync(cheminFichier, "r");
-    const tampon = Buffer.alloc(262144);
+    const tampon = Buffer.alloc(tailleLecture);
     const lus = fs.readSync(fd, tampon, 0, tampon.length, 0);
     fs.closeSync(fd);
     const b = tampon.subarray(0, lus);
@@ -6301,6 +6307,9 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
   const cheminsListes = Array.isArray(parcours?.dossiers) ? parcours.dossiers : [];
   const photosListees = Array.isArray(parcours?.photos) ? parcours.photos : [];
   const listeFiches = Array.isArray(fiches) ? fiches : [];
+  // v99 — voyage d'une visite, lu dans son _PhotoCartel_visite.json : { chemin: voyage }.
+  const voyagesParChemin =
+    parcours?.voyages && typeof parcours.voyages === "object" ? parcours.voyages : {};
 
   const dossiers = [];
   const positionParChemin = new Map();
@@ -6311,7 +6320,12 @@ function construireContenuIndexRecherche(parcours, fiches, versionApplication) {
     const coupure = valeur.lastIndexOf("/");
     const parent = coupure > 0 ? ajouterDossier(valeur.slice(0, coupure)) : -1;
     const position = dossiers.length;
-    dossiers.push({ chemin: valeur, nom: valeur.slice(coupure + 1), parent });
+    const voyage = String(voyagesParChemin[valeur] || "").trim();
+    dossiers.push(
+      voyage
+        ? { chemin: valeur, nom: valeur.slice(coupure + 1), parent, voyage }
+        : { chemin: valeur, nom: valeur.slice(coupure + 1), parent }
+    );
     positionParChemin.set(valeur, position);
     return position;
   };
@@ -6436,6 +6450,7 @@ function lireEntreesDepuisContenuIndexRecherche(contenu) {
     chemin: String(dossier?.chemin || ""),
     nom: String(dossier?.nom || ""),
     parent: Number.isInteger(dossier?.parent) ? dossier.parent : -1,
+    voyage: String(dossier?.voyage || ""),
   }));
   const photos = contenu.photos
     .filter((photo) => photo && typeof photo === "object" && photo.nom)
@@ -6496,7 +6511,9 @@ function horodatageDepuisNomRecherche(nomFichier) {
 // quelque chose, sans comparer les textes.
 function signatureIndexRecherche(index) {
   if (!index) return "";
-  const dossiers = (index.dossiers || []).map((dossier) => dossier.chemin).join("|");
+  const dossiers = (index.dossiers || [])
+    .map((dossier) => (dossier.voyage ? `${dossier.chemin}>${dossier.voyage}` : dossier.chemin))
+    .join("|");
   const photos = (index.photos || [])
     .map((photo) => `${photo.dossier}:${photo.nom}:${photo.nomJson || ""}`)
     .join("|");
@@ -6670,6 +6687,753 @@ function construireContenuMotsAjoutes(motsParDossier, versionApplication) {
     }),
   };
 }
+
+// ————————————————————————————————————————————————————————————————————————
+// v99 — LECTURE DES NOMS (pays, villes, sujet, rang) reprise de App.jsx, caractère
+// pour caractère : la préparation des voyages sur le PC lit les noms exactement
+// comme le moteur de recherche de l'app.
+// ————————————————————————————————————————————————————————————————————————
+
+const NIVEAU_RECHERCHE_NOM = 1;
+const NIVEAU_RECHERCHE_FICHE = 2;
+const NIVEAU_RECHERCHE_DOSSIER = 3;
+const NIVEAU_RECHERCHE_AJOUTE = 4;
+const NIVEAU_RECHERCHE_SUJET = 5;
+const NIVEAU_RECHERCHE_ARTISTE_DOSSIER = 6;
+const NIVEAU_RECHERCHE_APPROCHE = 7;
+const NIVEAU_RECHERCHE_MARQUEUR = 8;
+const NIVEAU_RECHERCHE_AUCUN = 255;
+
+const LIBELLES_ORIGINE_RECHERCHE = {
+  [NIVEAU_RECHERCHE_NOM]: "nom de la photo",
+  [NIVEAU_RECHERCHE_FICHE]: "fiche d’analyse",
+  [NIVEAU_RECHERCHE_DOSSIER]: "nom du dossier",
+  [NIVEAU_RECHERCHE_AJOUTE]: "ajouté par toi",
+  [NIVEAU_RECHERCHE_SUJET]: "même sujet",
+  [NIVEAU_RECHERCHE_ARTISTE_DOSSIER]: "artiste trouvé dans le dossier",
+  [NIVEAU_RECHERCHE_APPROCHE]: "correspondance approchée",
+  [NIVEAU_RECHERCHE_MARQUEUR]: "marqueur de travail",
+};
+
+// Mots sans valeur dans une saisie : exigés en ET, ils feraient rendre zéro
+// résultat à « toutes mes peintures de Rembrandt » (constaté sur la v77).
+const MOTS_VIDES_RECHERCHE = new Set([
+  "les", "des", "une", "aux", "mes", "tes", "ses", "nos", "vos", "leur", "leurs",
+  "tout", "tous", "toute", "toutes", "sur", "sous", "dans", "avec", "pour", "par",
+  "sans", "chez", "entre", "vers", "que", "qui", "quoi", "dont", "est", "sont",
+  "mon", "ton", "son", "cet", "cette", "ces", "ceux", "celle", "celles",
+  "photo", "photos", "image", "images", "cherche", "trouve", "montre", "voir",
+  "the", "and", "del", "los", "las", "della", "degli",
+]);
+
+// Marqueurs de travail relevés dans les noms de Vincent (init2, FAIT, DEF2,
+// LIGHT). Un nombre qui suit immédiatement un marqueur en fait partie.
+const MARQUEURS_TRAVAIL_RECHERCHE = new Set(["init", "fait", "def", "light"]);
+
+// Cadrages en fin de nom : ils distinguent les prises d'un même sujet.
+const CADRAGES_RECHERCHE = new Set([
+  "ext", "exterieur", "exterieure", "int", "interieur", "interieure",
+  "detail", "details", "zoom", "pano", "panorama", "panoramique",
+]);
+
+// Préfixes d'appareil : un nom réduit à l'un d'eux ne désigne aucun sujet.
+const PREFIXES_APPAREIL_RECHERCHE = new Set([
+  "img", "dsc", "dscn", "dscf", "pxl", "mvimg", "wp", "imag", "photo", "image",
+  "screenshot", "capture", "pict", "p", "vid", "burst", "sam", "gopr", "dji",
+]);
+
+// Lexique d'équivalences embarqué (périmètre v78, point 4). Chaque groupe
+// liste des mots normalisés et au singulier ; une saisie qui est l'un d'eux
+// trouve aussi tous les autres, au rang « correspondance approchée ».
+const LEXIQUE_EQUIVALENCES_RECHERCHE = [
+  ["place", "plaza", "piazza", "praca", "platz", "square", "plein", "placa", "praza"],
+  ["arme", "armas", "arma", "armi", "arm", "arms"],
+  ["cathedrale", "catedral", "cattedrale", "cathedral", "kathedrale", "duomo", "dom", "se"],
+  ["eglise", "iglesia", "chiesa", "church", "kirche", "igreja", "kerk", "kosciol"],
+  ["basilique", "basilica", "basilika", "basiliek"],
+  ["chapelle", "capilla", "cappella", "chapel", "kapelle", "capela"],
+  ["musee", "museo", "museum", "museu", "muzeum", "musei"],
+  ["chateau", "castillo", "castello", "castle", "schloss", "castelo", "burg", "kasteel", "zamek"],
+  ["palais", "palacio", "palazzo", "palace", "palast", "paleis"],
+  ["jardin", "giardino", "garden", "garten", "jardim", "tuin", "gardens"],
+  ["parc", "parque", "parco", "park"],
+  ["pont", "puente", "ponte", "bridge", "brucke", "brug", "most"],
+  ["tour", "torre", "tower", "turm", "toren"],
+  ["rue", "calle", "via", "street", "strasse", "rua", "straat"],
+  ["fontaine", "fuente", "fontana", "fountain", "brunnen", "fonte"],
+  ["cloitre", "claustro", "chiostro", "cloister", "kreuzgang"],
+  ["monastere", "monasterio", "monastero", "monastery", "kloster", "mosteiro", "abbaye", "abbey", "abadia", "abbazia"],
+  ["couvent", "convento", "convent"],
+  ["mer", "mar", "mare", "sea", "meer"],
+  ["lac", "lago", "lake", "meer"],
+  ["plage", "playa", "spiaggia", "beach", "praia", "strand"],
+  ["port", "puerto", "porto", "harbour", "harbor", "hafen", "haven"],
+  ["ile", "isla", "isola", "island", "insel", "ilha", "eiland"],
+  ["montagne", "montana", "montagna", "mountain", "berg", "montanha"],
+  ["vieux", "vieille", "viejo", "vieja", "vecchio", "vecchia", "old", "alt", "velho", "velha"],
+  ["gare", "estacion", "stazione", "station", "bahnhof", "estacao"],
+  ["marche", "mercado", "mercato", "market", "markt"],
+  ["theatre", "teatro", "theater"],
+  ["temple", "templo", "tempio", "tempel"],
+  ["mosquee", "mezquita", "moschea", "mosque", "moschee", "mesquita"],
+  ["peinture", "pintura", "pittura", "painting", "gemalde", "schilderij", "tableau", "dipinto"],
+  ["sculpture", "escultura", "scultura", "skulptur", "beeld"],
+  ["statue", "estatua", "statua", "standbild"],
+  ["dinosaure", "dinosaurio", "dinosauro", "dinosaur", "dinosaurier"],
+  ["saint", "san", "santo", "santa", "sankt", "sao"],
+  ["hotel", "hostal", "albergo"],
+  ["phare", "faro", "lighthouse", "leuchtturm", "farol"],
+  ["cascade", "cascada", "cascata", "waterfall", "wasserfall"],
+  ["grotte", "cueva", "grotta", "cave", "hohle"],
+  ["mur", "muralla", "muro", "wall", "mauer", "muraille", "remparts", "rempart"],
+  ["hopital", "hospital", "ospedale"],
+  ["universite", "universidad", "universita", "university", "universitat"],
+  ["bibliotheque", "biblioteca", "library", "bibliothek"],
+  ["hotel de ville", "ayuntamiento", "municipio", "rathaus", "mairie", "town hall"],
+];
+
+// Pays : [nom canonique affiché, variantes...]. Reconnaissance par le
+// contenu, jamais par la place du mot dans le nom (point 2 de la v78).
+// v97 — liste complète des pays (et des territoires lointains souvent nommés
+// seuls) : un pays absent de la liste n'apparaissait jamais dans les critères.
+const PAYS_RECHERCHE = [
+  ["Afghanistan", "afghanistan"], ["Afrique du Sud", "afrique du sud", "south africa", "suid afrika"],
+  ["Albanie", "albanie", "albania", "shqiperia"], ["Algérie", "algerie", "algeria"], ["Allemagne", "allemagne", "deutschland", "germany"],
+  ["Andorre", "andorre", "andorra"], ["Angola", "angola"], ["Antigua-et-Barbuda", "antigua"], ["Arabie saoudite", "arabie saoudite", "saudi arabia"],
+  ["Argentine", "argentine", "argentina"], ["Arménie", "armenie", "armenia", "hayastan"], ["Australie", "australie", "australia"],
+  ["Autriche", "autriche", "osterreich", "austria"], ["Azerbaïdjan", "azerbaidjan", "azerbaijan"], ["Bahamas", "bahamas"],
+  ["Bahreïn", "bahrein", "bahrain"], ["Bangladesh", "bangladesh"], ["Barbade", "barbade", "barbados"], ["Belgique", "belgique", "belgie", "belgium"],
+  ["Belize", "belize"], ["Bénin", "benin"], ["Bhoutan", "bhoutan", "bhutan"], ["Biélorussie", "bielorussie", "belarus"],
+  ["Birmanie", "birmanie", "myanmar"], ["Bolivie", "bolivie", "bolivia"], ["Bosnie-Herzégovine", "bosnie", "bosnia", "herzegovine", "herzegovina"],
+  ["Botswana", "botswana"], ["Brésil", "bresil", "brasil", "brazil"], ["Brunei", "brunei"], ["Bulgarie", "bulgarie", "bulgaria"],
+  ["Burkina Faso", "burkina faso", "burkina"], ["Burundi", "burundi"], ["Cambodge", "cambodge", "cambodia", "kampuchea"],
+  ["Cameroun", "cameroun", "cameroon"], ["Canada", "canada"], ["Cap-Vert", "cap vert", "cabo verde", "cape verde"],
+  ["Centrafrique", "centrafrique", "republique centrafricaine", "central african republic"], ["Chili", "chili", "chile"],
+  ["Chine", "chine", "china", "zhongguo"], ["Chypre", "chypre", "cyprus"], ["Colombie", "colombie", "colombia"], ["Comores", "comores", "comoros"],
+  ["Congo", "congo", "republique du congo"], ["République démocratique du Congo", "rdc", "republique democratique du congo", "congo kinshasa"],
+  ["Corée du Nord", "coree du nord", "north korea"], ["Corée du Sud", "coree du sud", "coree", "south korea", "korea"], ["Costa Rica", "costa rica"],
+  ["Côte d'Ivoire", "cote d ivoire", "cote divoire", "ivory coast"], ["Croatie", "croatie", "hrvatska", "croatia"], ["Cuba", "cuba"],
+  ["Danemark", "danemark", "danmark", "denmark"], ["Djibouti", "djibouti"], ["Dominique", "ile de la dominique", "dominica"],
+  ["Égypte", "egypte", "egypt", "misr"], ["Émirats arabes unis", "emirats", "emirates", "emirats arabes unis", "dubai", "abu dhabi"],
+  ["Équateur", "equateur", "ecuador"], ["Érythrée", "erythree", "eritrea"], ["Espagne", "espagne", "espana", "spain"],
+  ["Estonie", "estonie", "eesti", "estonia"], ["Eswatini", "eswatini", "swaziland"], ["États-Unis", "etats unis", "usa", "united states"],
+  ["Éthiopie", "ethiopie", "ethiopia"], ["Fidji", "fidji", "fiji"], ["Finlande", "finlande", "suomi", "finland"], ["France", "france", "french"],
+  ["Gabon", "gabon"], ["Gambie", "gambie", "gambia"], ["Géorgie", "georgie", "sakartvelo"], ["Ghana", "ghana"],
+  ["Grèce", "grece", "hellas", "greece"], ["Grenade (pays)", "ile de la grenade"], ["Guatemala", "guatemala"], ["Guinée", "guinee", "guinea"],
+  ["Guinée-Bissau", "guinee bissau", "guinea bissau"], ["Guinée équatoriale", "guinee equatoriale", "equatorial guinea"], ["Guyana", "guyana"],
+  ["Haïti", "haiti"], ["Honduras", "honduras"], ["Hongrie", "hongrie", "magyarorszag", "hungary"], ["Inde", "inde", "india"],
+  ["Indonésie", "indonesie", "indonesia", "bali", "java", "sumatra"], ["Irak", "irak", "iraq"], ["Iran", "iran"],
+  ["Irlande", "irlande", "ireland", "eire"], ["Islande", "islande", "iceland"], ["Israël", "israel"], ["Italie", "italie", "italia", "italy"],
+  ["Jamaïque", "jamaique", "jamaica"], ["Japon", "japon", "japan", "nippon", "nihon"], ["Jordanie", "jordanie", "jordan"],
+  ["Kazakhstan", "kazakhstan"], ["Kenya", "kenya"], ["Kirghizistan", "kirghizistan", "kyrgyzstan"], ["Kiribati", "kiribati"], ["Kosovo", "kosovo"],
+  ["Koweït", "koweit", "kuwait"], ["Laos", "laos"], ["Lesotho", "lesotho"], ["Lettonie", "lettonie", "latvija", "latvia"],
+  ["Liban", "liban", "lebanon"], ["Liberia", "liberia"], ["Libye", "libye", "libya"], ["Liechtenstein", "liechtenstein"],
+  ["Lituanie", "lituanie", "lietuva", "lithuania"], ["Luxembourg", "luxembourg"], ["Macédoine du Nord", "macedoine", "macedonia"],
+  ["Madagascar", "madagascar"], ["Malaisie", "malaisie", "malaysia"], ["Malawi", "malawi"], ["Maldives", "maldives"], ["Mali", "mali"],
+  ["Malte", "malte", "malta"], ["Maroc", "maroc", "morocco"], ["Maurice", "ile maurice", "mauritius"], ["Mauritanie", "mauritanie", "mauritania"],
+  ["Mexique", "mexique", "mexico"], ["Moldavie", "moldavie", "moldova"], ["Monaco", "monaco"], ["Mongolie", "mongolie", "mongolia"],
+  ["Monténégro", "montenegro", "crna gora"], ["Mozambique", "mozambique"], ["Namibie", "namibie", "namibia"], ["Népal", "nepal"],
+  ["Nicaragua", "nicaragua"], ["Niger", "niger"], ["Nigeria", "nigeria"], ["Norvège", "norvege", "norge", "norway"],
+  ["Nouvelle-Zélande", "nouvelle zelande", "new zealand", "aotearoa"], ["Oman", "oman"], ["Ouganda", "ouganda", "uganda"],
+  ["Ouzbékistan", "ouzbekistan", "uzbekistan"], ["Pakistan", "pakistan"], ["Palestine", "palestine", "cisjordanie", "gaza"], ["Panama", "panama"],
+  ["Papouasie-Nouvelle-Guinée", "papouasie", "papua"], ["Paraguay", "paraguay"], ["Pays-Bas", "pays bas", "hollande", "nederland", "netherlands"],
+  ["Pérou", "perou", "peru"], ["Philippines", "philippines", "pilipinas"], ["Pologne", "pologne", "polska", "poland"], ["Portugal", "portugal"],
+  ["Qatar", "qatar"], ["République dominicaine", "republique dominicaine", "dominican republic"], ["Roumanie", "roumanie", "romania"],
+  ["Royaume-Uni", "royaume uni", "angleterre", "ecosse", "pays de galles", "irlande du nord", "england", "scotland", "wales", "united kingdom"],
+  ["Russie", "russie", "rossiya", "russia"], ["Rwanda", "rwanda"], ["Sainte-Lucie", "sainte lucie", "saint lucia"], ["Salvador", "el salvador"],
+  ["Samoa", "samoa"], ["Sao Tomé-et-Principe", "sao tome"], ["Sénégal", "senegal"], ["Serbie", "serbie", "srbija", "serbia"],
+  ["Seychelles", "seychelles"], ["Sierra Leone", "sierra leone"], ["Singapour", "singapour", "singapore"],
+  ["Slovaquie", "slovaquie", "slovensko", "slovakia"], ["Slovénie", "slovenie", "slovenija", "slovenia"], ["Somalie", "somalie", "somalia"],
+  ["Soudan", "soudan", "sudan"], ["Soudan du Sud", "soudan du sud", "south sudan"], ["Sri Lanka", "sri lanka"],
+  ["Suède", "suede", "sverige", "sweden"], ["Suisse", "suisse", "schweiz", "svizzera", "switzerland"], ["Suriname", "suriname"],
+  ["Syrie", "syrie", "syria"], ["Tadjikistan", "tadjikistan", "tajikistan"], ["Taïwan", "taiwan"], ["Tanzanie", "tanzanie", "tanzania", "zanzibar"],
+  ["Tchad", "tchad"], ["Tchéquie", "tchequie", "republique tcheque", "czechia", "czech republic"], ["Thaïlande", "thailande", "thailand"],
+  ["Timor oriental", "timor"], ["Togo", "togo"], ["Tonga", "tonga"], ["Trinité-et-Tobago", "trinite et tobago", "trinidad and tobago"],
+  ["Tunisie", "tunisie", "tunisia"], ["Turkménistan", "turkmenistan"], ["Turquie", "turquie", "turkiye", "turkey"],
+  ["Ukraine", "ukraine", "ukraina"], ["Uruguay", "uruguay"], ["Vanuatu", "vanuatu"], ["Vatican", "vatican"], ["Venezuela", "venezuela"],
+  ["Vietnam", "vietnam", "viet nam"], ["Yémen", "yemen"], ["Zambie", "zambie", "zambia"], ["Zimbabwe", "zimbabwe"],
+  ["Polynésie française", "polynesie", "tahiti", "bora bora", "moorea"], ["Nouvelle-Calédonie", "nouvelle caledonie", "new caledonia"],
+  ["La Réunion", "la reunion", "ile de la reunion"], ["Martinique", "martinique"], ["Guadeloupe", "guadeloupe"], ["Guyane", "guyane"],
+  ["Groenland", "groenland", "greenland"], ["Porto Rico", "porto rico", "puerto rico"], ["Hong Kong", "hong kong"], ["Macao", "macao", "macau"],
+];
+
+// Villes : liste embarquée, en français et en langue locale. Un mot non
+// reconnu reste cherchable ; il n'alimente simplement pas la pastille.
+const VILLES_RECHERCHE = [
+  ["Paris", "paris"], ["Lyon", "lyon"], ["Marseille", "marseille"], ["Bordeaux", "bordeaux"], ["Nice", "nice"], ["Strasbourg", "strasbourg"],
+  ["Toulouse", "toulouse"], ["Lille", "lille"], ["Nantes", "nantes"], ["Deauville", "deauville"], ["Villers-sur-Mer", "villers sur mer"],
+  ["Madrid", "madrid"], ["Barcelone", "barcelone", "barcelona"], ["Séville", "seville", "sevilla"], ["Grenade", "grenade", "granada"],
+  ["Cordoue", "cordoue", "cordoba"], ["Valence", "valence", "valencia"], ["Bilbao", "bilbao"], ["Saint-Jacques-de-Compostelle", "compostelle", "santiago de compostela"],
+  ["Tolède", "tolede", "toledo"], ["Salamanque", "salamanque", "salamanca"], ["Saint-Sébastien", "san sebastian", "donostia"],
+  ["Rome", "rome", "roma"], ["Florence", "florence", "firenze"], ["Venise", "venise", "venezia", "venice"], ["Milan", "milan", "milano"],
+  ["Naples", "naples", "napoli"], ["Bologne", "bologne", "bologna"], ["Turin", "turin", "torino"], ["Pise", "pise", "pisa"],
+  ["Sienne", "sienne", "siena"], ["Vérone", "verone", "verona"], ["Gênes", "genes", "genova"], ["Palerme", "palerme", "palermo"],
+  ["Lisbonne", "lisbonne", "lisboa", "lisbon"], ["Porto", "porto", "oporto"], ["Sintra", "sintra"],
+  ["Berlin", "berlin"], ["Munich", "munich", "munchen"], ["Francfort", "francfort", "frankfurt"], ["Hambourg", "hambourg", "hamburg"],
+  ["Cologne", "cologne", "koln"], ["Dresde", "dresde", "dresden"], ["Bruxelles", "bruxelles", "brussel", "brussels"], ["Bruges", "bruges", "brugge"],
+  ["Gand", "gand", "gent"], ["Anvers", "anvers", "antwerpen"], ["Amsterdam", "amsterdam"], ["Rotterdam", "rotterdam"], ["La Haye", "la haye", "den haag"],
+  ["Genève", "geneve", "geneva"], ["Zurich", "zurich"], ["Vienne", "vienne", "wien", "vienna"], ["Salzbourg", "salzbourg", "salzburg"],
+  ["Londres", "londres", "london"], ["Édimbourg", "edimbourg", "edinburgh"], ["Dublin", "dublin"], ["Stockholm", "stockholm"],
+  ["Oslo", "oslo"], ["Copenhague", "copenhague", "kobenhavn", "copenhagen"], ["Helsinki", "helsinki"], ["Reykjavik", "reykjavik"],
+  ["Prague", "prague", "praha"], ["Budapest", "budapest"], ["Varsovie", "varsovie", "warszawa", "warsaw"], ["Cracovie", "cracovie", "krakow"],
+  ["Athènes", "athenes", "athina", "athens"], ["Dubrovnik", "dubrovnik"], ["Split", "split"], ["Istanbul", "istanbul"],
+  ["Saint-Pétersbourg", "saint petersbourg", "st petersburg"], ["Moscou", "moscou", "moskva", "moscow"],
+  ["Marrakech", "marrakech", "marrakesh"], ["Fès", "fes", "fez"], ["Le Caire", "le caire", "cairo"], ["Louxor", "louxor", "luxor"],
+  ["Jérusalem", "jerusalem"], ["Petra", "petra"], ["Dubaï", "dubai"],
+  ["Tokyo", "tokyo"], ["Kyoto", "kyoto"], ["Osaka", "osaka"], ["Hiroshima", "hiroshima"], ["Nara", "nara"], ["Miyajima", "miyajima"],
+  ["Pékin", "pekin", "beijing"], ["Shanghai", "shanghai"], ["Hong Kong", "hong kong"], ["Séoul", "seoul"],
+  ["Bangkok", "bangkok"], ["Chiang Mai", "chiang mai"], ["Chiang Rai", "chiang rai", "chian rai"], ["Phuket", "phuket"], ["Ayutthaya", "ayutthaya"],
+  ["Siem Reap", "siem reap"], ["Angkor", "angkor"], ["Phnom Penh", "phnom penh"], ["Hanoï", "hanoi"], ["Hô Chi Minh-Ville", "ho chi minh", "saigon"],
+  ["Luang Prabang", "luang prabang"], ["Singapour", "singapour", "singapore"], ["Kuala Lumpur", "kuala lumpur"], ["Bali", "bali"],
+  ["Delhi", "delhi"], ["Agra", "agra"], ["Jaipur", "jaipur"], ["Bombay", "bombay", "mumbai"], ["Katmandou", "katmandou", "kathmandu"],
+  ["Sydney", "sydney"], ["Melbourne", "melbourne"],
+  ["New York", "new york"], ["Washington", "washington"], ["San Francisco", "san francisco"], ["Los Angeles", "los angeles"],
+  ["Chicago", "chicago"], ["Boston", "boston"], ["La Nouvelle-Orléans", "nouvelle orleans", "new orleans"], ["Las Vegas", "las vegas"],
+  ["Montréal", "montreal"], ["Québec", "quebec"], ["Toronto", "toronto"], ["Vancouver", "vancouver"], ["Calgary", "calgary"],
+  ["Banff", "banff"], ["Lake Louise", "lake louise"], ["Drumheller", "drumheller"],
+  ["Mexico", "ciudad de mexico"], ["Oaxaca", "oaxaca"], ["La Havane", "la havane", "habana", "havana"],
+  ["Cusco", "cusco", "cuzco"], ["Lima", "lima"], ["Arequipa", "arequipa"], ["Machu Picchu", "machu picchu"],
+  ["La Paz", "la paz"], ["Sucre", "sucre"], ["Potosí", "potosi"], ["Uyuni", "uyuni"],
+  ["Santiago du Chili", "santiago du chili", "santiago de chile"], ["Valparaiso", "valparaiso"], ["San Pedro de Atacama", "san pedro de atacama", "atacama"],
+  ["Buenos Aires", "buenos aires"], ["Ushuaïa", "ushuaia"], ["Iguazú", "iguazu", "iguacu"],
+  ["Rio de Janeiro", "rio de janeiro", "rio"], ["Copacabana", "copacabana"], ["São Paulo", "sao paulo"], ["Salvador", "salvador de bahia"],
+  ["Encarnación", "encarnacion"], ["Asunción", "asuncion"], ["Montevideo", "montevideo"], ["Bogota", "bogota"], ["Carthagène", "carthagene", "cartagena"],
+  ["Quito", "quito"],
+  // v97 — villes ajoutées : capitales et villes de voyage (Ljubljana, etc.).
+  ["Avignon", "avignon"], ["Arles", "arles"], ["Nîmes", "nimes"], ["Montpellier", "montpellier"], ["Aix-en-Provence", "aix en provence"],
+  ["Carcassonne", "carcassonne"], ["Rouen", "rouen"], ["Reims", "reims"], ["Dijon", "dijon"], ["Annecy", "annecy"], ["Grenoble", "grenoble"],
+  ["Colmar", "colmar"], ["Rennes", "rennes"], ["Saint-Malo", "saint malo"], ["Honfleur", "honfleur"], ["Étretat", "etretat"], ["Giverny", "giverny"],
+  ["Versailles", "versailles"], ["Fontainebleau", "fontainebleau"], ["Chartres", "chartres"], ["Amiens", "amiens"], ["Biarritz", "biarritz"],
+  ["Cannes", "cannes"], ["Antibes", "antibes"], ["Menton", "menton"], ["Ajaccio", "ajaccio"], ["Bastia", "bastia"], ["Albi", "albi"],
+  ["Rocamadour", "rocamadour"], ["Sarlat", "sarlat"], ["Le Havre", "le havre"], ["Caen", "caen"], ["Bayeux", "bayeux"], ["Metz", "metz"],
+  ["Nancy", "nancy"], ["Clermont-Ferrand", "clermont ferrand"], ["Mont-Saint-Michel", "mont saint michel"], ["Malaga", "malaga"], ["Ronda", "ronda"],
+  ["Cadix", "cadix", "cadiz"], ["Ségovie", "segovie", "segovia"], ["Ávila", "avila"], ["Cuenca", "cuenca"], ["Saragosse", "saragosse", "zaragoza"],
+  ["Palma de Majorque", "palma de majorque", "palma de mallorca"], ["Ibiza", "ibiza"], ["Mérida", "merida"], ["Cáceres", "caceres"],
+  ["Burgos", "burgos"], ["Oviedo", "oviedo"], ["Pampelune", "pampelune", "pamplona"], ["Tarragone", "tarragone", "tarragona"],
+  ["Gérone", "gerone", "girona"], ["Figueras", "figueras", "figueres"], ["Alicante", "alicante"], ["Jerez", "jerez"], ["Úbeda", "ubeda"],
+  ["Almería", "almeria"], ["Coimbra", "coimbra"], ["Évora", "evora"], ["Faro", "faro de algarve"], ["Óbidos", "obidos"], ["Braga", "braga"],
+  ["Funchal", "funchal"], ["Madère", "madere", "madeira"], ["Assise", "assise", "assisi"], ["Pérouse", "perouse", "perugia"],
+  ["Ravenne", "ravenne", "ravenna"], ["Padoue", "padoue", "padova"], ["Mantoue", "mantoue", "mantova"], ["Lucques", "lucques", "lucca"],
+  ["San Gimignano", "san gimignano"], ["Orvieto", "orvieto"], ["Pompéi", "pompei", "pompeii"], ["Amalfi", "amalfi"],
+  ["Sorrente", "sorrente", "sorrento"], ["Capri", "capri"], ["Bari", "bari"], ["Lecce", "lecce"], ["Matera", "matera"],
+  ["Syracuse", "syracuse", "siracusa"], ["Catane", "catane", "catania"], ["Taormine", "taormine", "taormina"],
+  ["Agrigente", "agrigente", "agrigento"], ["Cagliari", "cagliari"], ["Trieste", "trieste"], ["Côme", "come", "como"],
+  ["Bergame", "bergame", "bergamo"], ["Parme", "parme", "parma"], ["Modène", "modene", "modena"], ["Ferrare", "ferrare", "ferrara"],
+  ["Urbino", "urbino"], ["Cinque Terre", "cinque terre"], ["Ljubljana", "ljubljana"], ["Bled", "bled"], ["Piran", "piran"], ["Zagreb", "zagreb"],
+  ["Zadar", "zadar"], ["Šibenik", "sibenik"], ["Belgrade", "belgrade", "beograd"], ["Sarajevo", "sarajevo"], ["Mostar", "mostar"],
+  ["Kotor", "kotor"], ["Tirana", "tirana"], ["Skopje", "skopje"], ["Ohrid", "ohrid"], ["Sofia", "sofia bulgarie", "sofia bulgaria"],
+  ["Plovdiv", "plovdiv"], ["Bucarest", "bucarest", "bucuresti", "bucharest"], ["Brasov", "brasov"], ["Sibiu", "sibiu"], ["Bratislava", "bratislava"],
+  ["Brno", "brno"], ["Český Krumlov", "cesky krumlov"], ["Wroclaw", "wroclaw"], ["Gdansk", "gdansk"], ["Poznan", "poznan"], ["Vilnius", "vilnius"],
+  ["Riga", "riga"], ["Tallinn", "tallinn"], ["Kiev", "kiev", "kyiv"], ["Lviv", "lviv", "lvov"], ["Minsk", "minsk"], ["Innsbruck", "innsbruck"],
+  ["Graz", "graz"], ["Hallstatt", "hallstatt"], ["Berne", "berne", "bern"], ["Bâle", "bale", "basel"], ["Lausanne", "lausanne"],
+  ["Lucerne", "lucerne", "luzern"], ["Lugano", "lugano"], ["Heidelberg", "heidelberg"], ["Nuremberg", "nuremberg", "nurnberg"],
+  ["Stuttgart", "stuttgart"], ["Leipzig", "leipzig"], ["Potsdam", "potsdam"], ["Weimar", "weimar"], ["Rothenburg", "rothenburg"],
+  ["Aix-la-Chapelle", "aix la chapelle", "aachen"], ["Düsseldorf", "dusseldorf"], ["Brême", "breme", "bremen"], ["Lübeck", "lubeck"],
+  ["Utrecht", "utrecht"], ["Delft", "delft"], ["Haarlem", "haarlem"], ["Leyde", "leyde", "leiden"], ["Maastricht", "maastricht"], ["Liège", "liege"],
+  ["Namur", "namur"], ["Louvain", "louvain", "leuven"], ["Malines", "malines", "mechelen"], ["Luxembourg-Ville", "luxembourg ville"],
+  ["Manchester", "manchester"], ["Liverpool", "liverpool"], ["Oxford", "oxford"], ["Cambridge", "cambridge"], ["York", "york"], ["Bath", "bath"],
+  ["Glasgow", "glasgow"], ["Belfast", "belfast"], ["Cardiff", "cardiff"], ["Cork", "cork"], ["Galway", "galway"], ["Bergen", "bergen"],
+  ["Tromsø", "tromso"], ["Göteborg", "goteborg", "gothenburg"], ["Malmö", "malmo"], ["Aarhus", "aarhus"], ["Turku", "turku"],
+  ["Rovaniemi", "rovaniemi"], ["Thessalonique", "thessalonique", "thessaloniki"], ["Santorin", "santorin", "santorini"], ["Mykonos", "mykonos"],
+  ["Rhodes", "rhodes"], ["Héraklion", "heraklion"], ["La Canée", "la canee", "chania"], ["Corfou", "corfou", "corfu"],
+  ["Delphes", "delphes", "delphi"], ["Nauplie", "nauplie", "nafplio"], ["Météores", "meteores", "meteora"], ["La Valette", "la valette", "valletta"],
+  ["Nicosie", "nicosie", "nicosia"], ["Ankara", "ankara"], ["Cappadoce", "cappadoce", "cappadocia"], ["Éphèse", "ephese", "ephesus"],
+  ["Izmir", "izmir"], ["Antalya", "antalya"], ["Tel Aviv", "tel aviv"], ["Haïfa", "haifa"], ["Bethléem", "bethleem", "bethlehem"],
+  ["Amman", "amman"], ["Beyrouth", "beyrouth", "beirut"], ["Byblos", "byblos"], ["Damas", "damas", "damascus"], ["Mascate", "mascate", "muscat"],
+  ["Doha", "doha"], ["Téhéran", "teheran", "tehran"], ["Ispahan", "ispahan", "isfahan"], ["Chiraz", "chiraz", "shiraz"],
+  ["Persépolis", "persepolis"], ["Tbilissi", "tbilissi", "tbilisi"], ["Erevan", "erevan", "yerevan"], ["Bakou", "bakou", "baku"],
+  ["Samarcande", "samarcande", "samarkand"], ["Boukhara", "boukhara", "bukhara"], ["Khiva", "khiva"], ["Tachkent", "tachkent", "tashkent"],
+  ["Rabat", "rabat"], ["Casablanca", "casablanca"], ["Tanger", "tanger", "tangier"], ["Chefchaouen", "chefchaouen"], ["Essaouira", "essaouira"],
+  ["Meknès", "meknes"], ["Ouarzazate", "ouarzazate"], ["Agadir", "agadir"], ["Tunis", "tunis"], ["Carthage", "carthage"],
+  ["Sidi Bou Saïd", "sidi bou said"], ["Djerba", "djerba"], ["Kairouan", "kairouan"], ["Alger", "alger", "algiers"], ["Oran", "oran"],
+  ["Alexandrie", "alexandrie", "alexandria"], ["Assouan", "assouan", "aswan"], ["Abou Simbel", "abou simbel", "abu simbel"], ["Dakar", "dakar"],
+  ["Saint-Louis du Sénégal", "saint louis du senegal"], ["Nairobi", "nairobi"], ["Zanzibar", "stone town"], ["Arusha", "arusha"],
+  ["Le Cap", "le cap", "cape town"], ["Johannesburg", "johannesburg"], ["Durban", "durban"], ["Windhoek", "windhoek"],
+  ["Victoria Falls", "victoria falls"], ["Antananarivo", "antananarivo", "tananarive"], ["Addis-Abeba", "addis abeba", "addis ababa"],
+  ["Lalibela", "lalibela"], ["Kigali", "kigali"], ["Abidjan", "abidjan"], ["Kanazawa", "kanazawa"], ["Takayama", "takayama"], ["Nikko", "nikko"],
+  ["Hakone", "hakone"], ["Nagasaki", "nagasaki"], ["Sapporo", "sapporo"], ["Kamakura", "kamakura"], ["Yokohama", "yokohama"], ["Kobe", "kobe"],
+  ["Himeji", "himeji"], ["Fukuoka", "fukuoka"], ["Okinawa", "okinawa"], ["Busan", "busan", "pusan"], ["Gyeongju", "gyeongju"],
+  ["Xi'an", "xi an", "xian"], ["Guilin", "guilin"], ["Chengdu", "chengdu"], ["Hangzhou", "hangzhou"], ["Suzhou", "suzhou"],
+  ["Lhassa", "lhassa", "lhasa"], ["Macao-Ville", "macao ville"], ["Taipei", "taipei"], ["Oulan-Bator", "oulan bator", "ulaanbaatar"],
+  ["Sukhothai", "sukhothai"], ["Krabi", "krabi"], ["Ko Samui", "ko samui", "koh samui"], ["Pattaya", "pattaya"], ["Kanchanaburi", "kanchanaburi"],
+  ["Battambang", "battambang"], ["Vientiane", "vientiane"], ["Hué", "hue"], ["Hoi An", "hoi an"], ["Da Nang", "da nang", "danang"],
+  ["Baie d'Along", "baie d along", "ha long", "halong"], ["Yangon", "yangon", "rangoun"], ["Bagan", "bagan"], ["Mandalay", "mandalay"],
+  ["Penang", "penang", "george town"], ["Malacca", "malacca", "melaka"], ["Jakarta", "jakarta"], ["Yogyakarta", "yogyakarta", "jogjakarta"],
+  ["Ubud", "ubud"], ["Manille", "manille", "manila"], ["Cebu", "cebu"], ["Colombo", "colombo"], ["Kandy", "kandy"], ["Galle", "galle"],
+  ["Sigiriya", "sigiriya"], ["Calcutta", "calcutta", "kolkata"], ["Madras", "madras", "chennai"], ["Bangalore", "bangalore", "bengaluru"],
+  ["Goa", "goa"], ["Udaipur", "udaipur"], ["Jodhpur", "jodhpur"], ["Jaisalmer", "jaisalmer"], ["Varanasi", "varanasi", "benares", "benares"],
+  ["Amritsar", "amritsar"], ["Pokhara", "pokhara"], ["Thimphou", "thimphou", "thimphu"], ["Malé", "male maldives"], ["Dacca", "dacca", "dhaka"],
+  ["Lahore", "lahore"], ["Islamabad", "islamabad"], ["Almaty", "almaty"], ["Astana", "astana"], ["Canberra", "canberra"], ["Brisbane", "brisbane"],
+  ["Perth", "perth"], ["Adélaïde", "adelaide"], ["Cairns", "cairns"], ["Hobart", "hobart"], ["Uluru", "uluru", "ayers rock"],
+  ["Auckland", "auckland"], ["Wellington", "wellington"], ["Christchurch", "christchurch"], ["Queenstown", "queenstown"], ["Rotorua", "rotorua"],
+  ["Papeete", "papeete"], ["Nouméa", "noumea"], ["Ottawa", "ottawa"], ["Halifax", "halifax"], ["Whistler", "whistler"], ["Winnipeg", "winnipeg"],
+  ["Edmonton", "edmonton"], ["Miami", "miami"], ["Seattle", "seattle"], ["San Diego", "san diego"], ["Philadelphie", "philadelphie", "philadelphia"],
+  ["Baltimore", "baltimore"], ["Atlanta", "atlanta"], ["Houston", "houston"], ["Dallas", "dallas"], ["Denver", "denver"],
+  ["Salt Lake City", "salt lake city"], ["Nashville", "nashville"], ["Honolulu", "honolulu"], ["Anchorage", "anchorage"],
+  ["Grand Canyon", "grand canyon"], ["Yosemite", "yosemite"], ["Yellowstone", "yellowstone"], ["Cancún", "cancun"], ["Tulum", "tulum"],
+  ["Mérida du Yucatán", "merida yucatan"], ["Guadalajara", "guadalajara"], ["Puebla", "puebla"], ["Guanajuato", "guanajuato"],
+  ["San Miguel de Allende", "san miguel de allende"], ["Palenque", "palenque"], ["Chichén Itzá", "chichen itza"], ["Teotihuacán", "teotihuacan"],
+  ["San Cristóbal de las Casas", "san cristobal de las casas"], ["Antigua Guatemala", "antigua guatemala"], ["Tikal", "tikal"],
+  ["Flores", "flores guatemala"], ["San José (Costa Rica)", "san jose costa rica"], ["Monteverde", "monteverde"], ["Tortuguero", "tortuguero"],
+  ["La Fortuna", "la fortuna"], ["Puerto Viejo", "puerto viejo"], ["Granada (Nicaragua)", "granada nicaragua"],
+  ["León (Nicaragua)", "leon nicaragua"], ["Panama City", "panama city", "ciudad de panama"], ["Santo Domingo", "santo domingo", "saint domingue"],
+  ["Trinidad (Cuba)", "trinidad cuba"], ["Viñales", "vinales"], ["Santiago de Cuba", "santiago de cuba"], ["Cienfuegos", "cienfuegos"],
+  ["Varadero", "varadero"], ["Kingston", "kingston"], ["Medellín", "medellin"], ["Cali", "cali"], ["Santa Marta", "santa marta"],
+  ["Villa de Leyva", "villa de leyva"], ["Guayaquil", "guayaquil"], ["Galápagos", "galapagos"], ["Otavalo", "otavalo"], ["Caracas", "caracas"],
+  ["Puno", "puno"], ["Nazca", "nazca"], ["Trujillo", "trujillo"], ["Iquitos", "iquitos"], ["Ollantaytambo", "ollantaytambo"], ["Pisac", "pisac"],
+  ["Aguas Calientes", "aguas calientes"], ["Cochabamba", "cochabamba"], ["Santa Cruz de la Sierra", "santa cruz de la sierra"],
+  ["Tiwanaku", "tiwanaku", "tiahuanaco"], ["Rurrenabaque", "rurrenabaque"], ["Punta Arenas", "punta arenas"], ["Puerto Natales", "puerto natales"],
+  ["Torres del Paine", "torres del paine"], ["Puerto Montt", "puerto montt"], ["Viña del Mar", "vina del mar"],
+  ["Île de Pâques", "ile de paques", "easter island", "rapa nui"], ["Chiloé", "chiloe"], ["Pucón", "pucon"], ["La Serena", "la serena"],
+  ["Mendoza", "mendoza"], ["Salta", "salta"], ["Córdoba (Argentine)", "cordoba argentine"], ["Bariloche", "bariloche"],
+  ["El Calafate", "el calafate"], ["Colonia del Sacramento", "colonia del sacramento"], ["Punta del Este", "punta del este"],
+  ["Brasilia", "brasilia"], ["Manaus", "manaus"], ["Ouro Preto", "ouro preto"], ["Paraty", "paraty"], ["Florianópolis", "florianopolis"],
+  ["Recife", "recife"], ["Olinda", "olinda"], ["Fortaleza", "fortaleza"], ["Foz do Iguaçu", "foz do iguacu"], ["Ciudad del Este", "ciudad del este"],
+];
+
+// Découpe « rapide » d'un nom de photo : table des mots déjà découpés, pour
+// que 20 000 noms qui partagent les mêmes mots ne soient pas re-découpés.
+function construireTablePhrasesRecherche(liste) {
+  const table = new Map();
+  let longueurMax = 1;
+  for (let i = 0; i < liste.length; i += 1) {
+    const canonique = liste[i][0];
+    for (let j = 1; j < liste[i].length; j += 1) {
+      const mots = decouperEnMotsPhotoCartel(liste[i][j]);
+      if (mots.length === 0) continue;
+      table.set(mots.join(" "), canonique);
+      if (mots.length > longueurMax) longueurMax = mots.length;
+    }
+  }
+  return { table, longueurMax };
+}
+
+// v97 — pays d'une ville reconnue : une photo de « La Havane » est à Cuba, même si
+// son nom ne le dit pas. Les villes dont le nom existe dans plusieurs pays
+// (Valence, Mérida, Copacabana…) n'en ont aucun : rien n'est deviné.
+const PAYS_DES_VILLES_RECHERCHE = {
+  "Paris": "France", "Lyon": "France", "Marseille": "France", "Bordeaux": "France", "Nice": "France", "Strasbourg": "France", "Toulouse": "France",
+  "Lille": "France", "Nantes": "France", "Deauville": "France", "Villers-sur-Mer": "France", "Avignon": "France", "Arles": "France",
+  "Nîmes": "France", "Montpellier": "France", "Aix-en-Provence": "France", "Carcassonne": "France", "Rouen": "France", "Reims": "France",
+  "Dijon": "France", "Annecy": "France", "Grenoble": "France", "Colmar": "France", "Rennes": "France", "Saint-Malo": "France", "Honfleur": "France",
+  "Étretat": "France", "Giverny": "France", "Versailles": "France", "Fontainebleau": "France", "Chartres": "France", "Amiens": "France",
+  "Biarritz": "France", "Cannes": "France", "Antibes": "France", "Menton": "France", "Ajaccio": "France", "Bastia": "France", "Albi": "France",
+  "Rocamadour": "France", "Sarlat": "France", "Le Havre": "France", "Caen": "France", "Bayeux": "France", "Metz": "France", "Nancy": "France",
+  "Clermont-Ferrand": "France", "Mont-Saint-Michel": "France", "Madrid": "Espagne", "Barcelone": "Espagne", "Séville": "Espagne",
+  "Grenade": "Espagne", "Cordoue": "Espagne", "Bilbao": "Espagne", "Saint-Jacques-de-Compostelle": "Espagne", "Tolède": "Espagne",
+  "Salamanque": "Espagne", "Saint-Sébastien": "Espagne", "Malaga": "Espagne", "Ronda": "Espagne", "Cadix": "Espagne", "Ségovie": "Espagne",
+  "Ávila": "Espagne", "Cuenca": "Espagne", "Saragosse": "Espagne", "Palma de Majorque": "Espagne", "Ibiza": "Espagne", "Cáceres": "Espagne",
+  "Burgos": "Espagne", "Oviedo": "Espagne", "Pampelune": "Espagne", "Tarragone": "Espagne", "Gérone": "Espagne", "Figueras": "Espagne",
+  "Alicante": "Espagne", "Jerez": "Espagne", "Úbeda": "Espagne", "Almería": "Espagne", "Rome": "Italie", "Florence": "Italie", "Venise": "Italie",
+  "Milan": "Italie", "Naples": "Italie", "Bologne": "Italie", "Turin": "Italie", "Pise": "Italie", "Sienne": "Italie", "Vérone": "Italie",
+  "Gênes": "Italie", "Palerme": "Italie", "Assise": "Italie", "Pérouse": "Italie", "Ravenne": "Italie", "Padoue": "Italie", "Mantoue": "Italie",
+  "Lucques": "Italie", "San Gimignano": "Italie", "Orvieto": "Italie", "Pompéi": "Italie", "Amalfi": "Italie", "Sorrente": "Italie",
+  "Capri": "Italie", "Bari": "Italie", "Lecce": "Italie", "Matera": "Italie", "Syracuse": "Italie", "Catane": "Italie", "Taormine": "Italie",
+  "Agrigente": "Italie", "Cagliari": "Italie", "Trieste": "Italie", "Côme": "Italie", "Bergame": "Italie", "Parme": "Italie", "Modène": "Italie",
+  "Ferrare": "Italie", "Urbino": "Italie", "Cinque Terre": "Italie", "Lisbonne": "Portugal", "Porto": "Portugal", "Sintra": "Portugal",
+  "Coimbra": "Portugal", "Évora": "Portugal", "Faro": "Portugal", "Óbidos": "Portugal", "Braga": "Portugal", "Funchal": "Portugal",
+  "Madère": "Portugal", "Berlin": "Allemagne", "Munich": "Allemagne", "Francfort": "Allemagne", "Hambourg": "Allemagne", "Cologne": "Allemagne",
+  "Dresde": "Allemagne", "Heidelberg": "Allemagne", "Nuremberg": "Allemagne", "Stuttgart": "Allemagne", "Leipzig": "Allemagne",
+  "Potsdam": "Allemagne", "Weimar": "Allemagne", "Rothenburg": "Allemagne", "Aix-la-Chapelle": "Allemagne", "Düsseldorf": "Allemagne",
+  "Brême": "Allemagne", "Lübeck": "Allemagne", "Bruxelles": "Belgique", "Bruges": "Belgique", "Gand": "Belgique", "Anvers": "Belgique",
+  "Liège": "Belgique", "Namur": "Belgique", "Louvain": "Belgique", "Malines": "Belgique", "Amsterdam": "Pays-Bas", "Rotterdam": "Pays-Bas",
+  "La Haye": "Pays-Bas", "Utrecht": "Pays-Bas", "Delft": "Pays-Bas", "Haarlem": "Pays-Bas", "Leyde": "Pays-Bas", "Maastricht": "Pays-Bas",
+  "Genève": "Suisse", "Zurich": "Suisse", "Berne": "Suisse", "Bâle": "Suisse", "Lausanne": "Suisse", "Lucerne": "Suisse", "Lugano": "Suisse",
+  "Vienne": "Autriche", "Salzbourg": "Autriche", "Innsbruck": "Autriche", "Graz": "Autriche", "Hallstatt": "Autriche", "Londres": "Royaume-Uni",
+  "Édimbourg": "Royaume-Uni", "Manchester": "Royaume-Uni", "Liverpool": "Royaume-Uni", "Oxford": "Royaume-Uni", "Cambridge": "Royaume-Uni",
+  "York": "Royaume-Uni", "Bath": "Royaume-Uni", "Glasgow": "Royaume-Uni", "Belfast": "Royaume-Uni", "Cardiff": "Royaume-Uni", "Dublin": "Irlande",
+  "Cork": "Irlande", "Galway": "Irlande", "Stockholm": "Suède", "Göteborg": "Suède", "Malmö": "Suède", "Oslo": "Norvège", "Bergen": "Norvège",
+  "Tromsø": "Norvège", "Copenhague": "Danemark", "Aarhus": "Danemark", "Helsinki": "Finlande", "Turku": "Finlande", "Rovaniemi": "Finlande",
+  "Reykjavik": "Islande", "Prague": "Tchéquie", "Brno": "Tchéquie", "Český Krumlov": "Tchéquie", "Budapest": "Hongrie", "Varsovie": "Pologne",
+  "Cracovie": "Pologne", "Wroclaw": "Pologne", "Gdansk": "Pologne", "Poznan": "Pologne", "Athènes": "Grèce", "Thessalonique": "Grèce",
+  "Santorin": "Grèce", "Mykonos": "Grèce", "Rhodes": "Grèce", "Héraklion": "Grèce", "La Canée": "Grèce", "Corfou": "Grèce", "Delphes": "Grèce",
+  "Nauplie": "Grèce", "Météores": "Grèce", "Dubrovnik": "Croatie", "Split": "Croatie", "Zagreb": "Croatie", "Zadar": "Croatie", "Šibenik": "Croatie",
+  "Ljubljana": "Slovénie", "Bled": "Slovénie", "Piran": "Slovénie", "Belgrade": "Serbie", "Sarajevo": "Bosnie-Herzégovine",
+  "Mostar": "Bosnie-Herzégovine", "Kotor": "Monténégro", "Tirana": "Albanie", "Skopje": "Macédoine du Nord", "Ohrid": "Macédoine du Nord",
+  "Sofia": "Bulgarie", "Plovdiv": "Bulgarie", "Bucarest": "Roumanie", "Brasov": "Roumanie", "Sibiu": "Roumanie", "Bratislava": "Slovaquie",
+  "Vilnius": "Lituanie", "Riga": "Lettonie", "Tallinn": "Estonie", "Kiev": "Ukraine", "Lviv": "Ukraine", "Minsk": "Biélorussie",
+  "Saint-Pétersbourg": "Russie", "Moscou": "Russie", "Luxembourg-Ville": "Luxembourg", "La Valette": "Malte", "Nicosie": "Chypre",
+  "Istanbul": "Turquie", "Ankara": "Turquie", "Cappadoce": "Turquie", "Éphèse": "Turquie", "Izmir": "Turquie", "Antalya": "Turquie",
+  "Jérusalem": "Israël", "Tel Aviv": "Israël", "Haïfa": "Israël", "Bethléem": "Palestine", "Petra": "Jordanie", "Amman": "Jordanie",
+  "Beyrouth": "Liban", "Byblos": "Liban", "Damas": "Syrie", "Mascate": "Oman", "Doha": "Qatar", "Dubaï": "Émirats arabes unis", "Téhéran": "Iran",
+  "Ispahan": "Iran", "Chiraz": "Iran", "Persépolis": "Iran", "Tbilissi": "Géorgie", "Erevan": "Arménie", "Bakou": "Azerbaïdjan",
+  "Samarcande": "Ouzbékistan", "Boukhara": "Ouzbékistan", "Khiva": "Ouzbékistan", "Tachkent": "Ouzbékistan", "Marrakech": "Maroc", "Fès": "Maroc",
+  "Rabat": "Maroc", "Casablanca": "Maroc", "Tanger": "Maroc", "Chefchaouen": "Maroc", "Essaouira": "Maroc", "Meknès": "Maroc", "Ouarzazate": "Maroc",
+  "Agadir": "Maroc", "Tunis": "Tunisie", "Carthage": "Tunisie", "Sidi Bou Saïd": "Tunisie", "Djerba": "Tunisie", "Kairouan": "Tunisie",
+  "Alger": "Algérie", "Oran": "Algérie", "Le Caire": "Égypte", "Louxor": "Égypte", "Alexandrie": "Égypte", "Assouan": "Égypte",
+  "Abou Simbel": "Égypte", "Dakar": "Sénégal", "Saint-Louis du Sénégal": "Sénégal", "Nairobi": "Kenya", "Zanzibar": "Tanzanie", "Arusha": "Tanzanie",
+  "Le Cap": "Afrique du Sud", "Johannesburg": "Afrique du Sud", "Durban": "Afrique du Sud", "Windhoek": "Namibie", "Antananarivo": "Madagascar",
+  "Addis-Abeba": "Éthiopie", "Lalibela": "Éthiopie", "Kigali": "Rwanda", "Abidjan": "Côte d'Ivoire", "Tokyo": "Japon", "Kyoto": "Japon",
+  "Osaka": "Japon", "Hiroshima": "Japon", "Nara": "Japon", "Miyajima": "Japon", "Kanazawa": "Japon", "Takayama": "Japon", "Nikko": "Japon",
+  "Hakone": "Japon", "Nagasaki": "Japon", "Sapporo": "Japon", "Kamakura": "Japon", "Yokohama": "Japon", "Kobe": "Japon", "Himeji": "Japon",
+  "Fukuoka": "Japon", "Okinawa": "Japon", "Pékin": "Chine", "Shanghai": "Chine", "Xi'an": "Chine", "Guilin": "Chine", "Chengdu": "Chine",
+  "Hangzhou": "Chine", "Suzhou": "Chine", "Lhassa": "Chine", "Hong Kong": "Hong Kong", "Macao-Ville": "Macao", "Taipei": "Taïwan",
+  "Oulan-Bator": "Mongolie", "Séoul": "Corée du Sud", "Busan": "Corée du Sud", "Gyeongju": "Corée du Sud", "Bangkok": "Thaïlande",
+  "Chiang Mai": "Thaïlande", "Chiang Rai": "Thaïlande", "Phuket": "Thaïlande", "Ayutthaya": "Thaïlande", "Sukhothai": "Thaïlande",
+  "Krabi": "Thaïlande", "Ko Samui": "Thaïlande", "Pattaya": "Thaïlande", "Kanchanaburi": "Thaïlande", "Siem Reap": "Cambodge", "Angkor": "Cambodge",
+  "Phnom Penh": "Cambodge", "Battambang": "Cambodge", "Luang Prabang": "Laos", "Vientiane": "Laos", "Hanoï": "Vietnam",
+  "Hô Chi Minh-Ville": "Vietnam", "Hué": "Vietnam", "Hoi An": "Vietnam", "Da Nang": "Vietnam", "Baie d'Along": "Vietnam", "Yangon": "Birmanie",
+  "Bagan": "Birmanie", "Mandalay": "Birmanie", "Kuala Lumpur": "Malaisie", "Penang": "Malaisie", "Malacca": "Malaisie", "Singapour": "Singapour",
+  "Bali": "Indonésie", "Jakarta": "Indonésie", "Yogyakarta": "Indonésie", "Ubud": "Indonésie", "Manille": "Philippines", "Cebu": "Philippines",
+  "Colombo": "Sri Lanka", "Kandy": "Sri Lanka", "Galle": "Sri Lanka", "Sigiriya": "Sri Lanka", "Delhi": "Inde", "Agra": "Inde", "Jaipur": "Inde",
+  "Bombay": "Inde", "Calcutta": "Inde", "Madras": "Inde", "Bangalore": "Inde", "Goa": "Inde", "Udaipur": "Inde", "Jodhpur": "Inde",
+  "Jaisalmer": "Inde", "Varanasi": "Inde", "Amritsar": "Inde", "Katmandou": "Népal", "Pokhara": "Népal", "Thimphou": "Bhoutan", "Malé": "Maldives",
+  "Dacca": "Bangladesh", "Lahore": "Pakistan", "Islamabad": "Pakistan", "Almaty": "Kazakhstan", "Astana": "Kazakhstan", "Sydney": "Australie",
+  "Melbourne": "Australie", "Canberra": "Australie", "Brisbane": "Australie", "Perth": "Australie", "Adélaïde": "Australie", "Cairns": "Australie",
+  "Hobart": "Australie", "Uluru": "Australie", "Auckland": "Nouvelle-Zélande", "Wellington": "Nouvelle-Zélande", "Christchurch": "Nouvelle-Zélande",
+  "Queenstown": "Nouvelle-Zélande", "Rotorua": "Nouvelle-Zélande", "Papeete": "Polynésie française", "Nouméa": "Nouvelle-Calédonie",
+  "New York": "États-Unis", "Washington": "États-Unis", "San Francisco": "États-Unis", "Los Angeles": "États-Unis", "Chicago": "États-Unis",
+  "Boston": "États-Unis", "La Nouvelle-Orléans": "États-Unis", "Las Vegas": "États-Unis", "Miami": "États-Unis", "Seattle": "États-Unis",
+  "San Diego": "États-Unis", "Philadelphie": "États-Unis", "Baltimore": "États-Unis", "Atlanta": "États-Unis", "Houston": "États-Unis",
+  "Dallas": "États-Unis", "Denver": "États-Unis", "Salt Lake City": "États-Unis", "Nashville": "États-Unis", "Honolulu": "États-Unis",
+  "Anchorage": "États-Unis", "Grand Canyon": "États-Unis", "Yosemite": "États-Unis", "Yellowstone": "États-Unis", "Montréal": "Canada",
+  "Québec": "Canada", "Toronto": "Canada", "Vancouver": "Canada", "Calgary": "Canada", "Banff": "Canada", "Lake Louise": "Canada",
+  "Drumheller": "Canada", "Ottawa": "Canada", "Halifax": "Canada", "Whistler": "Canada", "Winnipeg": "Canada", "Edmonton": "Canada",
+  "Mexico": "Mexique", "Oaxaca": "Mexique", "Cancún": "Mexique", "Tulum": "Mexique", "Mérida du Yucatán": "Mexique", "Guadalajara": "Mexique",
+  "Puebla": "Mexique", "Guanajuato": "Mexique", "San Miguel de Allende": "Mexique", "Palenque": "Mexique", "Chichén Itzá": "Mexique",
+  "Teotihuacán": "Mexique", "San Cristóbal de las Casas": "Mexique", "Antigua Guatemala": "Guatemala", "Tikal": "Guatemala", "Flores": "Guatemala",
+  "San José (Costa Rica)": "Costa Rica", "Monteverde": "Costa Rica", "Tortuguero": "Costa Rica", "La Fortuna": "Costa Rica",
+  "Puerto Viejo": "Costa Rica", "Granada (Nicaragua)": "Nicaragua", "León (Nicaragua)": "Nicaragua", "Panama City": "Panama",
+  "Santo Domingo": "République dominicaine", "La Havane": "Cuba", "Trinidad (Cuba)": "Cuba", "Viñales": "Cuba", "Santiago de Cuba": "Cuba",
+  "Cienfuegos": "Cuba", "Varadero": "Cuba", "Bogota": "Colombie", "Carthagène": "Colombie", "Medellín": "Colombie", "Cali": "Colombie",
+  "Santa Marta": "Colombie", "Villa de Leyva": "Colombie", "Quito": "Équateur", "Guayaquil": "Équateur", "Galápagos": "Équateur",
+  "Otavalo": "Équateur", "Caracas": "Venezuela", "Cusco": "Pérou", "Lima": "Pérou", "Arequipa": "Pérou", "Machu Picchu": "Pérou", "Puno": "Pérou",
+  "Nazca": "Pérou", "Iquitos": "Pérou", "Ollantaytambo": "Pérou", "Pisac": "Pérou", "Aguas Calientes": "Pérou", "La Paz": "Bolivie",
+  "Sucre": "Bolivie", "Potosí": "Bolivie", "Uyuni": "Bolivie", "Cochabamba": "Bolivie", "Santa Cruz de la Sierra": "Bolivie", "Tiwanaku": "Bolivie",
+  "Rurrenabaque": "Bolivie", "Santiago du Chili": "Chili", "Valparaiso": "Chili", "San Pedro de Atacama": "Chili", "Punta Arenas": "Chili",
+  "Puerto Natales": "Chili", "Torres del Paine": "Chili", "Puerto Montt": "Chili", "Viña del Mar": "Chili", "Île de Pâques": "Chili",
+  "Chiloé": "Chili", "Pucón": "Chili", "La Serena": "Chili", "Buenos Aires": "Argentine", "Ushuaïa": "Argentine", "Mendoza": "Argentine",
+  "Salta": "Argentine", "Córdoba (Argentine)": "Argentine", "Bariloche": "Argentine", "El Calafate": "Argentine", "Montevideo": "Uruguay",
+  "Colonia del Sacramento": "Uruguay", "Punta del Este": "Uruguay", "Encarnación": "Paraguay", "Asunción": "Paraguay", "Ciudad del Este": "Paraguay",
+  "Rio de Janeiro": "Brésil", "São Paulo": "Brésil", "Salvador": "Brésil", "Brasilia": "Brésil", "Manaus": "Brésil", "Ouro Preto": "Brésil",
+  "Paraty": "Brésil", "Florianópolis": "Brésil", "Recife": "Brésil", "Olinda": "Brésil", "Fortaleza": "Brésil", "Foz do Iguaçu": "Brésil",
+};
+
+const TABLE_PAYS_RECHERCHE = construireTablePhrasesRecherche(PAYS_RECHERCHE);
+const TABLE_VILLES_RECHERCHE = construireTablePhrasesRecherche(VILLES_RECHERCHE);
+
+const EQUIVALENTS_PAR_MOT_RECHERCHE = (() => {
+  const table = new Map();
+  for (let i = 0; i < LEXIQUE_EQUIVALENCES_RECHERCHE.length; i += 1) {
+    const groupe = LEXIQUE_EQUIVALENCES_RECHERCHE[i]
+      .map((mot) => decouperEnMotsPhotoCartel(mot).join(" "))
+      .filter((mot) => mot && !mot.includes(" "));
+    for (let j = 0; j < groupe.length; j += 1) {
+      const existants = table.get(groupe[j]) || new Set();
+      for (let k = 0; k < groupe.length; k += 1) existants.add(groupe[k]);
+      table.set(groupe[j], existants);
+    }
+  }
+  return table;
+})();
+
+// v97 — l'expression la plus longue l'emporte et ses mots ne sont plus relus :
+// « Guinée équatoriale » ne donne plus aussi « Guinée », « New York » ne donne
+// plus aussi « York ».
+function reconnaitrePhrasesRecherche(mots, tablePhrases, resultat) {
+  const { table, longueurMax } = tablePhrases;
+  let i = 0;
+  while (i < mots.length) {
+    let phrase = "";
+    let trouve = "";
+    let longueurTrouvee = 0;
+    for (let longueur = 1; longueur <= longueurMax && i + longueur <= mots.length; longueur += 1) {
+      phrase = longueur === 1 ? mots[i] : `${phrase} ${mots[i + longueur - 1]}`;
+      const canonique = table.get(phrase);
+      if (canonique) {
+        trouve = canonique;
+        longueurTrouvee = longueur;
+      }
+    }
+    if (trouve) {
+      resultat.add(trouve);
+      i += longueurTrouvee;
+    } else {
+      i += 1;
+    }
+  }
+  return resultat;
+}
+
+// v97 — villes dont le nom seul est trop courant pour être lu sans son pays :
+// « Santiago » est une cathédrale à Bilbao, une ville au Chili.
+const VILLES_SOUS_CONDITION_PAYS_RECHERCHE = [
+  ["santiago", "Santiago du Chili", "Chili"],
+  ["san jose", "San José (Costa Rica)", "Costa Rica"],
+];
+
+function ajouterPaysDesVillesRecherche(villes, pays) {
+  villes.forEach((ville) => {
+    const paysVille = PAYS_DES_VILLES_RECHERCHE[ville];
+    if (paysVille) pays.add(paysVille);
+  });
+  return pays;
+}
+
+function reconnaitreVillesSousConditionRecherche(mots, pays, villes) {
+  if (!mots.length || !pays.size) return villes;
+  const texte = ` ${mots.join(" ")} `;
+  for (let i = 0; i < VILLES_SOUS_CONDITION_PAYS_RECHERCHE.length; i += 1) {
+    const [expression, ville, paysRequis] = VILLES_SOUS_CONDITION_PAYS_RECHERCHE[i];
+    if (pays.has(paysRequis) && texte.includes(` ${expression} `)) villes.add(ville);
+  }
+  return villes;
+}
+
+// v97 — sous-dossiers qu'une visite crée elle-même (musée, église) ou que le
+// renommage produit : leurs photos appartiennent à la visite qui les contient.
+const SOUS_DOSSIERS_DE_VISITE_RECHERCHE = new Set([
+  "oeuvres", "cartels", "jardins", "architecture", "batiments", "structures",
+  "a verifier classification", "a verifier renommage", "facade", "nef",
+]);
+
+function estSousDossierDeVisiteRecherche(nomDossier) {
+  return SOUS_DOSSIERS_DE_VISITE_RECHERCHE.has(decouperEnMotsPhotoCartel(nomDossier).join(" "));
+}
+
+// Année portée par une suite de mots : 2019 isolé, une date collée
+// (20190209, 20260809114601), ou « juillet 2019 » une fois détaché.
+function anneeDepuisMotsRecherche(mots) {
+  for (let i = 0; i < mots.length; i += 1) {
+    const mot = mots[i];
+    if (/^(19|20)\d\d$/.test(mot)) return mot;
+    if (/^(19|20)\d\d(0[1-9]|1[0-2])([0-2]\d|3[01])(\d{6})?$/.test(mot)) return mot.slice(0, 4);
+  }
+  return "";
+}
+
+function estMotNombreRecherche(mot) {
+  return /^\d+$/.test(mot);
+}
+
+// Lecture d'un nom de photo selon la convention de Vincent :
+//   - marqueurs de travail (init 2, FAIT, DEF2, LIGHT) : à part ;
+//   - sujet : le nom sans son numéro d'ordre de tête, sans ses dates, et sans
+//     sa fin (rang, cadrage, marqueurs). « Bilbao_Cathédrale de
+//     Santiago-Cloître1 » à « …Cloître6 » donnent un seul sujet. Un nom réduit
+//     à un préfixe d'appareil (IMG_20260809_114601) n'a pas de sujet ;
+//   - rang : dernier nombre de la fin du nom, sert à l'ordre des prises.
+function lireNomPhotoRecherche(nomFichier) {
+  const tous = decouperEnMotsPhotoCartel(nomSansExtensionRecherche(nomFichier));
+  const mots = [];
+  const marqueurs = [];
+  for (let i = 0; i < tous.length; i += 1) {
+    const mot = tous[i];
+    if (MARQUEURS_TRAVAIL_RECHERCHE.has(mot)) {
+      marqueurs.push(mot);
+      if (i + 1 < tous.length && estMotNombreRecherche(tous[i + 1]) && tous[i + 1].length <= 2) {
+        marqueurs.push(tous[i + 1]);
+        i += 1;
+      }
+      continue;
+    }
+    mots.push(mot);
+  }
+
+  let fin = mots.length;
+  let rang = 0;
+  while (fin > 0) {
+    const mot = mots[fin - 1];
+    if (estMotNombreRecherche(mot)) {
+      if (!rang && mot.length <= 4 && !/^(19|20)\d\d$/.test(mot)) rang = Number(mot);
+      fin -= 1;
+      continue;
+    }
+    if (CADRAGES_RECHERCHE.has(mot)) {
+      fin -= 1;
+      continue;
+    }
+    break;
+  }
+  let debut = 0;
+  while (debut < fin && estMotNombreRecherche(mots[debut])) debut += 1;
+
+  const motsSujet = mots
+    .slice(debut, fin)
+    .filter((mot) => !/^(19|20)\d{6}(\d{6})?$/.test(mot) && !(estMotNombreRecherche(mot) && mot.length >= 5));
+  const significatif = motsSujet.some(
+    (mot) => mot.length >= 3 && !estMotNombreRecherche(mot) && !PREFIXES_APPAREIL_RECHERCHE.has(mot)
+  );
+
+  return {
+    mots,
+    marqueurs,
+    sujet: significatif ? motsSujet.join(" ") : "",
+    rang,
+    annee: anneeDepuisMotsRecherche(tous),
+  };
+}
+
+function lireNomDossierRecherche(nomDossier) {
+  const tous = decouperEnMotsPhotoCartel(nomDossier);
+  const mots = [];
+  const marqueurs = [];
+  for (let i = 0; i < tous.length; i += 1) {
+    if (MARQUEURS_TRAVAIL_RECHERCHE.has(tous[i])) {
+      marqueurs.push(tous[i]);
+      if (i + 1 < tous.length && estMotNombreRecherche(tous[i + 1]) && tous[i + 1].length <= 2) {
+        marqueurs.push(tous[i + 1]);
+        i += 1;
+      }
+      continue;
+    }
+    mots.push(tous[i]);
+  }
+  return { mots, marqueurs, annee: anneeDepuisMotsRecherche(tous) };
+}
+
+// ————————————————————————————————————————————————————————————————————————
+// v99 — VOYAGES ET VISITES DÉCRITS PAR LEURS JSON
+//
+// Chaque dossier de photos (une visite) peut porter _PhotoCartel_visite.json,
+// écrit sur le PC par la préparation des voyages, AVANT la copie vers DCIM :
+//   - le voyage auquel la visite est rattachée (ou aucun) : le lien est écrit
+//     dans le JSON, il ne dépend pas de l'endroit où le dossier est rangé. Une
+//     visite copiée seule, à plat, garde son voyage ;
+//   - la fiche de chaque photo (nom, taille, heure de prise de vue, pays, ville
+//     lus dans son nom) : l'app ne rouvre jamais une photo dont la fiche est là.
+// Chaque dossier de voyage porte _PhotoCartel_voyage.json (son résumé, ses visites).
+// Les photos posées directement dans un voyage, sans visite, ont leurs fiches dans
+// le _PhotoCartel_visite.json de ce dossier, marqué « sans_visite ».
+// Les deux fichiers commencent par « _ » : ce ne sont jamais des photos, ni des
+// fiches de la galerie, ni des dossiers parcourus.
+//
+// Ce bloc est VOLONTAIREMENT IDENTIQUE, caractère pour caractère, dans App.jsx
+// et dans server.js, avec la lecture des noms qui le précède.
+// ————————————————————————————————————————————————————————————————————————
+
+const NOM_FICHIER_VISITE = "_PhotoCartel_visite.json";
+const NOM_FICHIER_VOYAGE = "_PhotoCartel_voyage.json";
+const TYPE_DOCUMENT_VISITE = "PHOTOCARTEL_VISITE";
+const TYPE_DOCUMENT_VOYAGE = "PHOTOCARTEL_VOYAGE";
+const VERSION_FORMAT_VISITE = 1;
+
+// Lieu écrit en tête du nom selon la convention de Vincent :
+// « Colombie, Zipaquira_'Catedral de Sal'… », « Uruguay, Punta del Este_Sculpture… ».
+// La ville n'est retenue que si ce qui précède la virgule est un pays reconnu, et
+// si ce qui suit est un nom de ville : une ville connue, ou au plus quatre mots
+// sans mot de monument (« Paraguay, Réduction San Cosme y Damian_… » nomme un
+// site, pas une ville). Rien n'est deviné.
+const MOTS_DE_MONUMENT_PHOTOCARTEL = new Set([
+  "musee", "museum", "museo", "eglise", "iglesia", "chiesa", "cathedrale", "catedral", "basilique",
+  "basilica", "mission", "reduction", "palais", "palacio", "palazzo", "place", "plaza", "piazza",
+  "chateau", "castillo", "castello", "parc", "park", "parque", "jardin", "pont", "tour", "torre",
+  "monastere", "couvent", "convento", "temple", "templo", "rue", "calle", "avenue", "avenida", "gare",
+  "hotel", "restaurant", "marche", "mercado", "plage", "playa", "lac", "lake", "lago", "mont",
+  "cerro", "colline", "port", "aeroport", "site", "ruines", "fort", "fortaleza",
+]);
+
+// Une lettre de travers dans un nom de ville connu (« Vaparaiso ») : c'est la ville
+// connue (« Valparaiso »). Cinq lettres au moins, une seule ville possible.
+function ecartUneLettrePhotoCartel(a, b) {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let ecarts = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    ecarts += 1;
+    if (ecarts > 1) return false;
+    if (a.length > b.length) i += 1;
+    else if (b.length > a.length) j += 1;
+    else {
+      i += 1;
+      j += 1;
+    }
+  }
+  return ecarts + (a.length - i) + (b.length - j) <= 1;
+}
+
+function villeConnueApprocheePhotoCartel(phrase) {
+  if (phrase.length < 5) return "";
+  const trouvees = new Set();
+  TABLE_VILLES_RECHERCHE.table.forEach((ville, cle) => {
+    if (Math.abs(cle.length - phrase.length) <= 1 && ecartUneLettrePhotoCartel(cle, phrase)) trouvees.add(ville);
+  });
+  return trouvees.size === 1 ? Array.from(trouvees)[0] : "";
+}
+
+function lirePrefixeLieuPhotoCartel(nom) {
+  const m = String(nom || "").match(/^\s*([^,_]{2,40}?)\s*,\s*([^,_]{2,60}?)\s*_/);
+  if (!m) return { pays: "", ville: "" };
+  const motsPays = decouperEnMotsPhotoCartel(m[1]);
+  const pays = TABLE_PAYS_RECHERCHE.table.get(motsPays.join(" ")) || "";
+  if (!pays) return { pays: "", ville: "" };
+  const motsVille = decouperEnMotsPhotoCartel(m[2]);
+  const villeConnue =
+    TABLE_VILLES_RECHERCHE.table.get(motsVille.join(" ")) || villeConnueApprocheePhotoCartel(motsVille.join(" "));
+  const villeLibre =
+    motsVille.length > 0 &&
+    motsVille.length <= 4 &&
+    !estMotNombreRecherche(motsVille[0]) &&
+    !motsVille.some((mot) => MOTS_DE_MONUMENT_PHOTOCARTEL.has(mot));
+  return { pays, ville: villeConnue || (villeLibre ? m[2].trim() : "") };
+}
+
+// Pays et villes lus dans un nom (photo ou dossier). Quand le nom commence par le
+// lieu (« Colombie, Bogota_Eglise San Francisco »), c'est ce lieu qui compte : la
+// suite décrit le sujet (une église San Francisco n'est pas aux États-Unis). Sinon :
+// liste des pays, liste des villes, villes sous condition de pays, pays des villes.
+// « deTete » dit si le lieu vient de la tête du nom.
+function lieuxDepuisNomPhotoCartel(nom) {
+  const prefixe = lirePrefixeLieuPhotoCartel(nom);
+  if (prefixe.pays) {
+    return {
+      pays: new Set([prefixe.pays]),
+      villes: new Set(prefixe.ville ? [prefixe.ville] : []),
+      deTete: true,
+    };
+  }
+  const mots = decouperEnMotsPhotoCartel(nomSansExtensionRecherche(nom));
+  const pays = new Set();
+  const villes = new Set();
+  reconnaitrePhrasesRecherche(mots, TABLE_PAYS_RECHERCHE, pays);
+  reconnaitrePhrasesRecherche(mots, TABLE_VILLES_RECHERCHE, villes);
+  reconnaitreVillesSousConditionRecherche(mots, pays, villes);
+  ajouterPaysDesVillesRecherche(villes, pays);
+  return { pays, villes, deTete: false };
+}
+
+// Clé d'une ville pour comparer deux écritures (« Bogota », « Bogotá »).
+function cleVillePhotoCartel(ville) {
+  return decouperEnMotsPhotoCartel(ville).join(" ");
+}
+
+// Lecture d'un _PhotoCartel_visite.json. Renvoie null s'il est absent, illisible
+// ou d'un autre type : la visite est alors lue comme en v97 (photos rouvertes).
+function lireContenuVisitePhotoCartel(contenu) {
+  if (!contenu || typeof contenu !== "object") return null;
+  if (String(contenu.type_document || "") !== TYPE_DOCUMENT_VISITE) return null;
+  if (!Array.isArray(contenu.photos)) return null;
+  const photos = new Map();
+  for (let i = 0; i < contenu.photos.length; i += 1) {
+    const photo = contenu.photos[i];
+    if (!photo || typeof photo !== "object" || !photo.nom) continue;
+    photos.set(String(photo.nom), {
+      taille: Number.isFinite(Number(photo.taille)) ? Number(photo.taille) : -1,
+      horodatage: /^\d{14}$/.test(String(photo.horodatage || "")) ? String(photo.horodatage) : "",
+    });
+  }
+  return {
+    voyage: String(contenu.visite?.voyage || "").trim(),
+    voyageChoisi: Boolean(contenu.visite?.voyage_choisi),
+    type: String(contenu.visite?.type || ""),
+    photos,
+  };
+}
+
+// Heure de prise de vue « AAAAMMJJHHMMSS » rendue lisible : « 14/02/2021 09:21 ».
+function horodatageLisiblePhotoCartel(horodatage) {
+  const h = String(horodatage || "");
+  if (!/^\d{14}$/.test(h)) return "";
+  return `${h.slice(6, 8)}/${h.slice(4, 6)}/${h.slice(0, 4)} ${h.slice(8, 10)}:${h.slice(10, 12)}`;
+}
+
 function estAnalyseGalerieModifiee(contenu = {}, nomJson = "", nomPhoto = "") {
   const statut = String(contenu?.statut_analyse || "").trim().toUpperCase();
   const typeDocument = String(contenu?.type_document || "").trim().toUpperCase();
@@ -6770,16 +7534,31 @@ function racineRechercheDepuisRequete(dossierRacineRecu) {
 
 // v97 — l'heure de prise de vue d'une photo est lue UNE fois (EXIF, sinon nom) ;
 // une photo déjà connue de l'index précédent n'est jamais rouverte.
+// v99 — une photo décrite dans le _PhotoCartel_visite.json de son dossier n'est pas
+// rouverte non plus, et le voyage de la visite est pris dans ce JSON.
 function parcourirRacineRechercheServeur(racineEffective, horodatagesConnus = new Map()) {
   const dossiers = [];
   const photos = [];
+  const voyages = {};
   let photosLues = 0;
+  let photosDecrites = 0;
   const parcourir = (cheminAbsolu, cheminRelatif, profondeur) => {
     let entrees = [];
     try {
       entrees = fs.readdirSync(cheminAbsolu, { withFileTypes: true });
     } catch (error) {
       return;
+    }
+    let visite = null;
+    if (entrees.some((entree) => entree.isFile() && entree.name === NOM_FICHIER_VISITE)) {
+      try {
+        visite = lireContenuVisitePhotoCartel(
+          JSON.parse(fs.readFileSync(path.join(cheminAbsolu, NOM_FICHIER_VISITE), "utf-8"))
+        );
+      } catch (error) {
+        visite = null;
+      }
+      if (visite && visite.voyage && cheminRelatif) voyages[cheminRelatif] = visite.voyage;
     }
     for (const entree of entrees) {
       if (entree.isDirectory()) {
@@ -6790,6 +7569,11 @@ function parcourirRacineRechercheServeur(racineEffective, horodatagesConnus = ne
       } else if (entree.isFile() && estFichierImageRecherche(entree.name)) {
         const cle = `${cheminRelatif}/${entree.name}`;
         let horodatage = horodatagesConnus.get(cle);
+        const decrite = visite ? visite.photos.get(entree.name) : undefined;
+        if (horodatage === undefined && decrite) {
+          photosDecrites += 1;
+          horodatage = decrite.horodatage || horodatageDepuisNomRecherche(entree.name);
+        }
         if (horodatage === undefined) {
           photosLues += 1;
           horodatage =
@@ -6801,7 +7585,7 @@ function parcourirRacineRechercheServeur(racineEffective, horodatagesConnus = ne
     }
   };
   parcourir(racineEffective, "", 0);
-  return { dossiers, photos, photosLues };
+  return { dossiers, photos, voyages, photosLues, photosDecrites };
 }
 
 function construireIndexRechercheServeur(racineEffective) {
@@ -6818,7 +7602,9 @@ function construireIndexRechercheServeur(racineEffective) {
   );
   const parcours = parcourirRacineRechercheServeur(racineEffective, connus);
   const contenu = construireContenuIndexRecherche(parcours, fiches, VERSION_PHOTOCARTEL);
-  console.log(`INDEX RECHERCHE : ${parcours.photosLues} heure(s) de prise de vue lue(s)`);
+  console.log(
+    `INDEX RECHERCHE : ${parcours.photosLues} heure(s) de prise de vue lue(s), ${parcours.photosDecrites} reprise(s) des fiches de visite`
+  );
   return contenu;
 }
 
@@ -7557,13 +8343,619 @@ if (fs.existsSync(DOSSIER_FRONTEND_DIST)) {
   });
 }
 
+
+// ————————————————————————————————————————————————————————————————————————
+// v99 — PRÉPARATION DES VOYAGES (PC uniquement, avant la copie vers DCIM)
+//
+// Lancée par Preparer_voyages_PhotoCartel.cmd (« node server.js --preparer ») :
+// une fenêtre Windows fait choisir le dossier, puis
+//   1. chaque dossier de photos reçoit _PhotoCartel_visite.json (son voyage, la
+//      fiche de chaque photo) et chaque voyage _PhotoCartel_voyage.json ;
+//   2. le récapitulatif des incohérences s'ouvre dans le navigateur, AVANT toute
+//      copie : Vincent décide, rien n'est déplacé ni renommé.
+// Les photos ne sont jamais modifiées, déplacées ni renommées. Repasser sur un
+// dossier déjà préparé ne relit aucune heure connue : une photo est reconnue par
+// son nom et sa taille, même déplacée d'un dossier à un autre, et sa fiche la suit.
+//
+// Le dossier choisi peut être :
+//   - un dossier de voyages (« Copie des voyages… », « Voyages ») : chaque
+//     sous-dossier est un voyage ;
+//   - un seul voyage (« 1_Bogota_fev21-init12 », « 1_Uruguay-fev2023… ») ;
+//   - « Visites à rattacher » : chaque sous-dossier est une visite sans voyage.
+// Dans un voyage, tout dossier qui contient des photos est une visite (ses
+// sous-dossiers Oeuvres, Cartels… compris) ; les photos posées directement dans
+// le voyage lui appartiennent sans visite.
+// ————————————————————————————————————————————————————————————————————————
+
+const ARGUMENT_PREPARER_VOYAGES = "--preparer";
+const MODE_PREPARER_VOYAGES = process.argv.includes(ARGUMENT_PREPARER_VOYAGES);
+// Emplacement de la copie sur le téléphone, vu depuis l'Explorateur Windows : sert à
+// mesurer les chemins qui dépasseront la limite de Windows une fois copiés.
+const PREFIXE_COPIE_TELEPHONE = "Ce PC\\Z Flip7 de Vincent\\Stockage interne\\DCIM\\PhotoCartel\\Voyages\\";
+const LONGUEUR_MAX_CHEMIN_WINDOWS = 260;
+const TAILLE_LECTURE_EXIF_PREPARATION = 98304;
+const NOM_RECAPITULATIF_PREPARATION = "_PhotoCartel_recapitulatif";
+
+function choisirDossierPreparationWindows() {
+  const script = [
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$d = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "$d.Description = 'PhotoCartel - dossier a preparer avant la copie'",
+    "$d.ShowNewFolderButton = $false",
+    "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }",
+  ].join("; ");
+  const resultat = spawnSync("powershell", ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    encoding: "utf8",
+  });
+  return String(resultat.stdout || "").replace(/^\uFEFF/, "").trim();
+}
+
+function comparerNomsPreparation(a, b) {
+  return String(a).localeCompare(String(b), "fr", { numeric: true, sensitivity: "base" });
+}
+
+function lireJsonSansErreur(chemin) {
+  try {
+    return JSON.parse(fs.readFileSync(chemin, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+// Arbre des dossiers à partir de la racine choisie : photos (nom, taille) de chaque
+// dossier, JSON de visite déjà présent.
+function lireArbrePreparation(racine) {
+  const lireDossier = (absolu, relatif, profondeur) => {
+    let entrees;
+    try {
+      entrees = fs.readdirSync(absolu, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    const noeud = { absolu, relatif, nom: path.basename(absolu), profondeur, photos: [], enfants: [] };
+    for (const entree of entrees) {
+      if (entree.isDirectory()) {
+        if (estDossierHorsRecherche(entree.name, profondeur)) continue;
+        const enfant = lireDossier(
+          path.join(absolu, entree.name),
+          relatif ? `${relatif}/${entree.name}` : entree.name,
+          profondeur + 1
+        );
+        if (enfant) noeud.enfants.push(enfant);
+      } else if (entree.isFile() && estFichierImageRecherche(entree.name)) {
+        let taille;
+        try {
+          taille = fs.statSync(path.join(absolu, entree.name)).size;
+        } catch {
+          taille = -1;
+        }
+        noeud.photos.push({ nom: entree.name, taille });
+      }
+    }
+    noeud.photos.sort((a, b) => comparerNomsPreparation(a.nom, b.nom));
+    noeud.enfants.sort((a, b) => comparerNomsPreparation(a.nom, b.nom));
+    noeud.visitePrecedente = noeud.photos.length
+      ? lireJsonSansErreur(path.join(absolu, NOM_FICHIER_VISITE))
+      : null;
+    return noeud;
+  };
+  return lireDossier(racine, "", 0);
+}
+
+function contientPhotosEnDessous(noeud) {
+  return noeud.photos.length > 0 || noeud.enfants.some(contientPhotosEnDessous);
+}
+
+// Nature du dossier choisi : dossier de voyages, un seul voyage, ou visites sans voyage.
+function natureRacinePreparation(arbre) {
+  const nom = decouperEnMotsPhotoCartel(arbre.nom).join(" ");
+  if (nom === "visites a rattacher") return "visites";
+  if (nom === "voyages") return "voyages";
+  const unEnfantAUnVoyage = arbre.enfants.some((enfant) => enfant.enfants.some(contientPhotosEnDessous));
+  return unEnfantAUnVoyage ? "voyages" : "voyage";
+}
+
+function preparerVoyagesPhotoCartel(racine, { ecrire = true, maintenant = new Date() } = {}) {
+  const debut = Date.now();
+  const arbre = lireArbrePreparation(racine);
+  if (!arbre) throw new Error(`Dossier illisible : ${racine}`);
+  const nature = natureRacinePreparation(arbre);
+
+  // 1. Fiches déjà écrites lors d'un passage précédent : nom + taille → heure, dossiers
+  // (une même photo peut exister en plusieurs endroits).
+  const fichesConnues = new Map();
+  const parcourirNoeuds = (noeud, action) => {
+    action(noeud);
+    noeud.enfants.forEach((enfant) => parcourirNoeuds(enfant, action));
+  };
+  parcourirNoeuds(arbre, (noeud) => {
+    const precedente = noeud.visitePrecedente;
+    if (!precedente || precedente.type_document !== TYPE_DOCUMENT_VISITE || !Array.isArray(precedente.photos)) return;
+    for (const photo of precedente.photos) {
+      if (!photo || !photo.nom) continue;
+      const cle = `${photo.nom}|${Number(photo.taille)}`;
+      if (!fichesConnues.has(cle)) {
+        fichesConnues.set(cle, {
+          horodatage: /^\d{14}$/.test(String(photo.horodatage || "")) ? String(photo.horodatage) : "",
+          dossiers: new Set(),
+        });
+      }
+      fichesConnues.get(cle).dossiers.add(noeud.relatif);
+    }
+  });
+
+  // 2. Voyages et visites.
+  const voyages = [];
+  const visites = [];
+  const rattacher = (noeud, voyage, visiteProprietaire) => {
+    let proprietaire = visiteProprietaire;
+    if (noeud.photos.length > 0) {
+      const sousDossier = proprietaire && estSousDossierDeVisiteRecherche(noeud.nom);
+      if (!sousDossier) {
+        proprietaire = {
+          noeud,
+          nom: noeud === (voyage && voyage.noeud) ? voyage.nom : noeud.nom,
+          voyage,
+          sansVisite: Boolean(voyage && noeud === voyage.noeud),
+          dossiers: [],
+          photos: [],
+        };
+        visites.push(proprietaire);
+        if (voyage) voyage.visites.push(proprietaire);
+      }
+      proprietaire.dossiers.push(noeud);
+      noeud.visite = proprietaire;
+    }
+    noeud.enfants.forEach((enfant) => rattacher(enfant, voyage, noeud.photos.length > 0 ? proprietaire : visiteProprietaire));
+  };
+  const creerVoyage = (noeud) => {
+    const voyage = { noeud, nom: noeud.nom, visites: [] };
+    voyages.push(voyage);
+    return voyage;
+  };
+  if (nature === "voyage") {
+    rattacher(arbre, creerVoyage(arbre), null);
+  } else {
+    // Photos posées à la racine du dossier choisi : ni voyage, ni visite.
+    if (arbre.photos.length > 0) {
+      const racineSeule = { ...arbre, enfants: [] };
+      rattacher(racineSeule, null, null);
+      const groupe = visites[visites.length - 1];
+      groupe.nom = "Photos posées à la racine";
+      groupe.sansVisite = true;
+    }
+    for (const enfant of arbre.enfants) {
+      rattacher(enfant, nature === "voyages" ? creerVoyage(enfant) : null, null);
+    }
+  }
+
+  // 3. Fiche de chaque photo : heure (reprise si connue, sinon EXIF, sinon nom), lieux du nom.
+  let heuresLues = 0;
+  let heuresReprises = 0;
+  const vuesParCle = new Map();
+  for (const visite of visites) {
+    for (const noeud of visite.dossiers) {
+      for (const photo of noeud.photos) {
+        const cle = `${photo.nom}|${photo.taille}`;
+        const connue = fichesConnues.get(cle);
+        let horodatage;
+        if (connue) {
+          heuresReprises += 1;
+          horodatage = connue.horodatage;
+        } else {
+          heuresLues += 1;
+          horodatage =
+            lireHorodatageExifPriseDeVue(path.join(noeud.absolu, photo.nom), TAILLE_LECTURE_EXIF_PREPARATION) ||
+            horodatageDepuisNomRecherche(photo.nom);
+        }
+        const lieux = lieuxDepuisNomPhotoCartel(photo.nom);
+        const lecture = lireNomPhotoRecherche(photo.nom);
+        const fiche = {
+          nom: photo.nom,
+          taille: photo.taille,
+          horodatage,
+          pays: Array.from(lieux.pays),
+          villes: Array.from(lieux.villes),
+          lieuDeTete: lieux.deTete,
+          sujet: lecture.sujet,
+          noeud,
+          visite,
+        };
+        visite.photos.push(fiche);
+        if (!vuesParCle.has(cle)) vuesParCle.set(cle, []);
+        vuesParCle.get(cle).push(fiche);
+      }
+    }
+  }
+  // Depuis le passage précédent, pour chaque photo (nom + taille) : les dossiers qu'elle a
+  // quittés et ceux où elle est apparue. Un départ et une arrivée font un déplacement ;
+  // un départ seul, une photo absente. Une arrivée seule est une copie (I7).
+  const deplacees = [];
+  const retirees = [];
+  fichesConnues.forEach((connue, cle) => {
+    const nom = cle.slice(0, cle.lastIndexOf("|"));
+    const maintenant = new Set((vuesParCle.get(cle) || []).map((fiche) => fiche.noeud.relatif));
+    const quittes = Array.from(connue.dossiers).filter((dossier) => !maintenant.has(dossier)).sort();
+    const arrivees = Array.from(maintenant).filter((dossier) => !connue.dossiers.has(dossier)).sort();
+    quittes.forEach((avant, i) => {
+      if (i < arrivees.length) deplacees.push({ nom, avant, apres: arrivees[i] });
+      else retirees.push({ nom, avant });
+    });
+  });
+
+  // 4. Résumé de chaque visite et de chaque voyage.
+  const periode = (photos) => {
+    const heures = photos.map((photo) => photo.horodatage).filter(Boolean).sort();
+    return { debut: heures[0] || "", fin: heures[heures.length - 1] || "" };
+  };
+  for (const voyage of voyages) {
+    const lieux = lieuxDepuisNomPhotoCartel(voyage.nom);
+    voyage.pays = new Set(lieux.pays);
+    voyage.villes = new Set(lieux.villes);
+  }
+  for (const visite of visites) {
+    const lieux = lieuxDepuisNomPhotoCartel(visite.nom);
+    visite.paysPropres = lieux.pays;
+    visite.villesPropres = lieux.villes;
+    visite.pays = new Set(lieux.pays);
+    visite.villes = new Set(lieux.villes);
+    if (visite.voyage) {
+      visite.voyage.pays.forEach((valeur) => visite.pays.add(valeur));
+      if (visite.villes.size === 0) visite.voyage.villes.forEach((valeur) => visite.villes.add(valeur));
+    }
+    Object.assign(visite, periode(visite.photos));
+    // Voyage écrit à la main lors d'un passage précédent : il est gardé.
+    const precedente = visite.noeud.visitePrecedente;
+    visite.voyageChoisi = Boolean(precedente?.visite?.voyage_choisi);
+    visite.nomVoyage = visite.voyageChoisi
+      ? String(precedente.visite.voyage || "")
+      : visite.voyage
+        ? visite.voyage.nom
+        : "";
+    visite.type = String(precedente?.visite?.type || "");
+  }
+  for (const voyage of voyages) {
+    const photos = voyage.visites.flatMap((visite) => visite.photos);
+    Object.assign(voyage, periode(photos));
+    voyage.nombrePhotos = photos.length;
+    for (const visite of voyage.visites) {
+      visite.pays.forEach((valeur) => voyage.pays.add(valeur));
+      visite.villesPropres.forEach((valeur) => voyage.villes.add(valeur));
+      for (const photo of visite.photos) {
+        if (photo.lieuDeTete) photo.villes.forEach((valeur) => voyage.villes.add(valeur));
+      }
+    }
+  }
+
+  // 5. Incohérences (récapitulatif). Rien n'est corrigé : chaque ligne est une proposition.
+  const incoherences = { I1: [], I2: [], I3: [], I4: [], I5: [], I6: [], I7: [] };
+  for (const visite of visites) {
+    const villesVisite = new Set(Array.from(visite.villes).map(cleVillePhotoCartel));
+    for (const photo of visite.photos) {
+      const relatif = photo.noeud.relatif ? `${photo.noeud.relatif}/${photo.nom}` : photo.nom;
+      // I1 — photo dont le nom commence par une autre ville que celle de sa visite
+      // (« Colombie, Zipaquira_… » rangée dans une visite de Bogota). Une ville citée
+      // dans la suite du nom (« départ de Paris ») ne compte pas : c'est le sujet.
+      if (
+        photo.lieuDeTete &&
+        photo.villes.length &&
+        villesVisite.size &&
+        !photo.villes.some((ville) => villesVisite.has(cleVillePhotoCartel(ville)))
+      ) {
+        incoherences.I1.push({
+          visite: visite.nom,
+          photo: photo.nom,
+          villePhoto: photo.villes.join(", "),
+          villeVisite: Array.from(visite.villes).join(", "),
+          proposition: `${photo.villes[0]}, visite à vérifier`,
+        });
+      }
+      // I2 — chemin trop long, sur ce disque ou une fois copié sur le téléphone.
+      const longueurIci = path.join(photo.noeud.absolu, photo.nom).length;
+      const relatifVoyage = visite.voyage
+        ? path.relative(path.dirname(visite.voyage.noeud.absolu), path.join(photo.noeud.absolu, photo.nom))
+        : path.relative(racine, path.join(photo.noeud.absolu, photo.nom));
+      const longueurTelephone = (PREFIXE_COPIE_TELEPHONE + relatifVoyage.split(path.sep).join("\\")).length;
+      if (longueurIci > LONGUEUR_MAX_CHEMIN_WINDOWS || longueurTelephone > LONGUEUR_MAX_CHEMIN_WINDOWS) {
+        incoherences.I2.push({ visite: visite.nom, photo: photo.nom, longueurIci, longueurTelephone, nom: photo.nom.length });
+      }
+      // I3 — aucune heure de prise de vue (ni EXIF, ni nom).
+      if (!photo.horodatage) incoherences.I3.push({ visite: visite.nom, photo: relatif });
+    }
+    // I4 — visite dont le nom ne dit ni pays ni ville : lieu repris du voyage, à valider.
+    if (!visite.sansVisite && visite.paysPropres.size === 0 && visite.villesPropres.size === 0) {
+      incoherences.I4.push({
+        visite: visite.nom,
+        voyage: visite.nomVoyage,
+        lieuRepris: [...visite.villes, ...visite.pays].join(", "),
+      });
+    }
+  }
+  for (const d of deplacees) incoherences.I5.push({ photo: d.nom, avant: d.avant || "(racine)", apres: d.apres || "(racine)", etat: "déplacée, fiche suivie" });
+  for (const r of retirees) incoherences.I5.push({ photo: r.nom, avant: r.avant || "(racine)", apres: "", etat: "absente, fiche retirée" });
+  // I6 — visite sans voyage : voyage proposé d'après ses heures de prise de vue, parmi
+  // les voyages de ce passage et ceux déjà préparés dans le dossier « Voyages » voisin.
+  const voyagesConnus = voyages.map((voyage) => ({ nom: voyage.nom, debut: voyage.debut, fin: voyage.fin, villes: voyage.villes }));
+  const dossierVoyagesVoisin = path.join(path.dirname(racine), "Voyages");
+  if (visites.some((visite) => !visite.nomVoyage) && fs.existsSync(dossierVoyagesVoisin) && path.resolve(dossierVoyagesVoisin) !== path.resolve(racine)) {
+    let voisins = [];
+    try {
+      voisins = fs.readdirSync(dossierVoyagesVoisin, { withFileTypes: true }).filter((entree) => entree.isDirectory());
+    } catch {
+      voisins = [];
+    }
+    for (const voisin of voisins) {
+      const contenu = lireJsonSansErreur(path.join(dossierVoyagesVoisin, voisin.name, NOM_FICHIER_VOYAGE));
+      if (!contenu || contenu.type_document !== TYPE_DOCUMENT_VOYAGE || !contenu.voyage) continue;
+      voyagesConnus.push({
+        nom: String(contenu.voyage.nom || voisin.name),
+        debut: String(contenu.voyage.debut || ""),
+        fin: String(contenu.voyage.fin || ""),
+        villes: new Set(Array.isArray(contenu.voyage.villes) ? contenu.voyage.villes : []),
+      });
+    }
+  }
+  for (const visite of visites) {
+    // Les photos posées à la racine viennent de voyages différents : pas de proposition groupée.
+    if (visite.nomVoyage || (visite.sansVisite && !visite.voyage)) continue;
+    const jours = new Set(visite.photos.map((photo) => photo.horodatage.slice(0, 8)).filter(Boolean));
+    const candidats = voyagesConnus
+      .filter((voyage) => voyage.debut && voyage.fin)
+      .map((voyage) => {
+        let communs = 0;
+        jours.forEach((jour) => {
+          if (jour >= voyage.debut.slice(0, 8) && jour <= voyage.fin.slice(0, 8)) communs += 1;
+        });
+        const memeVille = Array.from(visite.villes).some((ville) =>
+          Array.from(voyage.villes).some((autre) => cleVillePhotoCartel(autre) === cleVillePhotoCartel(ville))
+        );
+        return { voyage, communs, memeVille };
+      })
+      .filter((candidat) => candidat.communs > 0)
+      .sort((a, b) => b.communs - a.communs || Number(b.memeVille) - Number(a.memeVille));
+    incoherences.I6.push({
+      visite: visite.nom,
+      periode: `${horodatageLisiblePhotoCartel(visite.debut)} → ${horodatageLisiblePhotoCartel(visite.fin)}`,
+      proposition: candidats.length ? candidats[0].voyage.nom : "aucun voyage aux mêmes dates",
+      raison: candidats.length
+        ? `${candidats[0].communs} jour(s) dans ses dates${candidats[0].memeVille ? ", même ville" : ""}`
+        : "",
+    });
+  }
+  // I7 — même photo (nom et taille) à plusieurs endroits.
+  vuesParCle.forEach((fiches) => {
+    if (fiches.length < 2) return;
+    incoherences.I7.push({
+      photo: fiches[0].nom,
+      endroits: fiches.map((fiche) => fiche.noeud.relatif || "(racine)").join(" | "),
+    });
+  });
+
+  // 6. Écriture des JSON (les photos ne sont jamais touchées).
+  const ecrits = [];
+  const ecrireJson = (chemin, contenu) => {
+    if (!ecrire) return;
+    fs.writeFileSync(chemin, `${JSON.stringify(contenu, null, 1)}\n`, "utf-8");
+    ecrits.push(chemin);
+  };
+  const dateIso = maintenant.toISOString();
+  for (const visite of visites) {
+    for (const noeud of visite.dossiers) {
+      const photos = visite.photos.filter((photo) => photo.noeud === noeud);
+      ecrireJson(path.join(noeud.absolu, NOM_FICHIER_VISITE), {
+        type_document: TYPE_DOCUMENT_VISITE,
+        version_format: VERSION_FORMAT_VISITE,
+        version_photocartel: VERSION_PHOTOCARTEL,
+        date_preparation_iso: dateIso,
+        visite: {
+          nom: visite.nom,
+          voyage: visite.nomVoyage,
+          voyage_choisi: visite.voyageChoisi,
+          sans_visite: visite.sansVisite,
+          type: visite.type,
+          pays: Array.from(visite.pays),
+          villes: Array.from(visite.villes),
+          debut: visite.debut,
+          fin: visite.fin,
+          nombre_photos: visite.photos.length,
+        },
+        photos: photos.map((photo) => ({
+          nom: photo.nom,
+          taille: photo.taille,
+          horodatage: photo.horodatage,
+          pays: photo.pays,
+          villes: photo.villes,
+          sujet: photo.sujet,
+        })),
+      });
+    }
+  }
+  for (const voyage of voyages) {
+    ecrireJson(path.join(voyage.noeud.absolu, NOM_FICHIER_VOYAGE), {
+      type_document: TYPE_DOCUMENT_VOYAGE,
+      version_format: VERSION_FORMAT_VISITE,
+      version_photocartel: VERSION_PHOTOCARTEL,
+      date_preparation_iso: dateIso,
+      voyage: {
+        nom: voyage.nom,
+        pays: Array.from(voyage.pays),
+        villes: Array.from(voyage.villes),
+        debut: voyage.debut,
+        fin: voyage.fin,
+        nombre_photos: voyage.nombrePhotos,
+      },
+      visites: voyage.visites.map((visite) => ({
+        nom: visite.nom,
+        dossier: path.relative(voyage.noeud.absolu, visite.noeud.absolu).split(path.sep).join("/"),
+        sans_visite: visite.sansVisite,
+        debut: visite.debut,
+        fin: visite.fin,
+        nombre_photos: visite.photos.length,
+      })),
+    });
+  }
+
+  const bilan = {
+    racine,
+    nature,
+    dateIso,
+    dureeMs: Date.now() - debut,
+    nombreVoyages: voyages.length,
+    nombreVisites: visites.filter((visite) => !visite.sansVisite).length,
+    nombrePhotosSansVisite: visites.filter((visite) => visite.sansVisite).reduce((n, v) => n + v.photos.length, 0),
+    nombrePhotos: visites.reduce((n, visite) => n + visite.photos.length, 0),
+    heuresLues,
+    heuresReprises,
+    voyages: voyages.map((voyage) => ({
+      nom: voyage.nom,
+      lieu: [...voyage.villes, ...voyage.pays].join(", "),
+      periode: `${horodatageLisiblePhotoCartel(voyage.debut)} → ${horodatageLisiblePhotoCartel(voyage.fin)}`,
+      visites: voyage.visites.filter((visite) => !visite.sansVisite).length,
+      sansVisite: voyage.visites.filter((visite) => visite.sansVisite).reduce((n, v) => n + v.photos.length, 0),
+      photos: voyage.nombrePhotos,
+    })),
+    incoherences,
+    jsonEcrits: ecrits.length,
+  };
+  return bilan;
+}
+
+function echapperHtmlPreparation(texte) {
+  return String(texte ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+const SECTIONS_RECAPITULATIF_PREPARATION = [
+  ["I1", "Photo nommée dans une autre ville que sa visite", ["Visite", "Photo", "Ville de la photo", "Ville de la visite", "Proposition"], ["visite", "photo", "villePhoto", "villeVisite", "proposition"]],
+  ["I2", "Chemin trop long pour Windows (plus de 260 caractères)", ["Visite", "Photo", "Longueur sur ce disque", "Longueur copiée sur le téléphone", "Longueur du nom seul"], ["visite", "photo", "longueurIci", "longueurTelephone", "nom"]],
+  ["I3", "Photo sans heure de prise de vue", ["Visite", "Photo"], ["visite", "photo"]],
+  ["I4", "Visite dont le nom ne dit ni pays ni ville : lieu repris du voyage, à valider", ["Visite", "Voyage", "Lieu repris"], ["visite", "voyage", "lieuRepris"]],
+  ["I5", "Photo déplacée ou disparue depuis la préparation précédente", ["Photo", "Avant", "Maintenant", "État"], ["photo", "avant", "apres", "etat"]],
+  ["I6", "Visite sans voyage : voyage proposé", ["Visite", "Période", "Voyage proposé", "Raison"], ["visite", "periode", "proposition", "raison"]],
+  ["I7", "Même photo (nom et taille) à plusieurs endroits", ["Photo", "Endroits"], ["photo", "endroits"]],
+];
+
+function construireRecapitulatifPreparationHtml(bilan) {
+  const e = echapperHtmlPreparation;
+  const total = SECTIONS_RECAPITULATIF_PREPARATION.reduce((n, [cle]) => n + bilan.incoherences[cle].length, 0);
+  const sections = SECTIONS_RECAPITULATIF_PREPARATION.map(([cle, titre, entetes, champs]) => {
+    const lignes = bilan.incoherences[cle];
+    const corps = lignes.length
+      ? `<table><thead><tr><th>Id</th>${entetes.map((x) => `<th>${e(x)}</th>`).join("")}</tr></thead><tbody>${lignes
+          .map(
+            (ligne, i) =>
+              `<tr><td class="id">${cle}-${String(i + 1).padStart(3, "0")}</td>${champs
+                .map((champ) => `<td>${e(ligne[champ])}</td>`)
+                .join("")}</tr>`
+          )
+          .join("")}</tbody></table>`
+      : `<p class="rien">Aucune.</p>`;
+    return `<section><h2><span class="cle">${cle}</span> ${e(titre)} <span class="nb">${lignes.length}</span></h2>${corps}</section>`;
+  }).join("");
+  const voyages = `<table><thead><tr><th>Id</th><th>Voyage</th><th>Lieu lu dans les noms</th><th>Période</th><th>Visites</th><th>Photos sans visite</th><th>Photos</th></tr></thead><tbody>${bilan.voyages
+    .map(
+      (v, i) =>
+        `<tr><td class="id">V-${String(i + 1).padStart(3, "0")}</td><td>${e(v.nom)}</td><td>${e(v.lieu)}</td><td>${e(v.periode)}</td><td class="n">${v.visites}</td><td class="n">${v.sansVisite}</td><td class="n">${v.photos}</td></tr>`
+    )
+    .join("")}</tbody></table>`;
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhotoCartel — préparation</title><style>
+:root{--fond:#faf6ee;--carte:#fffdf8;--encre:#2b2418;--doux:#7a6e5a;--or:#b8913a;--orclair:#ead9b0;--alerte:#9c3d2e}
+body{margin:0;background:var(--fond);color:var(--encre);font:15px/1.45 Georgia,"Times New Roman",serif;padding:24px 16px 60px}
+main{max-width:1180px;margin:0 auto}h1{font-size:24px;margin:0 0 4px}.sous{color:var(--doux);margin:0 0 18px}
+.chiffres{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 22px}.chiffre{background:var(--carte);border:1px solid var(--orclair);border-radius:10px;padding:10px 14px;min-width:120px}
+.chiffre b{display:block;font-size:22px}.chiffre span{color:var(--doux);font-size:13px}
+section{margin:0 0 22px}h2{font-size:17px;border-bottom:2px solid var(--orclair);padding-bottom:5px;margin:0 0 8px}
+.cle{color:var(--or)}.nb{float:right;background:var(--orclair);border-radius:10px;padding:0 9px;font-size:14px}
+table{width:100%;border-collapse:collapse;background:var(--carte);font-size:13.5px}th,td{border:1px solid var(--orclair);padding:5px 7px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+th{background:#f3e9d2}td.id{white-space:nowrap;color:var(--doux)}td.n{text-align:right}.rien{color:var(--doux);margin:4px 2px}
+.note{color:var(--doux);font-size:13px}</style></head><body><main>
+<h1>Préparation avant copie — ${e(path.basename(bilan.racine))}</h1>
+<p class="sous">${e(bilan.racine)} · ${e(new Date(bilan.dateIso).toLocaleString("fr-FR", { timeZone: "Europe/Paris" }))} · ${(bilan.dureeMs / 1000).toFixed(1)} s</p>
+<div class="chiffres">
+<div class="chiffre"><b>${bilan.nombreVoyages}</b><span>voyage(s)</span></div>
+<div class="chiffre"><b>${bilan.nombreVisites}</b><span>visite(s)</span></div>
+<div class="chiffre"><b>${bilan.nombrePhotos}</b><span>photo(s)</span></div>
+<div class="chiffre"><b>${bilan.nombrePhotosSansVisite}</b><span>photo(s) sans visite</span></div>
+<div class="chiffre"><b>${bilan.heuresLues}</b><span>heure(s) lue(s)</span></div>
+<div class="chiffre"><b>${bilan.heuresReprises}</b><span>heure(s) reprise(s)</span></div>
+<div class="chiffre"><b>${total}</b><span>incohérence(s)</span></div>
+</div>
+<section><h2>Voyages</h2>${voyages}</section>
+${sections}
+<p class="note">Rien n'a été déplacé ni renommé. Chaque dossier de photos a reçu ${e(NOM_FICHIER_VISITE)}, chaque voyage ${e(NOM_FICHIER_VOYAGE)} (${bilan.jsonEcrits} fichier(s)). Une photo déplacée d'un dossier à un autre garde sa fiche au passage suivant.</p>
+</main></body></html>`;
+}
+
+function lancerPreparationVoyagesPhotoCartel() {
+  const argument = process.argv[process.argv.indexOf(ARGUMENT_PREPARER_VOYAGES) + 1];
+  const racine = argument && !argument.startsWith("--") ? argument : choisirDossierPreparationWindows();
+  if (!racine) {
+    console.log("Aucun dossier choisi : rien n'a été préparé.");
+    return 1;
+  }
+  if (!fs.existsSync(racine) || !fs.statSync(racine).isDirectory()) {
+    console.log(`ERREUR  Dossier introuvable : ${racine}`);
+    return 1;
+  }
+  const ecrire = !process.argv.includes("--essai");
+  console.log(`PhotoCartel ${VERSION_PHOTOCARTEL} — préparation de : ${racine}`);
+  const bilan = preparerVoyagesPhotoCartel(racine, { ecrire });
+  const parties = Object.fromEntries(
+    new Intl.DateTimeFormat("fr-FR", {
+      timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    })
+      .formatToParts(new Date(bilan.dateIso))
+      .map((partie) => [partie.type, partie.value])
+  );
+  const horodatage = `${parties.year}${parties.month}${parties.day}_${parties.hour}${parties.minute}`;
+  const cheminRecap = path.join(racine, `${NOM_RECAPITULATIF_PREPARATION}_${horodatage}.html`);
+  // Un seul récapitulatif par dossier : le précédent est remplacé.
+  for (const nom of fs.readdirSync(racine)) {
+    if (nom.startsWith(NOM_RECAPITULATIF_PREPARATION) && nom.endsWith(".html")) {
+      try {
+        fs.unlinkSync(path.join(racine, nom));
+      } catch {
+        // un récapitulatif ouvert ailleurs reste en place
+      }
+    }
+  }
+  fs.writeFileSync(cheminRecap, construireRecapitulatifPreparationHtml(bilan), "utf-8");
+  const total = Object.values(bilan.incoherences).reduce((n, liste) => n + liste.length, 0);
+  console.log(
+    `OK  ${bilan.nombreVoyages} voyage(s), ${bilan.nombreVisites} visite(s), ${bilan.nombrePhotos} photo(s) ; ` +
+      `${bilan.heuresLues} heure(s) lue(s), ${bilan.heuresReprises} reprise(s) ; ${total} incohérence(s) ; ` +
+      `${bilan.jsonEcrits} fichier(s) JSON écrits en ${(bilan.dureeMs / 1000).toFixed(1)} s`
+  );
+  console.log(`Récapitulatif : ${cheminRecap}`);
+  if (process.platform === "win32" && !process.argv.includes("--sans-ouvrir")) {
+    spawnSync("explorer.exe", [cheminRecap], { stdio: "ignore" });
+  }
+  return 0;
+}
+
 const PORT = process.env.PORT || 3002;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`PhotoCartel API démarrée sur le port ${PORT}`);
-  console.log("Dossier racine données PhotoCartel =", DOSSIER_RACINE_DONNEES);
+if (MODE_PREPARER_VOYAGES) {
+  // v99 — préparation des voyages : le serveur n'est pas démarré.
+  let codeSortie = 1;
+  try {
+    codeSortie = lancerPreparationVoyagesPhotoCartel();
+  } catch (error) {
+    console.log(`ERREUR  ${error.message}`);
+  }
+  process.exit(codeSortie);
+} else {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`PhotoCartel API démarrée sur le port ${PORT}`);
+    console.log("Dossier racine données PhotoCartel =", DOSSIER_RACINE_DONNEES);
 
-  // v84 — le travailleur OCR est préparé au démarrage : ni son chargement,
-  // ni son échec éventuel ne doivent être payés pendant un renommage.
-  obtenirTravailleurOcrPhotoCartel().catch(() => {});
-});
+    // v84 — le travailleur OCR est préparé au démarrage : ni son chargement,
+    // ni son échec éventuel ne doivent être payés pendant un renommage.
+    obtenirTravailleurOcrPhotoCartel().catch(() => {});
+  });
+}
